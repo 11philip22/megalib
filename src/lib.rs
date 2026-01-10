@@ -38,5 +38,8 @@ pub mod session;
 // Re-export commonly used types
 pub use error::{MegaError, Result};
 pub use fs::{Node, NodeType, Quota};
-pub use public::{download_public_file, get_public_file_info, parse_mega_link, PublicFile};
+pub use public::{
+    download_public_file, get_public_file_info, open_folder, parse_folder_link, parse_mega_link,
+    PublicFile, PublicFolder,
+};
 pub use session::{register, verify_registration, RegistrationState, Session};

@@ -240,6 +240,426 @@ fn decrypt_public_attrs(attrs_b64: &str, key: &[u8; 32]) -> Result<String> {
         .ok_or_else(|| MegaError::Custom("Missing file name".to_string()))
 }
 
+// ============================================================================
+// PUBLIC FOLDER BROWSING
+// ============================================================================
+
+use crate::fs::node::{Node, NodeType};
+use std::collections::HashMap;
+
+/// A public folder session for browsing shared folders without login.
+#[derive(Debug)]
+pub struct PublicFolder {
+    /// Folder handle
+    pub handle: String,
+    /// Folder decryption key
+    #[allow(dead_code)]
+    folder_key: [u8; 16],
+    /// Nodes in the folder
+    nodes: Vec<Node>,
+    /// Share keys for nested folders
+    #[allow(dead_code)]
+    share_keys: HashMap<String, [u8; 16]>,
+}
+
+impl PublicFolder {
+    /// Get all nodes in the folder.
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// List files in a path within the folder.
+    pub fn list(&self, path: &str, recursive: bool) -> Vec<&Node> {
+        let normalized = normalize_folder_path(path);
+        let search_prefix = if normalized == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", normalized)
+        };
+
+        let mut results = Vec::new();
+        for node in &self.nodes {
+            if let Some(node_path) = &node.path {
+                if recursive {
+                    if node_path.starts_with(&search_prefix) && node_path != &normalized {
+                        results.push(node);
+                    }
+                } else {
+                    if let Some(stripped) = node_path.strip_prefix(&search_prefix) {
+                        if !stripped.contains('/') && !stripped.is_empty() {
+                            results.push(node);
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Get a node by path.
+    pub fn stat(&self, path: &str) -> Option<&Node> {
+        let normalized = normalize_folder_path(path);
+        self.nodes
+            .iter()
+            .find(|n| n.path.as_deref() == Some(&normalized))
+    }
+
+    /// Download a file from the public folder.
+    pub async fn download<W: Write>(&self, node: &Node, writer: &mut W) -> Result<()> {
+        if node.node_type != NodeType::File {
+            return Err(MegaError::Custom("Node is not a file".to_string()));
+        }
+
+        // Get download URL
+        let mut api = ApiClient::new();
+        let response = api
+            .request(json!({
+                "a": "g",
+                "g": 1,
+                "n": node.handle
+            }))
+            .await?;
+
+        let url = response
+            .get("g")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Missing download URL".to_string()))?;
+
+        // Get node key and derive AES key + nonce
+        let k = &node.key;
+        if k.len() < 32 {
+            return Err(MegaError::Custom("Invalid node key".to_string()));
+        }
+
+        let mut aes_key = [0u8; 16];
+        let mut nonce = [0u8; 8];
+        for i in 0..16 {
+            aes_key[i] = k[i] ^ k[i + 16];
+        }
+        nonce.copy_from_slice(&k[16..24]);
+
+        // Download and decrypt
+        let client = reqwest::Client::new();
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(MegaError::RequestError)?;
+
+        let mut offset = 0u64;
+        while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, offset);
+            writer
+                .write_all(&decrypted)
+                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+            offset += chunk.len() as u64;
+        }
+
+        Ok(())
+    }
+}
+
+/// Parse a MEGA folder link URL.
+///
+/// Supports formats:
+/// - `https://mega.nz/folder/HANDLE#KEY`
+/// - `https://mega.nz/#F!HANDLE!KEY` (legacy)
+///
+/// Returns tuple of (handle, key) on success.
+pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
+    // New format: https://mega.nz/folder/HANDLE#KEY
+    if url.contains("/folder/") {
+        if let Some(pos) = url.find("/folder/") {
+            let rest = &url[pos + 8..];
+            if let Some(hash_pos) = rest.find('#') {
+                let handle = rest[..hash_pos].to_string();
+                let key = rest[hash_pos + 1..].to_string();
+                return Ok((handle, key));
+            }
+        }
+    }
+
+    // Legacy format: https://mega.nz/#F!HANDLE!KEY
+    if url.contains("#F!") {
+        if let Some(pos) = url.find("#F!") {
+            let rest = &url[pos + 3..];
+            if let Some(bang_pos) = rest.find('!') {
+                let handle = rest[..bang_pos].to_string();
+                let key = rest[bang_pos + 1..].to_string();
+                return Ok((handle, key));
+            }
+        }
+    }
+
+    Err(MegaError::Custom(format!(
+        "Invalid folder link format: {}",
+        url
+    )))
+}
+
+/// Open a public folder from a MEGA folder link.
+///
+/// This allows browsing and downloading from shared folders without login.
+///
+/// # Example
+/// ```no_run
+/// use mega_rs::public::open_folder;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let folder = open_folder("https://mega.nz/folder/ABC123#key").await?;
+/// for node in folder.list("/", false) {
+///     println!("{} ({} bytes)", node.name, node.size);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+pub async fn open_folder(url: &str) -> Result<PublicFolder> {
+    let (handle, key_b64) = parse_folder_link(url)?;
+
+    // Decode the folder key (16 bytes for folders)
+    let key_bytes = base64url_decode(&key_b64)?;
+    if key_bytes.len() != 16 {
+        return Err(MegaError::Custom(format!(
+            "Invalid folder key length: expected 16, got {}",
+            key_bytes.len()
+        )));
+    }
+
+    let mut folder_key = [0u8; 16];
+    folder_key.copy_from_slice(&key_bytes);
+
+    // Make API request with folder handle
+
+    // Folder API uses 'n' parameter in URL
+    let url = format!(
+        "https://g.api.mega.co.nz/cs?id={}&n={}",
+        rand::random::<u32>(),
+        handle
+    );
+
+    let body = serde_json::to_string(&vec![json!({"a": "f", "c": 1, "r": 1})])?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(MegaError::RequestError)?;
+
+    let response_text = response.text().await.map_err(MegaError::RequestError)?;
+    let response: Value = serde_json::from_str(&response_text)?;
+
+    // Extract first response from array
+    let response = response
+        .as_array()
+        .and_then(|arr| arr.first().cloned())
+        .ok_or(MegaError::InvalidResponse)?;
+
+    // Parse nodes
+    let nodes_array = response
+        .get("f")
+        .and_then(|v| v.as_array())
+        .ok_or(MegaError::InvalidResponse)?;
+
+    let mut share_keys: HashMap<String, [u8; 16]> = HashMap::new();
+    let mut nodes = Vec::new();
+
+    for (idx, node_json) in nodes_array.iter().enumerate() {
+        // First node is the root folder - set its share key
+        if idx == 0 {
+            if let Some(h) = node_json.get("h").and_then(|v| v.as_str()) {
+                share_keys.insert(h.to_string(), folder_key);
+            }
+        }
+
+        if let Some(node) = parse_public_node(node_json, &folder_key, &share_keys, idx == 0) {
+            nodes.push(node);
+        }
+    }
+
+    // Build node paths
+    build_public_node_paths(&mut nodes);
+
+    Ok(PublicFolder {
+        handle,
+        folder_key,
+        nodes,
+        share_keys,
+    })
+}
+
+/// Parse a node from public folder response.
+fn parse_public_node(
+    json: &Value,
+    folder_key: &[u8; 16],
+    share_keys: &HashMap<String, [u8; 16]>,
+    is_root: bool,
+) -> Option<Node> {
+    let handle = json.get("h")?.as_str()?.to_string();
+    let parent_handle = if is_root {
+        None
+    } else {
+        json.get("p")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    let node_type_int = json.get("t")?.as_i64()?;
+    let node_type = NodeType::from_i64(node_type_int)?;
+    let size = json.get("s").and_then(|v| v.as_u64()).unwrap_or(0);
+    let timestamp = json.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // For root folder, the key is the folder_key itself
+    // For other nodes, try to decrypt from k field, or use folder key if k is empty
+    let (node_key, name) = if is_root {
+        // Root node: use folder key directly for attribute decryption
+        let key = folder_key.to_vec();
+        let attrs_b64 = json.get("a").and_then(|v| v.as_str());
+        let name = attrs_b64
+            .and_then(|a| decrypt_public_node_attrs(a, &key))
+            .unwrap_or_else(|| "Shared Folder".to_string());
+        (key, name)
+    } else {
+        // Regular node: try to decrypt key from k field
+        let key_str = json.get("k").and_then(|v| v.as_str()).unwrap_or("");
+
+        let node_key = if key_str.is_empty() {
+            // Empty k field: use folder key directly (common in public folders)
+            folder_key.to_vec()
+        } else {
+            // Non-empty k: decrypt using standard method
+            decrypt_public_node_key(key_str, folder_key, share_keys)?
+        };
+
+        let attrs_b64 = json.get("a")?.as_str()?;
+        let name = decrypt_public_node_attrs(attrs_b64, &node_key)?;
+        (node_key, name)
+    };
+
+    Some(Node {
+        name,
+        handle,
+        parent_handle,
+        node_type,
+        size,
+        timestamp,
+        key: node_key,
+        path: None,
+        link: None,
+    })
+}
+
+/// Decrypt a node key for public folder.
+fn decrypt_public_node_key(
+    key_str: &str,
+    folder_key: &[u8; 16],
+    share_keys: &HashMap<String, [u8; 16]>,
+) -> Option<Vec<u8>> {
+    for part in key_str.split('/') {
+        if let Some((key_handle, encrypted_key)) = part.split_once(':') {
+            // Try folder key first, then share keys
+            let decrypt_key = if share_keys.contains_key(key_handle) {
+                share_keys.get(key_handle)?
+            } else {
+                folder_key
+            };
+
+            if let Ok(encrypted) = base64url_decode(encrypted_key) {
+                use crate::crypto::aes::aes128_ecb_decrypt;
+                return Some(aes128_ecb_decrypt(&encrypted, decrypt_key));
+            }
+        }
+    }
+    None
+}
+
+/// Decrypt node attributes for public folder.
+fn decrypt_public_node_attrs(attrs_b64: &str, node_key: &[u8]) -> Option<String> {
+    let encrypted = base64url_decode(attrs_b64).ok()?;
+
+    let aes_key: [u8; 16] = if node_key.len() >= 32 {
+        let mut key = [0u8; 16];
+        for i in 0..16 {
+            key[i] = node_key[i] ^ node_key[i + 16];
+        }
+        key
+    } else if node_key.len() >= 16 {
+        node_key[..16].try_into().ok()?
+    } else {
+        return None;
+    };
+
+    let decrypted = aes128_cbc_decrypt(&encrypted, &aes_key);
+    let text = String::from_utf8_lossy(&decrypted);
+
+    if !text.starts_with("MEGA") {
+        return None;
+    }
+
+    let json_str = text.trim_start_matches("MEGA").trim_end_matches('\0');
+    let attrs: Value = serde_json::from_str(json_str).ok()?;
+    attrs
+        .get("n")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Build paths for public folder nodes.
+fn build_public_node_paths(nodes: &mut [Node]) {
+    let handle_map: HashMap<&str, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.handle.as_str(), i))
+        .collect();
+
+    let paths: Vec<String> = (0..nodes.len())
+        .map(|i| build_public_path(nodes, i, &handle_map, 0))
+        .collect();
+
+    for (i, path) in paths.into_iter().enumerate() {
+        nodes[i].path = Some(path);
+    }
+}
+
+fn build_public_path(
+    nodes: &[Node],
+    idx: usize,
+    handle_map: &HashMap<&str, usize>,
+    depth: usize,
+) -> String {
+    if depth > 100 {
+        return format!("/{}", nodes[idx].name);
+    }
+
+    let node = &nodes[idx];
+
+    // Root node (no parent)
+    if node.parent_handle.is_none() {
+        return format!("/{}", node.name);
+    }
+
+    if let Some(parent_handle) = &node.parent_handle {
+        if let Some(&parent_idx) = handle_map.get(parent_handle.as_str()) {
+            let parent_path = build_public_path(nodes, parent_idx, handle_map, depth + 1);
+            return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
+        }
+    }
+
+    format!("/{}", node.name)
+}
+
+fn normalize_folder_path(path: &str) -> String {
+    let mut result = path.replace("//", "/");
+    while result.ends_with('/') && result.len() > 1 {
+        result.pop();
+    }
+    if !result.starts_with('/') {
+        result = format!("/{}", result);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

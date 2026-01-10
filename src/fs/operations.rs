@@ -161,36 +161,71 @@ impl Session {
             .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", path)))?;
 
         let node = &self.nodes[node_idx];
-
-        // Only files can be exported
-        if node.node_type != NodeType::File {
-            return Err(MegaError::Custom("Only files can be exported".to_string()));
-        }
-
         let handle = node.handle.clone();
         let key = node.key.clone();
+        let is_folder = node.node_type.is_container();
 
-        // Call export API: {a: "l", n: handle}
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "l",
-                "n": handle
-            }))
-            .await?;
+        if is_folder {
+            // Folder export uses "s" (share) API
+            // First set the share: {a: "s2", n: handle, s: [{u: "EXP", r: 0}]}
+            // Then get the link handle: {a: "l", n: handle}
 
-        // Response is the public link handle as a string
-        let link_handle = response
-            .as_str()
-            .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
-            .to_string();
+            // Step 1: Create share with EXP (export) pseudo-user
+            self.api_mut()
+                .request(json!({
+                    "a": "s2",
+                    "n": handle,
+                    "s": [{"u": "EXP", "r": 0}],
+                    "ok": ""
+                }))
+                .await?;
 
-        // Update the node with the link
-        self.nodes[node_idx].link = Some(link_handle.clone());
+            // Step 2: Get the public link handle
+            let response = self
+                .api_mut()
+                .request(json!({
+                    "a": "l",
+                    "n": handle
+                }))
+                .await?;
 
-        // Build and return the full URL with key
-        let key_b64 = base64url_encode(&key);
-        Ok(format!("https://mega.nz/file/{}#{}", link_handle, key_b64))
+            let link_handle = response
+                .as_str()
+                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
+                .to_string();
+
+            // Update the node with the link
+            self.nodes[node_idx].link = Some(link_handle.clone());
+
+            // Build folder URL
+            let key_b64 = base64url_encode(&key);
+            Ok(format!(
+                "https://mega.nz/folder/{}#{}",
+                link_handle, key_b64
+            ))
+        } else {
+            // File export uses "l" (link) API directly
+            let response = self
+                .api_mut()
+                .request(json!({
+                    "a": "l",
+                    "n": handle
+                }))
+                .await?;
+
+            // Response is the public link handle as a string
+            let link_handle = response
+                .as_str()
+                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
+                .to_string();
+
+            // Update the node with the link
+            self.nodes[node_idx].link = Some(link_handle.clone());
+
+            // Build file URL
+            let key_b64 = base64url_encode(&key);
+            Ok(format!("https://mega.nz/file/{}#{}", link_handle, key_b64))
+        }
     }
 
     /// Export multiple files to create public download links.
