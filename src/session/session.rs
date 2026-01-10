@@ -251,6 +251,26 @@ impl Session {
     /// # }
     /// ```
     pub async fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Option<Self>> {
+        Self::load_internal(path, None).await
+    }
+
+    /// Load a previously saved session with proxy support.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the cached session file
+    /// * `proxy` - Proxy URL (e.g., "http://proxy:8080")
+    pub async fn load_with_proxy<P: AsRef<std::path::Path>>(
+        path: P,
+        proxy: &str,
+    ) -> Result<Option<Self>> {
+        Self::load_internal(path, Some(proxy)).await
+    }
+
+    /// Internal load implementation.
+    async fn load_internal<P: AsRef<std::path::Path>>(
+        path: P,
+        proxy: Option<&str>,
+    ) -> Result<Option<Self>> {
         let path = path.as_ref();
 
         if !path.exists() {
@@ -271,8 +291,11 @@ impl Session {
         let mut master_key = [0u8; 16];
         master_key.copy_from_slice(&master_key_bytes);
 
-        // Create API client with session ID
-        let mut api = ApiClient::new();
+        // Create API client with session ID (with or without proxy)
+        let mut api = match proxy {
+            Some(p) => ApiClient::with_proxy(p)?,
+            None => ApiClient::new(),
+        };
         api.set_session_id(data.session_id.clone());
 
         // Verify session is still valid by fetching user info
