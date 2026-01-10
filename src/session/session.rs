@@ -36,6 +36,8 @@ pub struct Session {
     pub(crate) nodes: Vec<Node>,
     /// Share keys for shared folders
     pub(crate) share_keys: HashMap<String, [u8; 16]>,
+    /// Whether resume is enabled for interrupted transfers
+    resume_enabled: bool,
 }
 
 impl Session {
@@ -172,6 +174,7 @@ impl Session {
             user_handle,
             nodes: Vec::new(),
             share_keys: HashMap::new(),
+            resume_enabled: false,
         })
     }
 
@@ -194,6 +197,30 @@ impl Session {
     /// Get reference to the API client.
     pub(crate) fn api(&self) -> &ApiClient {
         &self.api
+    }
+
+    /// Enable or disable resume for interrupted transfers.
+    ///
+    /// When enabled, downloads will check if the target file exists and
+    /// attempt to resume from where it left off using HTTP Range requests.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.set_resume(true);
+    /// // Now downloads will attempt to resume if partial file exists
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_resume(&mut self, enabled: bool) {
+        self.resume_enabled = enabled;
+    }
+
+    /// Check if resume is enabled for transfers.
+    pub fn is_resume_enabled(&self) -> bool {
+        self.resume_enabled
     }
 
     /// Save session to a file for later restoration.
@@ -334,6 +361,7 @@ impl Session {
             user_handle,
             nodes: Vec::new(),
             share_keys: HashMap::new(),
+            resume_enabled: false,
         }))
     }
 }

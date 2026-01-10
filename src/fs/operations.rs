@@ -479,8 +479,60 @@ impl Session {
     /// * `node` - The file node to download
     /// * `writer` - The writer to write decrypted data to
     pub async fn download<W: std::io::Write>(&mut self, node: &Node, writer: &mut W) -> Result<()> {
+        self.download_with_offset(node, writer, 0).await
+    }
+
+    /// Download a file node to a writer, starting from a specific offset.
+    ///
+    /// This is used for resuming interrupted downloads. The offset should be
+    /// the number of bytes already downloaded (i.e., the current file size).
+    ///
+    /// When resume is enabled via `set_resume(true)`, you can check existing
+    /// file size and pass it as offset to continue from where you left off.
+    ///
+    /// # Arguments
+    /// * `node` - The file node to download
+    /// * `writer` - The writer to write decrypted data to (should be opened in append mode for resume)
+    /// * `offset` - Byte offset to resume from (0 for fresh download)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # use std::fs::OpenOptions;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    ///
+    /// let node = session.stat("/Root/largefile.zip").unwrap().clone();
+    ///
+    /// // Check if partial file exists
+    /// let offset = std::fs::metadata("largefile.zip")
+    ///     .map(|m| m.len())
+    ///     .unwrap_or(0);
+    ///
+    /// let mut file = OpenOptions::new()
+    ///     .write(true)
+    ///     .create(true)
+    ///     .append(true)  // Important: append mode for resume
+    ///     .open("largefile.zip")?;
+    ///
+    /// session.download_with_offset(&node, &mut file, offset).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn download_with_offset<W: std::io::Write>(
+        &mut self,
+        node: &Node,
+        writer: &mut W,
+        offset: u64,
+    ) -> Result<()> {
         if node.node_type != NodeType::File {
             return Err(MegaError::Custom("Node is not a file".to_string()));
+        }
+
+        // Check if we're already done
+        if offset >= node.size {
+            return Ok(());
         }
 
         // 1. Get download URL
@@ -498,49 +550,36 @@ impl Session {
             .and_then(|v| v.as_str())
             .ok_or_else(|| MegaError::Custom("Failed to get download URL".to_string()))?;
 
-        // 2. Download content
+        // 2. Download content (with Range header if resuming)
         let client = reqwest::Client::new();
-        let mut response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(MegaError::RequestError)?;
+        let mut request = client.get(url);
 
-        if !response.status().is_success() {
+        if offset > 0 {
+            // Use HTTP Range header for resume
+            request = request.header("Range", format!("bytes={}-", offset));
+        }
+
+        let mut response = request.send().await.map_err(MegaError::RequestError)?;
+
+        // Check for valid response
+        // 200 OK = full content, 206 Partial Content = range request honored
+        let status = response.status();
+        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(MegaError::Custom(format!(
                 "Download failed with status: {}",
-                response.status()
+                status
             )));
         }
 
+        // If we requested a range but got 200 (full content), server doesn't support Range
+        // We should abort and warn the user
+        if offset > 0 && status == reqwest::StatusCode::OK {
+            return Err(MegaError::Custom(
+                "Server does not support resume (Range header not honored)".to_string(),
+            ));
+        }
+
         // 3. Prepare decryption
-        // Node key is 32 bytes: [u64_xor_0, u64_xor_1, u64_nonce_0, u64_nonce_1] (4 x u64) = 16 bytes key parts, 8 bytes nonce, 8 bytes mac
-        // Wait, node key is 32 bytes (256 bits).
-        // Mega uses AES-128.
-        // For files:
-        // Key (16 bytes) = XOR(part1, part2) where part1 is first 16 bytes, part2 is second 16 bytes? No, that's for folder attributes?
-
-        // Let's re-read mega.c unpack_node_key:
-        // void unpack_node_key(guchar node_key[32], guchar aes_key[16], guchar nonce[8], guchar meta_mac_xor[8])
-        // {
-        //     if (aes_key) {
-        //         DW(aes_key, 0) = DW(node_key, 0) ^ DW(node_key, 4); ... (first 16 bytes XOR last 16 bytes? No)
-        //         node_key is 32 bytes = 8 u32s (DW).
-        //         DW(aes_key, 0) (bytes 0-4) = DW(node_key, 0) (bytes 0-4) ^ DW(node_key, 4) (bytes 16-20)
-        //         DW(aes_key, 1) (bytes 4-8) = DW(node_key, 1) (bytes 4-8) ^ DW(node_key, 5) (bytes 20-24)
-        //         DW(aes_key, 2) (bytes 8-12) = DW(node_key, 2) (bytes 8-12) ^ DW(node_key, 6) (bytes 24-28)
-        //         DW(aes_key, 3) (bytes 12-16) = DW(node_key, 3) (bytes 12-16) ^ DW(node_key, 7) (bytes 28-32)
-        //     }
-        //     if (nonce) {
-        //         DW(nonce, 0) = DW(node_key, 4); // bytes 16-20
-        //         DW(nonce, 1) = DW(node_key, 5); // bytes 20-24
-        //     }
-        // }
-        // So:
-        // node_key is 32 bytes.
-        // aes_key (16 bytes) = node_key[0..16] XOR node_key[16..32]
-        // nonce (8 bytes) = node_key[16..24]
-
         let k = &node.key;
         if k.len() != 32 {
             return Err(MegaError::Custom(format!(
@@ -560,15 +599,15 @@ impl Session {
             nonce[i] = k[i + 16];
         }
 
-        // 4. Stream and decrypt
-        let mut offset = 0u64;
+        // 4. Stream and decrypt (starting from the correct offset for CTR mode)
+        let mut current_offset = offset;
         while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
-            // Decrypt chunk
-            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, offset);
+            // Decrypt chunk - AES-CTR correctly handles offset for keystream
+            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
             writer
                 .write_all(&decrypted)
                 .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
-            offset += chunk.len() as u64;
+            current_offset += chunk.len() as u64;
         }
 
         Ok(())
