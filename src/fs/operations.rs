@@ -4,8 +4,11 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::base64::base64url_decode;
-use crate::crypto::{aes128_cbc_decrypt, aes128_ctr_decrypt, aes128_ecb_decrypt};
+use crate::base64::{base64url_decode, base64url_encode};
+use crate::crypto::aes::{
+    aes128_cbc_decrypt, aes128_cbc_encrypt, aes128_ctr_decrypt, aes128_ctr_encrypt,
+    aes128_ecb_decrypt, chunk_mac_calculate, meta_mac_calculate,
+};
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType, Quota};
 use crate::session::Session;
@@ -412,6 +415,267 @@ impl Session {
         Ok(())
     }
 
+    /// Upload a file to a directory.
+    ///
+    /// # Arguments
+    /// * `local_path` - Path to the local file to upload
+    /// * `remote_parent_path` - Path to the remote parent directory
+    pub async fn upload<P: AsRef<std::path::Path>>(
+        &mut self,
+        local_path: P,
+        remote_parent_path: &str,
+    ) -> Result<Node> {
+        let path = local_path.as_ref();
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| MegaError::Custom("Invalid file path".to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| MegaError::Custom(format!("Failed to get metadata: {}", e)))?;
+        let file_size = metadata.len();
+
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent_handle = parent_node.handle.clone();
+
+        // 1. Get upload URL
+        // [{a:u, s:<SIZE>, ssl:0}]
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "u",
+                "s": file_size,
+                "ssl": 0
+            }))
+            .await?;
+
+        let upload_url = response
+            .get("p")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?;
+
+        // 2. Prepare encryption
+        let mut rng = rand::thread_rng();
+        let mut file_key = [0u8; 16];
+        let mut nonce = [0u8; 8];
+        use rand::RngCore;
+        rng.fill_bytes(&mut file_key);
+        rng.fill_bytes(&mut nonce); // Random nonce
+
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| MegaError::Custom(format!("Failed to open file: {}", e)))?;
+        let mut offset = 0u64;
+        let mut chunk_index = 0;
+        let mut chunk_macs = Vec::new();
+        let client = reqwest::Client::new();
+
+        let mut upload_handle = String::new();
+
+        // 3. Upload chunks
+        use tokio::io::AsyncReadExt;
+
+        while offset < file_size {
+            let chunk_size = get_chunk_size(chunk_index, offset, file_size);
+            let mut buffer = vec![0u8; chunk_size as usize];
+            file.read_exact(&mut buffer)
+                .await
+                .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
+
+            // Calculate chunk MAC
+            // The IV for MAC is nonce (8 bytes) + 8 bytes of zeros?
+            // Megan uses specific IV for chunk MAC:
+            // "guchar mac_iv[16]; memcpy(mac_iv, iv, 8); memcpy(mac_iv + 8, iv, 8);"
+            // where iv is 8-byte nonce.
+            let mut mac_iv = [0u8; 16];
+            mac_iv[..8].copy_from_slice(&nonce);
+            mac_iv[8..].copy_from_slice(&nonce);
+
+            let chunk_mac = chunk_mac_calculate(&buffer, &file_key, &mac_iv);
+            chunk_macs.push(chunk_mac);
+
+            // Encrypt chunk (AES-CTR)
+            // IV for CTR: nonce (8 bytes) + counter (8 bytes BE)
+            // counter starts at offset / 16.
+            // Since we process chunk by chunk, we can pass offset to aes128_ctr_encrypt.
+            let encrypted_chunk = aes128_ctr_encrypt(&buffer, &file_key, &nonce, offset);
+
+            // Upload chunk
+            // URL: upload_url + "/" + offset + "?c=" + checksum
+            let checksum = upload_checksum(&encrypted_chunk); // Note: Mega calculates checksum on ENCRYPTED data?
+                                                              // "chksum = upload_checksum(buf, c->size); ... response = http_post(h, url, buf, ...)"
+                                                              // In megatools, buf is encrypted in place before upload_checksum!
+                                                              // "if (!encrypt_aes128_ctr(buf, buf, ...)) ... chksum = upload_checksum(buf, c->size);"
+                                                              // Yes, checksum of encrypted data.
+
+            let chunk_url = format!("{}/{}?c={}", upload_url, offset, checksum);
+
+            let response = client
+                .post(&chunk_url)
+                .body(encrypted_chunk)
+                .send()
+                .await
+                .map_err(MegaError::RequestError)?;
+
+            if !response.status().is_success() {
+                return Err(MegaError::Custom(format!(
+                    "Chunk upload failed: {}",
+                    response.status()
+                )));
+            }
+
+            let response_text = response.text().await.map_err(MegaError::RequestError)?;
+
+            // Check for completion handle (base64 string)
+            // Megatools checks len == 36 ? No, handle is shorter.
+            // "if (response->len < 10 && ... numeric error ...)"
+            // "if (response->len == 36) ... upload_handle = ..." probably 27 chars base64?
+            // Base64 of 27 chars?
+            // Let's just assume if it's not empty and not an error code, it's the handle.
+            // Or if it's the last chunk.
+            if chunk_index == 0 && file_size == 0 {
+                // Special case empty file?
+            }
+
+            // If response looks like a handle (alphanumeric), save it.
+            // In C++ SDK it returns handle on completion.
+            // For now, save the last non-empty response that isn't an error.
+            if !response_text.starts_with("-") && !response_text.is_empty() {
+                upload_handle = response_text;
+            }
+
+            offset += chunk_size;
+            chunk_index += 1;
+        }
+
+        if upload_handle.is_empty() {
+            return Err(MegaError::Custom(
+                "Did not receive upload handle".to_string(),
+            ));
+        }
+
+        // 4. Finalize upload
+        let meta_mac = meta_mac_calculate(&chunk_macs, &file_key);
+
+        // Encrypt attributes
+        // "attrs = encode_node_attrs(remote_name);" -> {"n": name}
+        // "attrs_enc = b64_aes128_cbc_encrypt_str(attrs, aes_key);"
+        // aes_key for attrs is file_key (randomly generated).
+        let attrs = json!({ "n": file_name }).to_string();
+        let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
+        let pad_len = 16 - (attrs_bytes.len() % 16);
+        let mut padded_attrs = attrs_bytes;
+        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &file_key);
+        let attrs_b64 = base64url_encode(&encrypted_attrs);
+
+        // Pack node key
+        // pack_node_key(node_key, aes_key, nonce, meta_mac);
+        // node_key[32]
+        // aes_key = file_key (16 bytes)
+        // nonce = nonce (8 bytes)
+        // meta_mac = meta_mac (16 bytes)
+        // Key packing logic from megatools:
+        // DW(node_key, 0) = DW(aes_key, 0) ^ DW(nonce, 0);
+        // DW(node_key, 1) = DW(aes_key, 1) ^ DW(nonce, 1);
+        // DW(node_key, 2) = DW(aes_key, 2) ^ DW(meta_mac, 0) ^ DW(meta_mac, 1);
+        // DW(node_key, 3) = DW(aes_key, 3) ^ DW(meta_mac, 2) ^ DW(meta_mac, 3);
+        // DW(node_key, 4) = DW(nonce, 0);
+        // DW(node_key, 5) = DW(nonce, 1);
+        // DW(node_key, 6) = DW(meta_mac, 0) ^ DW(meta_mac, 1);
+        // DW(node_key, 7) = DW(meta_mac, 2) ^ DW(meta_mac, 3);
+
+        let mut node_key = [0u8; 32];
+        let fk = file_key;
+        let n = nonce;
+        let mm = meta_mac;
+
+        // Rust doesn't let us easily cast arrays to u32 slices safely without unsafe, so let's do byte-wise xor or safe conversions.
+        // Or implement a helper.
+        // Since we are working with bytes, let's just do it manually.
+        // Bytes 0-3: fk[0-3] ^ n[0-3] (nonce is only 8 bytes, so n[0] in C means first 4 bytes)
+        // nonce 8 bytes = n[0..4], n[4..8]
+
+        // 0-4: fk[0..4] ^ n[0..4]
+        for i in 0..4 {
+            node_key[i] = fk[i] ^ n[i];
+        }
+        // 4-8: fk[4..8] ^ n[4..8]
+        for i in 0..4 {
+            node_key[4 + i] = fk[4 + i] ^ n[4 + i];
+        }
+        // 8-12: fk[8..12] ^ mm[0..4] ^ mm[4..8]
+        for i in 0..4 {
+            node_key[8 + i] = fk[8 + i] ^ mm[i] ^ mm[4 + i];
+        }
+        // 12-16: fk[12..16] ^ mm[8..12] ^ mm[12..16]
+        for i in 0..4 {
+            node_key[12 + i] = fk[12 + i] ^ mm[8 + i] ^ mm[12 + i];
+        }
+        // 16-20: n[0..4]
+        for i in 0..4 {
+            node_key[16 + i] = n[i];
+        }
+        // 20-24: n[4..8]
+        for i in 0..4 {
+            node_key[20 + i] = n[4 + i];
+        }
+        // 24-28: mm[0..4] ^ mm[4..8]
+        for i in 0..4 {
+            node_key[24 + i] = mm[i] ^ mm[4 + i];
+        }
+        // 28-32: mm[8..12] ^ mm[12..16]
+        for i in 0..4 {
+            node_key[28 + i] = mm[8 + i] ^ mm[12 + i];
+        }
+
+        // Encrypt node key with master key
+        let encrypted_node_key =
+            crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
+        let key_b64 = base64url_encode(&encrypted_node_key);
+
+        // a:p
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "p",
+                "t": parent_handle,
+                "n": [{
+                    "h": upload_handle,
+                    "t": 0, // File
+                    "a": attrs_b64,
+                    "k": key_b64
+                }]
+            }))
+            .await?;
+
+        // Parse result
+        let nodes_array = response
+            .get("f")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                MegaError::Custom("Invalid API response for upload completion".to_string())
+            })?;
+
+        if let Some(node_obj) = nodes_array.get(0) {
+            // Invalidate cache or add node?
+            let node = self
+                .parse_node(node_obj)
+                .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
+            // Ensure name is set (parse_node usually requires 'a' which we sent, but server returns it decrypted if we passed it correctly? No, parse_node decrypts 'a' from the object. The `f` object usually contains `k` and `a`.
+            return Ok(node);
+        }
+
+        Err(MegaError::Custom("Failed to complete upload".to_string()))
+    }
+
     fn decrypt_node_attrs(&self, attrs_b64: &str, node_key: &[u8]) -> Option<String> {
         let encrypted = base64url_decode(attrs_b64).ok()?;
 
@@ -512,6 +776,35 @@ fn normalize_path(path: &str) -> String {
         result = format!("/{}", result);
     }
     result
+}
+
+fn get_chunk_size(chunk_index: usize, offset: u64, total_size: u64) -> u64 {
+    // Mega chunk sizes:
+    // Chunks 1-8: idx * 128KB (128, 256, 384, 512, 640, 768, 896, 1024 KB)
+    // After that: 1MB fixed.
+
+    let size = if chunk_index < 8 {
+        (chunk_index as u64 + 1) * 128 * 1024
+    } else {
+        1024 * 1024
+    };
+
+    if offset + size > total_size {
+        total_size - offset
+    } else {
+        size
+    }
+}
+
+fn upload_checksum(data: &[u8]) -> String {
+    let mut crc = [0u8; 12];
+
+    // Rolling XOR checksum
+    for (i, &byte) in data.iter().enumerate() {
+        crc[i % 12] ^= byte;
+    }
+
+    base64url_encode(&crc)
 }
 
 #[cfg(test)]

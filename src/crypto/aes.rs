@@ -225,6 +225,70 @@ pub fn aes128_ctr_decrypt(data: &[u8], key: &[u8; 16], nonce: &[u8; 8], offset: 
     result
 }
 
+/// AES-128-CTR encrypt (same as decrypt).
+pub fn aes128_ctr_encrypt(data: &[u8], key: &[u8; 16], nonce: &[u8; 8], offset: u64) -> Vec<u8> {
+    aes128_ctr_decrypt(data, key, nonce, offset)
+}
+
+/// Calculate Chunk MAC for Mega upload.
+///
+/// Mega uses a variant of CBC-MAC for chunk integrity.
+/// The IV for the MAC calculation depends on the chunk's offset and the nonce.
+///
+/// # Arguments
+/// * `data` - Chunk data
+/// * `key` - 16-byte File Key
+/// * `iv` - 16-byte specific IV
+///
+/// # Returns
+/// 16-byte MAC
+pub fn chunk_mac_calculate(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> [u8; 16] {
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut mac = GenericArray::clone_from_slice(iv);
+
+    // Process data in 16-byte blocks
+    let chunks = data.chunks(16);
+    for chunk in chunks {
+        // Prepare block (pad with zeros if partial)
+        let mut block = [0u8; 16];
+        block[..chunk.len()].copy_from_slice(chunk);
+
+        // XOR data into MAC
+        for i in 0..16 {
+            mac[i] ^= block[i];
+        }
+
+        // Encrypt MAC (ECB)
+        cipher.encrypt_block(&mut mac);
+    }
+
+    mac.into()
+}
+
+/// Calculate Meta MAC from list of Chunk MACs.
+///
+/// The Meta MAC is an AES-CBC-MAC of the XORed chunk MACs.
+///
+/// # Arguments
+/// * `chunk_macs` - List of 16-byte Chunk MACs
+/// * `key` - 16-byte File Key
+///
+/// # Returns
+/// 16-byte Meta MAC
+pub fn meta_mac_calculate(chunk_macs: &[[u8; 16]], key: &[u8; 16]) -> [u8; 16] {
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut meta_mac = GenericArray::from([0u8; 16]);
+
+    for chunk_mac in chunk_macs {
+        for i in 0..16 {
+            meta_mac[i] ^= chunk_mac[i];
+        }
+        cipher.encrypt_block(&mut meta_mac);
+    }
+
+    meta_mac.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +424,75 @@ mod tests {
         decrypted.extend_from_slice(&part2);
 
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_chunk_mac_calculate() {
+        let key = [0x11u8; 16];
+        let iv = [0x22u8; 16];
+        let data = vec![0x33u8; 32]; // 2 blocks
+
+        // Manually calculate expected MAC
+        // Block 1
+        let mut mac = iv;
+        for i in 0..16 {
+            mac[i] ^= data[i];
+        }
+        let mac = aes128_ecb_encrypt_block(&mac, &key);
+
+        // Block 2
+        let mut mac2 = mac;
+        for i in 0..16 {
+            mac2[i] ^= data[16 + i];
+        }
+        let mac2 = aes128_ecb_encrypt_block(&mac2, &key);
+
+        let calculated = chunk_mac_calculate(&data, &key, &iv);
+        assert_eq!(calculated, mac2);
+    }
+
+    #[test]
+    fn test_meta_mac_calculate() {
+        let key = [0x44u8; 16];
+        let chunk_mac1 = [0x55u8; 16];
+        let chunk_mac2 = [0x66u8; 16];
+        let chunk_macs = vec![chunk_mac1, chunk_mac2];
+
+        // Manual calculation
+        let mut mac = [0u8; 16];
+        // Chunk 1
+        for i in 0..16 {
+            mac[i] ^= chunk_mac1[i];
+        }
+        let mac = aes128_ecb_encrypt_block(&mac, &key);
+        // Chunk 2
+        let mut mac2 = mac;
+        for i in 0..16 {
+            mac2[i] ^= chunk_mac2[i];
+        }
+        let mac2 = aes128_ecb_encrypt_block(&mac2, &key);
+
+        let calculated = meta_mac_calculate(&chunk_macs, &key);
+        assert_eq!(calculated, mac2);
+    }
+
+    #[test]
+    fn test_chunk_mac_pading() {
+        let key = [0x11u8; 16];
+        let iv = [0x22u8; 16];
+        let data = vec![0x33u8; 10]; // 10 bytes (partial block)
+
+        // Manual calculation
+        let mut block = [0u8; 16];
+        block[..10].copy_from_slice(&data); // Pad with zeros
+
+        let mut mac = iv;
+        for i in 0..16 {
+            mac[i] ^= block[i];
+        }
+        let mac = aes128_ecb_encrypt_block(&mac, &key);
+
+        let calculated = chunk_mac_calculate(&data, &key, &iv);
+        assert_eq!(calculated, mac);
     }
 }
