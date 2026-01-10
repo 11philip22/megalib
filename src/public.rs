@@ -252,14 +252,8 @@ use std::collections::HashMap;
 pub struct PublicFolder {
     /// Folder handle
     pub handle: String,
-    /// Folder decryption key
-    #[allow(dead_code)]
-    folder_key: [u8; 16],
     /// Nodes in the folder
     nodes: Vec<Node>,
-    /// Share keys for nested folders
-    #[allow(dead_code)]
-    share_keys: HashMap<String, [u8; 16]>,
 }
 
 impl PublicFolder {
@@ -482,12 +476,7 @@ pub async fn open_folder(url: &str) -> Result<PublicFolder> {
     // Build node paths
     build_public_node_paths(&mut nodes);
 
-    Ok(PublicFolder {
-        handle,
-        folder_key,
-        nodes,
-        share_keys,
-    })
+    Ok(PublicFolder { handle, nodes })
 }
 
 /// Parse a node from public folder response.

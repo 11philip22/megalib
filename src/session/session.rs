@@ -198,12 +198,6 @@ impl Session {
         &mut self.api
     }
 
-    #[allow(dead_code)]
-    /// Get reference to the API client.
-    pub(crate) fn api(&self) -> &ApiClient {
-        &self.api
-    }
-
     /// Enable or disable resume for interrupted transfers.
     ///
     /// When enabled, downloads will check if the target file exists and
