@@ -399,11 +399,13 @@ impl Session {
             })?;
 
         // 1. Generate random 128-bit node key
-        let mut rng = rand::thread_rng();
-        let mut key_bytes = [0u8; 16];
-        use rand::RngCore;
-        rng.fill_bytes(&mut key_bytes);
-        let node_key = key_bytes;
+        let node_key = {
+            let mut rng = rand::thread_rng();
+            let mut key_bytes = [0u8; 16];
+            use rand::RngCore;
+            rng.fill_bytes(&mut key_bytes);
+            key_bytes
+        };
 
         // 2. Encrypt attributes
         let attrs = json!({ "n": name }).to_string();
@@ -451,7 +453,18 @@ impl Session {
                 crate::error::MegaError::Custom("Failed to parse node".to_string())
             })?;
             node.name = name.to_string(); // Name isn't returned in 'f', set it manually
-                                          // We need to re-add it to our internal cache or refresh, but for now just return it
+
+            // Add to local cache manually
+            self.nodes.push(node.clone());
+            let parent_path_str = if parent_path == "/" {
+                format!("/{}", name)
+            } else {
+                format!("{}/{}", parent_path.trim_end_matches('/'), name)
+            };
+            if let Some(last_node) = self.nodes.last_mut() {
+                last_node.path = Some(parent_path_str);
+            }
+
             return Ok(node);
         }
 
@@ -751,12 +764,15 @@ impl Session {
             .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?;
 
         // 2. Prepare encryption
-        let mut rng = rand::thread_rng();
-        let mut file_key = [0u8; 16];
-        let mut nonce = [0u8; 8];
-        use rand::RngCore;
-        rng.fill_bytes(&mut file_key);
-        rng.fill_bytes(&mut nonce); // Random nonce
+        let (file_key, nonce) = {
+            let mut rng = rand::thread_rng();
+            let mut file_key = [0u8; 16];
+            let mut nonce = [0u8; 8];
+            use rand::RngCore;
+            rng.fill_bytes(&mut file_key);
+            rng.fill_bytes(&mut nonce); // Random nonce
+            (file_key, nonce)
+        };
 
         let mut file = tokio::fs::File::open(path)
             .await
@@ -897,11 +913,42 @@ impl Session {
             })?;
 
         if let Some(node_obj) = nodes_array.get(0) {
-            // Invalidate cache or add node?
             let node = self
                 .parse_node(node_obj)
                 .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
-            // Ensure name is set (parse_node usually requires 'a' which we sent, but server returns it decrypted if we passed it correctly? No, parse_node decrypts 'a' from the object. The `f` object usually contains `k` and `a`.
+
+            // Add to local cache manually
+            // Calculate path
+            // parent_handle corresponds to a path
+            // We can find the parent node to get its path
+
+            // Note: node.parent_handle should be set by parse_node if available,
+            // but if not we can assume it matches what we sent.
+
+            let parent_path_str = {
+                // Find parent path
+                let parent_path = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.handle == parent_handle)
+                    .and_then(|n| n.path.as_ref())
+                    .map(|p| p.as_str())
+                    .unwrap_or(""); // If not found, empty (shouldn't happen if we uploaded)
+
+                if !parent_path.is_empty() {
+                    format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
+                } else {
+                    // Fallback, maybe parent is root but we didn't find it easily?
+                    // Or refresh required.
+                    format!("/{}", node.name) // Best effort
+                }
+            };
+
+            self.nodes.push(node.clone());
+            if let Some(last_node) = self.nodes.last_mut() {
+                last_node.path = Some(parent_path_str);
+            }
+
             return Ok(node);
         }
 
