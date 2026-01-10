@@ -44,6 +44,10 @@ pub enum MegaError {
     /// Invalid state format.
     #[error("Invalid state format: {0}")]
     InvalidState(String),
+
+    /// Custom error message.
+    #[error("{0}")]
+    Custom(String),
 }
 
 /// Result type alias for mega-rs operations.

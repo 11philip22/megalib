@@ -158,6 +158,7 @@ impl Session {
         &mut self.api
     }
 
+    #[allow(dead_code)]
     /// Get reference to the API client.
     pub(crate) fn api(&self) -> &ApiClient {
         &self.api

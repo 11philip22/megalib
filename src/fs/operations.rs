@@ -212,6 +212,107 @@ impl Session {
     }
 
     /// Decrypt node attributes.
+    /// Create a new directory.
+    pub async fn mkdir(&mut self, path: &str) -> Result<Node> {
+        let (parent_path, name) = if let Some(idx) = path.rfind('/') {
+            if idx == 0 {
+                ("/", &path[1..])
+            } else {
+                (&path[..idx], &path[idx + 1..])
+            }
+        } else {
+            return Err(crate::error::MegaError::Custom("Invalid path".to_string()));
+        };
+
+        let parent_handle = self
+            .stat(parent_path)
+            .map(|n| n.handle.clone())
+            .ok_or_else(|| {
+                crate::error::MegaError::Custom(format!(
+                    "Parent directory not found: {}",
+                    parent_path
+                ))
+            })?;
+
+        // 1. Generate random 128-bit node key
+        let mut rng = rand::thread_rng();
+        let mut key_bytes = [0u8; 16];
+        use rand::RngCore;
+        rng.fill_bytes(&mut key_bytes);
+        let node_key = key_bytes;
+
+        // 2. Encrypt attributes
+        let attrs = json!({ "n": name }).to_string();
+        let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
+        // Pad to 16 bytes
+        let pad_len = 16 - (attrs_bytes.len() % 16);
+        let mut padded_attrs = attrs_bytes;
+        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+
+        let encrypted_attrs = crate::crypto::aes::aes128_cbc_encrypt(&padded_attrs, &node_key);
+        let attrs_b64 = crate::base64::base64url_encode(&encrypted_attrs);
+
+        // 3. Encrypt node key with master key
+        let encrypted_key =
+            crate::crypto::aes::aes128_ecb_encrypt_block(&node_key, &self.master_key);
+        let key_b64 = crate::base64::base64url_encode(&encrypted_key);
+
+        // 4. Call API
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "p",
+                "t": parent_handle,
+                "n": [{
+                    "h": "xxxxxxxx", // Placeholder handle
+                    "t": 1, // Folder
+                    "a": attrs_b64,
+                    "k": key_b64
+                }]
+            }))
+            .await?;
+
+        // 5. Parse response
+        // Response format: {"f":[{"h":"...","t":1,...}]}
+        // The API returns the response object which contains "f" array
+        let nodes_array = response
+            .get("f") // "f" field
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                crate::error::MegaError::Custom("Invalid API response for mkdir".to_string())
+            })?;
+
+        if let Some(node_obj) = nodes_array.get(0) {
+            let mut node = self.parse_node(node_obj).ok_or_else(|| {
+                crate::error::MegaError::Custom("Failed to parse node".to_string())
+            })?;
+            node.name = name.to_string(); // Name isn't returned in 'f', set it manually
+                                          // We need to re-add it to our internal cache or refresh, but for now just return it
+            return Ok(node);
+        }
+
+        Err(crate::error::MegaError::Custom(
+            "Failed to create directory".to_string(),
+        ))
+    }
+
+    /// Remove a file or directory.
+    pub async fn rm(&mut self, path: &str) -> Result<()> {
+        let node_handle = self
+            .stat(path)
+            .map(|n| n.handle.clone())
+            .ok_or_else(|| crate::error::MegaError::Custom(format!("Node not found: {}", path)))?;
+
+        self.api_mut()
+            .request(json!({
+                "a": "d",
+                "n": node_handle
+            }))
+            .await?;
+
+        Ok(())
+    }
+
     fn decrypt_node_attrs(&self, attrs_b64: &str, node_key: &[u8]) -> Option<String> {
         let encrypted = base64url_decode(attrs_b64).ok()?;
 

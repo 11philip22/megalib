@@ -128,6 +128,45 @@ pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     result
 }
 
+/// AES-128-CBC encrypt multiple blocks with zero IV.
+///
+/// # Arguments
+/// * `data` - Data to encrypt (length must be multiple of 16)
+/// * `key` - 16-byte AES key
+///
+/// # Panics
+/// Panics if data length is not a multiple of 16.
+pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
+    assert!(
+        data.len() % 16 == 0,
+        "Data length must be multiple of 16, got {}",
+        data.len()
+    );
+
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut result = Vec::with_capacity(data.len());
+    let mut iv = GenericArray::from([0u8; 16]);
+
+    for chunk in data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+
+        // XOR with IV (or previous ciphertext block)
+        for i in 0..16 {
+            block[i] ^= iv[i];
+        }
+
+        // Encrypt block
+        cipher.encrypt_block(&mut block);
+
+        result.extend_from_slice(&block);
+
+        // Update IV to current ciphertext block for next iteration
+        iv.copy_from_slice(&block);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +254,16 @@ mod tests {
 
         assert_eq!(decrypted[..16], p1);
         assert_eq!(decrypted[16..], p2);
+    }
+
+    #[test]
+    fn test_cbc_encrypt_decrypt() {
+        let key = [0x12u8; 16];
+        let plaintext = vec![0xABu8; 32]; // Two blocks
+
+        let ciphertext = aes128_cbc_encrypt(&plaintext, &key);
+        let decrypted = aes128_cbc_decrypt(&ciphertext, &key);
+
+        assert_eq!(decrypted, plaintext);
     }
 }
