@@ -106,6 +106,7 @@ impl ApiErrorCode {
 }
 
 /// MEGA API client.
+#[derive(Debug)]
 pub struct ApiClient {
     http: HttpClient,
     request_id: u32,

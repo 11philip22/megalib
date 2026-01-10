@@ -24,6 +24,9 @@ rand = "0.8"
 num-bigint = { version = "0.4", features = ["rand"] }
 num-traits = "0.2"
 num-integer = "0.1"
+hmac = "0.12"
+pbkdf2 = "0.12"
+sha2 = "0.10"
 
 # Base64
 base64 = "0.22"

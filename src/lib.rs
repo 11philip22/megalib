@@ -35,4 +35,4 @@ pub mod session;
 
 // Re-export commonly used types
 pub use error::{MegaError, Result};
-pub use session::{register, verify_registration, RegistrationState};
+pub use session::{register, verify_registration, RegistrationState, Session};

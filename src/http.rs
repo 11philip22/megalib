@@ -4,6 +4,7 @@ use crate::error::{MegaError, Result};
 use reqwest::Client;
 
 /// HTTP client for making requests to MEGA servers.
+#[derive(Debug)]
 pub struct HttpClient {
     client: Client,
 }
