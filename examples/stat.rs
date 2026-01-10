@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example stat -- --email YOUR_EMAIL --password YOUR_PASSWORD --path /path/to/node
 
-use mega_rs::Session;
+use megalib::Session;
 use std::env;
 use std::process;
 

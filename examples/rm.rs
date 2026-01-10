@@ -1,5 +1,5 @@
-use mega_rs::error::Result;
-use mega_rs::Session;
+use megalib::error::Result;
+use megalib::Session;
 use std::env;
 
 #[tokio::main]

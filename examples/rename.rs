@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example rename -- --email EMAIL --password PASSWORD <PATH> <NEW_NAME>
 
-use mega_rs::Session;
+use megalib::Session;
 use std::env;
 
 #[tokio::main]

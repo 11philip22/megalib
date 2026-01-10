@@ -1,4 +1,4 @@
-use mega_rs::Session;
+use megalib::Session;
 use std::env;
 use std::process;
 

@@ -3,8 +3,8 @@
 //! Usage:
 //!   cargo run --example download -- --email YOUR_EMAIL --password YOUR_PASSWORD <REMOTE_PATH> <LOCAL_PATH>
 
-use mega_rs::error::Result;
-use mega_rs::Session;
+use megalib::error::Result;
+use megalib::Session;
 use std::env;
 use std::fs::File;
 use std::io::BufWriter;
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     let node = session
         .stat(&remote_path)
         .ok_or_else(|| {
-            mega_rs::error::MegaError::Custom(format!("File not found: {}", remote_path))
+            megalib::error::MegaError::Custom(format!("File not found: {}", remote_path))
         })?
         .clone();
 
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 
     println!("Downloading to: {}", local_path);
     let file = File::create(&local_path).map_err(|e| {
-        mega_rs::error::MegaError::Custom(format!("Failed to create local file: {}", e))
+        megalib::error::MegaError::Custom(format!("Failed to create local file: {}", e))
     })?;
     let mut writer = BufWriter::new(file);
 

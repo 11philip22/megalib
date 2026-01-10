@@ -5,7 +5,7 @@
 //! Usage:
 //!   cargo run --example cached_session -- --email EMAIL --password PASSWORD
 
-use mega_rs::Session;
+use megalib::Session;
 use std::env;
 
 const SESSION_FILE: &str = "mega_session.json";

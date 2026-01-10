@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example folder -- <FOLDER_URL>
 
-use mega_rs::public::open_folder;
+use megalib::public::open_folder;
 use std::env;
 
 #[tokio::main]

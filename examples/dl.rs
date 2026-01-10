@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example dl -- <URL> [OUTPUT_FILE]
 
-use mega_rs::public::{download_public_file, get_public_file_info};
+use megalib::public::{download_public_file, get_public_file_info};
 use std::env;
 use std::fs::File;
 use std::io::BufWriter;

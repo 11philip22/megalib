@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example login -- --email YOUR_EMAIL --password YOUR_PASSWORD
 
-use mega_rs::Session;
+use megalib::Session;
 use std::env;
 
 #[tokio::main]
