@@ -158,7 +158,7 @@ pub async fn get_public_file_info(url: &str) -> Result<PublicFile> {
 /// use std::fs::File;
 /// use std::io::BufWriter;
 ///
-/// # async fn example() -> mega_rs::error::Result<()> {
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let file = File::create("output.zip")?;
 /// let mut writer = BufWriter::new(file);
 /// let info = download_public_file("https://mega.nz/file/ABC123#key", &mut writer).await?;

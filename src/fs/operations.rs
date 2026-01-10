@@ -543,6 +543,132 @@ impl Session {
         Ok(())
     }
 
+    /// Move a file or directory to a new location.
+    ///
+    /// # Arguments
+    /// * `source_path` - Path to the file/folder to move
+    /// * `dest_parent_path` - Path to the new parent directory
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mega_rs::Session;
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// session.mv("/Root/file.txt", "/Root/Documents").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn mv(&mut self, source_path: &str, dest_parent_path: &str) -> Result<()> {
+        // Get source node
+        let source_node = self
+            .stat(source_path)
+            .ok_or_else(|| MegaError::Custom(format!("Source not found: {}", source_path)))?;
+        let source_handle = source_node.handle.clone();
+
+        // Get destination parent
+        let dest_parent = self.stat(dest_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!("Destination not found: {}", dest_parent_path))
+        })?;
+
+        if !dest_parent.node_type.is_container() {
+            return Err(MegaError::Custom(
+                "Destination must be a folder".to_string(),
+            ));
+        }
+
+        let dest_handle = dest_parent.handle.clone();
+
+        // Call move API: {a: "m", n: source_handle, t: dest_parent_handle}
+        self.api_mut()
+            .request(json!({
+                "a": "m",
+                "n": source_handle,
+                "t": dest_handle
+            }))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Rename a file or directory.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the file/folder to rename
+    /// * `new_name` - The new name (not a path, just the filename)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mega_rs::Session;
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// session.rename("/Root/old_name.txt", "new_name.txt").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn rename(&mut self, path: &str, new_name: &str) -> Result<()> {
+        // Get source node
+        let normalized_path = normalize_path(path);
+        let node_idx = self
+            .nodes
+            .iter()
+            .position(|n| n.path.as_deref() == Some(&normalized_path))
+            .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", path)))?;
+
+        let node = &self.nodes[node_idx];
+        let handle = node.handle.clone();
+        let key = node.key.clone();
+
+        if key.is_empty() {
+            return Err(MegaError::Custom("Cannot rename system nodes".to_string()));
+        }
+
+        // Encode new attributes
+        let attrs = json!({ "n": new_name }).to_string();
+        let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
+        let pad_len = (16 - (attrs_bytes.len() % 16)) % 16;
+        let mut padded_attrs = attrs_bytes;
+        if pad_len > 0 {
+            padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+        }
+
+        // Get the AES key for attributes
+        let aes_key: [u8; 16] = if key.len() >= 32 {
+            // File: XOR first and second halves
+            let mut k = [0u8; 16];
+            for i in 0..16 {
+                k[i] = key[i] ^ key[i + 16];
+            }
+            k
+        } else if key.len() >= 16 {
+            // Folder: first 16 bytes
+            key[..16]
+                .try_into()
+                .map_err(|_| MegaError::Custom("Invalid key".to_string()))?
+        } else {
+            return Err(MegaError::Custom("Invalid key length".to_string()));
+        };
+
+        // Encrypt attributes
+        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &aes_key);
+        let attrs_b64 = base64url_encode(&encrypted_attrs);
+
+        // Call setattr API: {a: "a", n: handle, attr: encrypted_attrs}
+        self.api_mut()
+            .request(json!({
+                "a": "a",
+                "n": handle,
+                "attr": attrs_b64
+            }))
+            .await?;
+
+        // Update local cache
+        self.nodes[node_idx].name = new_name.to_string();
+
+        Ok(())
+    }
+
     /// Upload a file to a directory.
     ///
     /// # Arguments
