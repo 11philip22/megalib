@@ -603,6 +603,7 @@ impl Session {
         }
 
         // 4. Stream and decrypt (starting from the correct offset for CTR mode)
+        let filename = node.name.clone();
         let mut current_offset = offset;
         while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
             // Decrypt chunk - AES-CTR correctly handles offset for keystream
@@ -611,6 +612,13 @@ impl Session {
                 .write_all(&decrypted)
                 .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
             current_offset += chunk.len() as u64;
+
+            // Report progress (optional - only fires if callback is set)
+            let progress =
+                crate::progress::TransferProgress::new(current_offset, node.size, &filename);
+            if !self.report_progress(&progress) {
+                return Err(MegaError::Custom("Download cancelled by user".to_string()));
+            }
         }
 
         Ok(())
@@ -678,67 +686,6 @@ impl Session {
             0
         };
 
-        // Get download URL
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "g",
-                "g": 1,
-                "n": node.handle
-            }))
-            .await?;
-
-        let url = response
-            .get("g")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| MegaError::Custom("Failed to get download URL".to_string()))?;
-
-        // Prepare HTTP request with Range header if resuming
-        let client = reqwest::Client::new();
-        let mut request = client.get(url);
-
-        if resume_offset > 0 {
-            request = request.header("Range", format!("bytes={}-", resume_offset));
-        }
-
-        let mut http_response = request.send().await.map_err(MegaError::RequestError)?;
-
-        let status = http_response.status();
-        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(MegaError::Custom(format!(
-                "Download failed with status: {}",
-                status
-            )));
-        }
-
-        // If server doesn't support Range when we requested it
-        if resume_offset > 0 && status == reqwest::StatusCode::OK {
-            // Server gave us full file - start over
-            let _ = fs::remove_file(&temp_path);
-            // Retry without resume
-            return self
-                .download_to_file_internal(node, target_path, &temp_path, url, 0)
-                .await;
-        }
-
-        // Prepare decryption keys
-        let k = &node.key;
-        if k.len() != 32 {
-            return Err(MegaError::Custom(format!(
-                "Invalid node key length: {}",
-                k.len()
-            )));
-        }
-
-        let mut aes_key = [0u8; 16];
-        let mut nonce = [0u8; 8];
-        for i in 0..16 {
-            aes_key[i] = k[i] ^ k[i + 16];
-        }
-        for i in 0..8 {
-            nonce[i] = k[i + 16];
-        }
-
         // Open temp file for writing (append if resuming)
         let file = OpenOptions::new()
             .write(true)
@@ -749,28 +696,10 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Failed to open temp file: {}", e)))?;
 
         let mut writer = BufWriter::new(file);
-        let filename = node.name.clone();
 
-        // Download and decrypt
-        let mut current_offset = resume_offset;
-        while let Some(chunk) = http_response
-            .chunk()
-            .await
-            .map_err(MegaError::RequestError)?
-        {
-            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
-            writer
-                .write_all(&decrypted)
-                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
-            current_offset += chunk.len() as u64;
-
-            // Report progress
-            let progress =
-                crate::progress::TransferProgress::new(current_offset, node.size, &filename);
-            if !self.report_progress(&progress) {
-                return Err(MegaError::Custom("Download cancelled by user".to_string()));
-            }
-        }
+        // Delegate to download_with_offset (reuses all the download logic)
+        self.download_with_offset(node, &mut writer, resume_offset)
+            .await?;
 
         // Flush and close
         writer
@@ -780,74 +709,6 @@ impl Session {
 
         // Rename temp file to target
         fs::rename(&temp_path, target_path)
-            .map_err(|e| MegaError::Custom(format!("Rename failed: {}", e)))?;
-
-        Ok(())
-    }
-
-    /// Internal helper for download_to_file when we need to restart
-    async fn download_to_file_internal(
-        &mut self,
-        node: &Node,
-        target_path: &std::path::Path,
-        temp_path: &std::path::Path,
-        url: &str,
-        offset: u64,
-    ) -> Result<()> {
-        let client = reqwest::Client::new();
-        let mut request = client.get(url);
-
-        if offset > 0 {
-            request = request.header("Range", format!("bytes={}-", offset));
-        }
-
-        let mut http_response = request.send().await.map_err(MegaError::RequestError)?;
-
-        if !http_response.status().is_success() {
-            return Err(MegaError::Custom(format!(
-                "Download failed with status: {}",
-                http_response.status()
-            )));
-        }
-
-        let k = &node.key;
-        let mut aes_key = [0u8; 16];
-        let mut nonce = [0u8; 8];
-        for i in 0..16 {
-            aes_key[i] = k[i] ^ k[i + 16];
-        }
-        for i in 0..8 {
-            nonce[i] = k[i + 16];
-        }
-
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(temp_path)
-            .map_err(|e| MegaError::Custom(format!("Failed to open temp file: {}", e)))?;
-
-        let mut writer = BufWriter::new(file);
-        let mut current_offset = offset;
-
-        while let Some(chunk) = http_response
-            .chunk()
-            .await
-            .map_err(MegaError::RequestError)?
-        {
-            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
-            writer
-                .write_all(&decrypted)
-                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
-            current_offset += chunk.len() as u64;
-        }
-
-        writer
-            .flush()
-            .map_err(|e| MegaError::Custom(format!("Flush error: {}", e)))?;
-        drop(writer);
-
-        fs::rename(temp_path, target_path)
             .map_err(|e| MegaError::Custom(format!("Rename failed: {}", e)))?;
 
         Ok(())
