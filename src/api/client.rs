@@ -197,6 +197,64 @@ impl ApiClient {
                 .ok_or(MegaError::InvalidResponse);
         }
     }
+
+    /// Make a batch API request to MEGA.
+    ///
+    /// Sends multiple commands in a single request.
+    ///
+    /// # Arguments
+    /// * `requests` - Vector of JSON request objects
+    ///
+    /// # Returns
+    /// JSON array of responses from the API
+    pub async fn request_batch(&mut self, requests: Vec<Value>) -> Result<Value> {
+        if requests.is_empty() {
+            return Ok(Value::Array(vec![]));
+        }
+
+        self.request_id = self.request_id.wrapping_add(1);
+
+        let url = match &self.session_id {
+            Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
+            None => format!("{}?id={}", API_URL, self.request_id),
+        };
+
+        let body = serde_json::to_string(&requests)?;
+
+        // Retry logic
+        let mut delay_ms = 250u64;
+        let max_delay_ms = 256_000u64;
+
+        loop {
+            sleep(Duration::from_millis(20)).await;
+
+            let response_text = self.http.post(&url, &body).await?;
+            let response: Value = serde_json::from_str(&response_text)?;
+
+            // Check for EAGAIN error
+            if let Some(code) = response.as_i64() {
+                let error_code = ApiErrorCode::from(code);
+
+                if error_code == ApiErrorCode::Again {
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2;
+
+                    if delay_ms > max_delay_ms {
+                        return Err(MegaError::ServerBusy);
+                    }
+                    continue;
+                }
+
+                return Err(MegaError::ApiError {
+                    code: code as i32,
+                    message: error_code.description().to_string(),
+                });
+            }
+
+            // Return the full response array
+            return Ok(response);
+        }
+    }
 }
 
 impl Default for ApiClient {

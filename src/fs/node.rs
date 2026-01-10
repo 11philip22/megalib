@@ -69,6 +69,8 @@ pub struct Node {
     pub(crate) key: Vec<u8>,
     /// Full path (computed after tree building)
     pub(crate) path: Option<String>,
+    /// Public link handle (set by export)
+    pub(crate) link: Option<String>,
 }
 
 impl Node {
@@ -85,6 +87,38 @@ impl Node {
     /// Get the full path of this node.
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
+    }
+
+    /// Get the base64-encoded node key for public links.
+    pub fn get_key(&self) -> Option<String> {
+        if self.key.is_empty() {
+            None
+        } else {
+            Some(crate::base64::base64url_encode(&self.key))
+        }
+    }
+
+    /// Get the public download link (requires export to be called first).
+    ///
+    /// # Arguments
+    /// * `include_key` - If true, includes the decryption key in the URL
+    ///
+    /// # Returns
+    /// Full MEGA download URL if the node has been exported
+    pub fn get_link(&self, include_key: bool) -> Option<String> {
+        let link_handle = self.link.as_ref()?;
+
+        if include_key {
+            let key = self.get_key()?;
+            Some(format!("https://mega.nz/file/{}#{}", link_handle, key))
+        } else {
+            Some(format!("https://mega.nz/file/{}", link_handle))
+        }
+    }
+
+    /// Check if this node has been exported (has a public link).
+    pub fn is_exported(&self) -> bool {
+        self.link.is_some()
     }
 }
 

@@ -130,6 +130,133 @@ impl Session {
         Ok(Quota { total, used })
     }
 
+    /// Export a file to create a public download link.
+    ///
+    /// After calling this, use `node.get_link(true)` to get the full URL.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the file to export
+    ///
+    /// # Returns
+    /// The public link URL with decryption key
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use mega_rs::Session;
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let url = session.export("/Root/myfile.txt").await?;
+    /// println!("Public link: {}", url);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn export(&mut self, path: &str) -> Result<String> {
+        // Find the node
+        let normalized_path = normalize_path(path);
+        let node_idx = self
+            .nodes
+            .iter()
+            .position(|n| n.path.as_deref() == Some(&normalized_path))
+            .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", path)))?;
+
+        let node = &self.nodes[node_idx];
+
+        // Only files can be exported
+        if node.node_type != NodeType::File {
+            return Err(MegaError::Custom("Only files can be exported".to_string()));
+        }
+
+        let handle = node.handle.clone();
+        let key = node.key.clone();
+
+        // Call export API: {a: "l", n: handle}
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "l",
+                "n": handle
+            }))
+            .await?;
+
+        // Response is the public link handle as a string
+        let link_handle = response
+            .as_str()
+            .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
+            .to_string();
+
+        // Update the node with the link
+        self.nodes[node_idx].link = Some(link_handle.clone());
+
+        // Build and return the full URL with key
+        let key_b64 = base64url_encode(&key);
+        Ok(format!("https://mega.nz/file/{}#{}", link_handle, key_b64))
+    }
+
+    /// Export multiple files to create public download links.
+    ///
+    /// More efficient than calling `export()` multiple times as it batches the API calls.
+    ///
+    /// # Arguments
+    /// * `paths` - Paths to the files to export
+    ///
+    /// # Returns
+    /// Vector of (path, url) tuples
+    pub async fn export_many(&mut self, paths: &[&str]) -> Result<Vec<(String, String)>> {
+        // Find all nodes and filter to files only
+        let mut node_indices = Vec::new();
+        let mut handles = Vec::new();
+
+        for &path in paths {
+            let normalized_path = normalize_path(path);
+            if let Some(idx) = self
+                .nodes
+                .iter()
+                .position(|n| n.path.as_deref() == Some(&normalized_path))
+            {
+                let node = &self.nodes[idx];
+                if node.node_type == NodeType::File {
+                    node_indices.push(idx);
+                    handles.push(node.handle.clone());
+                }
+            }
+        }
+
+        if handles.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build batch request
+        let requests: Vec<Value> = handles.iter().map(|h| json!({"a": "l", "n": h})).collect();
+
+        // Make batch API call
+        let response = self.api_mut().request_batch(requests).await?;
+
+        // Parse responses
+        let responses = response
+            .as_array()
+            .ok_or_else(|| MegaError::Custom("Invalid batch response".to_string()))?;
+
+        let mut results = Vec::new();
+
+        for (i, resp) in responses.iter().enumerate() {
+            if let Some(link_handle) = resp.as_str() {
+                let idx = node_indices[i];
+                self.nodes[idx].link = Some(link_handle.to_string());
+
+                let node = &self.nodes[idx];
+                let key_b64 = base64url_encode(&node.key);
+                let url = format!("https://mega.nz/file/{}#{}", link_handle, key_b64);
+
+                if let Some(path) = &node.path {
+                    results.push((path.clone(), url));
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Parse share keys from the "ok" array response.
     fn parse_share_keys(&mut self, ok_array: &[Value]) {
         for ok in ok_array {
@@ -187,6 +314,7 @@ impl Session {
             timestamp,
             key: node_key,
             path: None,
+            link: None,
         })
     }
 
