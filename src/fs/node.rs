@@ -84,6 +84,11 @@ impl Node {
         self.node_type.is_container()
     }
 
+    /// Check if this node is a contact.
+    pub fn is_contact(&self) -> bool {
+        self.node_type == NodeType::Contact
+    }
+
     /// Get the full path of this node.
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()

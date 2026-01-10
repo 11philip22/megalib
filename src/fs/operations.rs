@@ -105,6 +105,27 @@ impl Session {
         Ok(results)
     }
 
+    /// List all contacts.
+    ///
+    /// Returns all nodes of type Contact. Contacts are users who have
+    /// interacted with your shared files or folders.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// for contact in session.list_contacts() {
+    ///     println!("Contact: {}", contact.name);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_contacts(&self) -> Vec<&Node> {
+        self.nodes.iter().filter(|n| n.is_contact()).collect()
+    }
+
     /// Get information about a file or folder.
     ///
     /// # Arguments
