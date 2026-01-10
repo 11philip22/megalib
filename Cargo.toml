@@ -1,0 +1,35 @@
+[package]
+name = "mega-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust client library for Mega.nz cloud storage"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Cryptography
+aes = "0.8"
+ctr = "0.9"
+rsa = { version = "0.9", features = ["sha2"] }
+rand = "0.8"
+num-bigint = { version = "0.4", features = ["rand"] }
+num-traits = "0.2"
+num-integer = "0.1"
+
+# Base64
+base64 = "0.22"
+
+# Error handling
+thiserror = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
