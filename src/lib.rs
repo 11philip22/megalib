@@ -30,9 +30,11 @@ pub mod api;
 pub mod base64;
 pub mod crypto;
 pub mod error;
+pub mod fs;
 pub mod http;
 pub mod session;
 
 // Re-export commonly used types
 pub use error::{MegaError, Result};
+pub use fs::{Node, NodeType, Quota};
 pub use session::{register, verify_registration, RegistrationState, Session};

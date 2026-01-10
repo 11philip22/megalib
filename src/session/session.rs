@@ -2,12 +2,15 @@
 //!
 //! This module handles user login, session state, and logout.
 
+use std::collections::HashMap;
+
 use serde_json::json;
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::{aes128_ecb_decrypt, make_password_key, make_username_hash, MegaRsaKey};
 use crate::error::{MegaError, Result};
+use crate::fs::Node;
 
 /// MEGA user session.
 ///
@@ -15,12 +18,13 @@ use crate::error::{MegaError, Result};
 #[derive(Debug)]
 pub struct Session {
     /// API client for making requests
-    api: ApiClient,
+    pub(crate) api: ApiClient,
     /// Session ID
     session_id: String,
     /// User's master key (decrypted)
-    master_key: [u8; 16],
+    pub(crate) master_key: [u8; 16],
     /// User's RSA private key
+    #[allow(dead_code)]
     rsa_key: MegaRsaKey,
     /// User's email
     pub email: String,
@@ -28,6 +32,10 @@ pub struct Session {
     pub name: Option<String>,
     /// User's handle
     pub user_handle: String,
+    /// Cached filesystem nodes
+    pub(crate) nodes: Vec<Node>,
+    /// Share keys for shared folders
+    pub(crate) share_keys: HashMap<String, [u8; 16]>,
 }
 
 impl Session {
@@ -130,6 +138,8 @@ impl Session {
             email: user_email,
             name: user_name,
             user_handle,
+            nodes: Vec::new(),
+            share_keys: HashMap::new(),
         })
     }
 
