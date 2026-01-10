@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::base64::base64url_decode;
-use crate::crypto::{aes128_cbc_decrypt, aes128_ecb_decrypt};
+use crate::crypto::{aes128_cbc_decrypt, aes128_ctr_decrypt, aes128_ecb_decrypt};
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType, Quota};
 use crate::session::Session;
@@ -158,21 +158,19 @@ impl Session {
         let size = json.get("s").and_then(|v| v.as_u64()).unwrap_or(0);
         let timestamp = json.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
 
-        // Handle special nodes (Root, Inbox, Trash)
-        let name = match node_type {
-            NodeType::Root => "Root".to_string(),
-            NodeType::Inbox => "Inbox".to_string(),
-            NodeType::Trash => "Trash".to_string(),
+        let (name, node_key) = match node_type {
+            NodeType::Root => ("Root".to_string(), Vec::new()),
+            NodeType::Inbox => ("Inbox".to_string(), Vec::new()),
+            NodeType::Trash => ("Trash".to_string(), Vec::new()),
             _ => {
-                // Decrypt attributes for regular nodes
+                // Decrypt attributes and node key
                 let attrs_b64 = json.get("a")?.as_str()?;
                 let key_str = json.get("k")?.as_str()?;
-
-                // Decrypt the node key
                 let node_key = self.decrypt_node_key(key_str)?;
-
-                // Decrypt attributes
-                self.decrypt_node_attrs(attrs_b64, &node_key)?
+                match self.decrypt_node_attrs(attrs_b64, &node_key) {
+                    Some(name) => (name, node_key),
+                    None => return None,
+                }
             }
         };
 
@@ -183,7 +181,7 @@ impl Session {
             node_type,
             size,
             timestamp,
-            key: Vec::new(), // TODO: Store key for file operations
+            key: node_key,
             path: None,
         })
     }
@@ -294,6 +292,107 @@ impl Session {
         Err(crate::error::MegaError::Custom(
             "Failed to create directory".to_string(),
         ))
+    }
+
+    /// Download a file node to a writer.
+    ///
+    /// # Arguments
+    /// * `node` - The file node to download
+    /// * `writer` - The writer to write decrypted data to
+    pub async fn download<W: std::io::Write>(&mut self, node: &Node, writer: &mut W) -> Result<()> {
+        if node.node_type != NodeType::File {
+            return Err(MegaError::Custom("Node is not a file".to_string()));
+        }
+
+        // 1. Get download URL
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "g",
+                "g": 1,
+                "n": node.handle
+            }))
+            .await?;
+
+        let url = response
+            .get("g")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Failed to get download URL".to_string()))?;
+
+        // 2. Download content
+        let client = reqwest::Client::new();
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(MegaError::RequestError)?;
+
+        if !response.status().is_success() {
+            return Err(MegaError::Custom(format!(
+                "Download failed with status: {}",
+                response.status()
+            )));
+        }
+
+        // 3. Prepare decryption
+        // Node key is 32 bytes: [u64_xor_0, u64_xor_1, u64_nonce_0, u64_nonce_1] (4 x u64) = 16 bytes key parts, 8 bytes nonce, 8 bytes mac
+        // Wait, node key is 32 bytes (256 bits).
+        // Mega uses AES-128.
+        // For files:
+        // Key (16 bytes) = XOR(part1, part2) where part1 is first 16 bytes, part2 is second 16 bytes? No, that's for folder attributes?
+
+        // Let's re-read mega.c unpack_node_key:
+        // void unpack_node_key(guchar node_key[32], guchar aes_key[16], guchar nonce[8], guchar meta_mac_xor[8])
+        // {
+        //     if (aes_key) {
+        //         DW(aes_key, 0) = DW(node_key, 0) ^ DW(node_key, 4); ... (first 16 bytes XOR last 16 bytes? No)
+        //         node_key is 32 bytes = 8 u32s (DW).
+        //         DW(aes_key, 0) (bytes 0-4) = DW(node_key, 0) (bytes 0-4) ^ DW(node_key, 4) (bytes 16-20)
+        //         DW(aes_key, 1) (bytes 4-8) = DW(node_key, 1) (bytes 4-8) ^ DW(node_key, 5) (bytes 20-24)
+        //         DW(aes_key, 2) (bytes 8-12) = DW(node_key, 2) (bytes 8-12) ^ DW(node_key, 6) (bytes 24-28)
+        //         DW(aes_key, 3) (bytes 12-16) = DW(node_key, 3) (bytes 12-16) ^ DW(node_key, 7) (bytes 28-32)
+        //     }
+        //     if (nonce) {
+        //         DW(nonce, 0) = DW(node_key, 4); // bytes 16-20
+        //         DW(nonce, 1) = DW(node_key, 5); // bytes 20-24
+        //     }
+        // }
+        // So:
+        // node_key is 32 bytes.
+        // aes_key (16 bytes) = node_key[0..16] XOR node_key[16..32]
+        // nonce (8 bytes) = node_key[16..24]
+
+        let k = &node.key;
+        if k.len() != 32 {
+            return Err(MegaError::Custom(format!(
+                "Invalid node key length: {}",
+                k.len()
+            )));
+        }
+
+        let mut aes_key = [0u8; 16];
+        let mut nonce = [0u8; 8];
+
+        for i in 0..16 {
+            aes_key[i] = k[i] ^ k[i + 16];
+        }
+
+        for i in 0..8 {
+            nonce[i] = k[i + 16];
+        }
+
+        // 4. Stream and decrypt
+        let mut offset = 0u64;
+        while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+            // Decrypt chunk
+            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, offset);
+            writer
+                .write_all(&decrypted)
+                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+            offset += chunk.len() as u64;
+        }
+
+        Ok(())
     }
 
     /// Remove a file or directory.

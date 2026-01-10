@@ -66,7 +66,6 @@ pub struct Node {
     /// Timestamp (Unix epoch)
     pub timestamp: i64,
     /// Decrypted node key
-    #[allow(dead_code)]
     pub(crate) key: Vec<u8>,
     /// Full path (computed after tree building)
     pub(crate) path: Option<String>,

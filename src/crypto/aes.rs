@@ -167,6 +167,64 @@ pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     result
 }
 
+/// AES-128-CTR decrypt/encrypt (symmetric).
+///
+/// Mega uses a specific CTR mode where the 16-byte counter block is formed by:
+/// - 8 bytes: Nonce (from bits 32-96 of the node key)
+/// - 8 bytes: Counter (64-bit Big Endian, starting from offset/16)
+///
+/// # Arguments
+/// * `data` - Data to decrypt/encrypt
+/// * `key` - 16-byte AES key
+/// * `nonce` - 8-byte nonce
+/// * `offset` - Byte offset in the file (used to calculate initial counter)
+pub fn aes128_ctr_decrypt(data: &[u8], key: &[u8; 16], nonce: &[u8; 8], offset: u64) -> Vec<u8> {
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut result = Vec::with_capacity(data.len());
+
+    // Initial counter value based on offset
+    let mut counter_val = offset / 16;
+    let mut block_offset = (offset % 16) as usize;
+
+    let mut input_block = [0u8; 16];
+    input_block[0..8].copy_from_slice(nonce);
+
+    // Process data byte by byte (or chunk by chunk)
+    // For efficiency, we'll process 16-byte chunks of data, but we need to handle the initial unaligned offset
+
+    let mut data_idx = 0;
+    while data_idx < data.len() {
+        // Construct counter block
+        input_block[8..16].copy_from_slice(&counter_val.to_be_bytes());
+
+        // Generate keystream block
+        let mut keystream = GenericArray::clone_from_slice(&input_block);
+        cipher.encrypt_block(&mut keystream);
+
+        // XOR data with keystream
+        // Use block_offset for the first block if we started in the middle of a block
+        let available_keystream = 16 - block_offset;
+        let bytes_to_process = std::cmp::min(available_keystream, data.len() - data_idx);
+
+        for i in 0..bytes_to_process {
+            result.push(data[data_idx + i] ^ keystream[block_offset + i]);
+        }
+
+        data_idx += bytes_to_process;
+
+        // Advance counter and reset block_offset for subsequent blocks
+        if block_offset + bytes_to_process == 16 {
+            counter_val += 1;
+            block_offset = 0;
+        } else {
+            // We finished the data before finishing the current block
+            block_offset += bytes_to_process;
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +321,43 @@ mod tests {
 
         let ciphertext = aes128_cbc_encrypt(&plaintext, &key);
         let decrypted = aes128_cbc_decrypt(&ciphertext, &key);
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_ctr_encrypt_decrypt() {
+        let key = [0x55u8; 16];
+        let nonce = [0xAAu8; 8];
+        let plaintext = b"Hello Mega World! This is a test of CTR mode.";
+        let offset = 0;
+
+        // CTR is symmetric, so encrypting is the same function as removing encryption
+        let ciphertext = aes128_ctr_decrypt(plaintext, &key, &nonce, offset);
+        let decrypted = aes128_ctr_decrypt(&ciphertext, &key, &nonce, offset);
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_ctr_offset_handling() {
+        let key = [0x55u8; 16];
+        let nonce = [0xAAu8; 8];
+        let plaintext = vec![0x33u8; 100];
+
+        // Encrypt whole buffer
+        let ciphertext = aes128_ctr_decrypt(&plaintext, &key, &nonce, 0);
+
+        // Decrypt in two parts to test offset handling
+        let split_point = 20;
+        let mut decrypted = Vec::new();
+
+        let part1 = aes128_ctr_decrypt(&ciphertext[..split_point], &key, &nonce, 0);
+        let part2 =
+            aes128_ctr_decrypt(&ciphertext[split_point..], &key, &nonce, split_point as u64);
+
+        decrypted.extend_from_slice(&part1);
+        decrypted.extend_from_slice(&part2);
 
         assert_eq!(decrypted, plaintext);
     }
