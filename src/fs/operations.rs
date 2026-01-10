@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use crate::base64::base64url_decode;
-use crate::crypto::aes128_ecb_decrypt;
+use crate::crypto::{aes128_cbc_decrypt, aes128_ecb_decrypt};
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType, Quota};
 use crate::session::Session;
@@ -229,7 +229,7 @@ impl Session {
             return None;
         };
 
-        let decrypted = aes128_ecb_decrypt(&encrypted, &aes_key);
+        let decrypted = aes128_cbc_decrypt(&encrypted, &aes_key);
 
         // Attributes are JSON prefixed with "MEGA"
         let text = String::from_utf8_lossy(&decrypted);

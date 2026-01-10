@@ -89,6 +89,45 @@ pub fn aes128_ecb_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     result
 }
 
+/// AES-128-CBC decrypt multiple blocks with zero IV.
+///
+/// # Arguments
+/// * `data` - Data to decrypt (length must be multiple of 16)
+/// * `key` - 16-byte AES key
+///
+/// # Panics
+/// Panics if data length is not a multiple of 16.
+pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
+    assert!(
+        data.len() % 16 == 0,
+        "Data length must be multiple of 16, got {}",
+        data.len()
+    );
+
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut result = Vec::with_capacity(data.len());
+    let mut iv = GenericArray::from([0u8; 16]);
+
+    for chunk in data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+
+        // Decrypt block
+        cipher.decrypt_block(&mut block);
+
+        // XOR with previous ciphertext block (or IV for first block)
+        for i in 0..16 {
+            block[i] ^= iv[i];
+        }
+
+        result.extend_from_slice(&block);
+
+        // Update IV to current ciphertext block for next iteration
+        iv.copy_from_slice(chunk);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +180,40 @@ mod tests {
 
         let ciphertext = aes128_ecb_encrypt_block(&plaintext, &key);
         assert_eq!(ciphertext, expected);
+    }
+
+    #[test]
+    fn test_cbc_decrypt() {
+        // Test vector from megatools (zero IV) check or standard CBC logic
+        // Let's create a synthetic test case:
+        // Key: all zeros
+        // Plaintext: two blocks of all ones
+        // IV: all zeros
+
+        let key = [0u8; 16];
+        let p1 = [1u8; 16];
+        let p2 = [1u8; 16];
+
+        // Encrypt manually to generate expected ciphertext
+        // C1 = E(P1 ^ IV) = E(P1 ^ 0) = E(P1)
+        // C2 = E(P2 ^ C1)
+
+        let c1 = aes128_ecb_encrypt_block(&p1, &key);
+
+        let mut p2_xor_c1 = [0u8; 16];
+        for i in 0..16 {
+            p2_xor_c1[i] = p2[i] ^ c1[i];
+        }
+        let c2 = aes128_ecb_encrypt_block(&p2_xor_c1, &key);
+
+        let mut ciphertext = Vec::new();
+        ciphertext.extend_from_slice(&c1);
+        ciphertext.extend_from_slice(&c2);
+
+        // Decrypt
+        let decrypted = aes128_cbc_decrypt(&ciphertext, &key);
+
+        assert_eq!(decrypted[..16], p1);
+        assert_eq!(decrypted[16..], p2);
     }
 }
