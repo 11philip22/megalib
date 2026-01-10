@@ -341,7 +341,6 @@ impl Session {
         None
     }
 
-    /// Decrypt node attributes.
     /// Create a new directory.
     pub async fn mkdir(&mut self, path: &str) -> Result<Node> {
         let (parent_path, name) = if let Some(idx) = path.rfind('/') {
