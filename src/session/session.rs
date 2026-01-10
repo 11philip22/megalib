@@ -54,7 +54,39 @@ impl Session {
     /// # }
     /// ```
     pub async fn login(email: &str, password: &str) -> Result<Self> {
-        let mut api = ApiClient::new();
+        Self::login_internal(email, password, None).await
+    }
+
+    /// Login with email, password, and HTTP proxy.
+    ///
+    /// # Arguments
+    /// * `email` - User's email address
+    /// * `password` - User's password
+    /// * `proxy` - Proxy URL (e.g., "http://proxy:8080" or "socks5://proxy:1080")
+    ///
+    /// # Example
+    /// ```no_run
+    /// use mega_rs::Session;
+    ///
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// let session = Session::login_with_proxy(
+    ///     "user@example.com",
+    ///     "password",
+    ///     "http://proxy.example.com:8080"
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn login_with_proxy(email: &str, password: &str, proxy: &str) -> Result<Self> {
+        Self::login_internal(email, password, Some(proxy)).await
+    }
+
+    /// Internal login implementation.
+    async fn login_internal(email: &str, password: &str, proxy: Option<&str>) -> Result<Self> {
+        let mut api = match proxy {
+            Some(p) => ApiClient::with_proxy(p)?,
+            None => ApiClient::new(),
+        };
         let email_lower = email.to_lowercase();
 
         // Step 1: Pre-login to determine login variant

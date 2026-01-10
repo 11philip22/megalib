@@ -123,6 +123,18 @@ impl ApiClient {
         }
     }
 
+    /// Create a new API client with a proxy.
+    ///
+    /// # Arguments
+    /// * `proxy` - Proxy URL (e.g., "http://proxy:8080" or "socks5://proxy:1080")
+    pub fn with_proxy(proxy: &str) -> crate::error::Result<Self> {
+        Ok(Self {
+            http: HttpClient::with_proxy(proxy)?,
+            request_id: rand::random(),
+            session_id: None,
+        })
+    }
+
     /// Set the session ID for authenticated requests.
     pub fn set_session_id(&mut self, sid: String) {
         self.session_id = Some(sid);
