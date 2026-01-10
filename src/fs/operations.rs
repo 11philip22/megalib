@@ -9,6 +9,7 @@ use crate::crypto::aes::{
     aes128_cbc_decrypt, aes128_cbc_encrypt, aes128_ctr_decrypt, aes128_ctr_encrypt,
     aes128_ecb_decrypt, chunk_mac_calculate, meta_mac_calculate,
 };
+use crate::crypto::keys::pack_node_key;
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType, Quota};
 use crate::session::Session;
@@ -577,64 +578,7 @@ impl Session {
         let attrs_b64 = base64url_encode(&encrypted_attrs);
 
         // Pack node key
-        // pack_node_key(node_key, aes_key, nonce, meta_mac);
-        // node_key[32]
-        // aes_key = file_key (16 bytes)
-        // nonce = nonce (8 bytes)
-        // meta_mac = meta_mac (16 bytes)
-        // Key packing logic from megatools:
-        // DW(node_key, 0) = DW(aes_key, 0) ^ DW(nonce, 0);
-        // DW(node_key, 1) = DW(aes_key, 1) ^ DW(nonce, 1);
-        // DW(node_key, 2) = DW(aes_key, 2) ^ DW(meta_mac, 0) ^ DW(meta_mac, 1);
-        // DW(node_key, 3) = DW(aes_key, 3) ^ DW(meta_mac, 2) ^ DW(meta_mac, 3);
-        // DW(node_key, 4) = DW(nonce, 0);
-        // DW(node_key, 5) = DW(nonce, 1);
-        // DW(node_key, 6) = DW(meta_mac, 0) ^ DW(meta_mac, 1);
-        // DW(node_key, 7) = DW(meta_mac, 2) ^ DW(meta_mac, 3);
-
-        let mut node_key = [0u8; 32];
-        let fk = file_key;
-        let n = nonce;
-        let mm = meta_mac;
-
-        // Rust doesn't let us easily cast arrays to u32 slices safely without unsafe, so let's do byte-wise xor or safe conversions.
-        // Or implement a helper.
-        // Since we are working with bytes, let's just do it manually.
-        // Bytes 0-3: fk[0-3] ^ n[0-3] (nonce is only 8 bytes, so n[0] in C means first 4 bytes)
-        // nonce 8 bytes = n[0..4], n[4..8]
-
-        // 0-4: fk[0..4] ^ n[0..4]
-        for i in 0..4 {
-            node_key[i] = fk[i] ^ n[i];
-        }
-        // 4-8: fk[4..8] ^ n[4..8]
-        for i in 0..4 {
-            node_key[4 + i] = fk[4 + i] ^ n[4 + i];
-        }
-        // 8-12: fk[8..12] ^ mm[0..4] ^ mm[4..8]
-        for i in 0..4 {
-            node_key[8 + i] = fk[8 + i] ^ mm[i] ^ mm[4 + i];
-        }
-        // 12-16: fk[12..16] ^ mm[8..12] ^ mm[12..16]
-        for i in 0..4 {
-            node_key[12 + i] = fk[12 + i] ^ mm[8 + i] ^ mm[12 + i];
-        }
-        // 16-20: n[0..4]
-        for i in 0..4 {
-            node_key[16 + i] = n[i];
-        }
-        // 20-24: n[4..8]
-        for i in 0..4 {
-            node_key[20 + i] = n[4 + i];
-        }
-        // 24-28: mm[0..4] ^ mm[4..8]
-        for i in 0..4 {
-            node_key[24 + i] = mm[i] ^ mm[4 + i];
-        }
-        // 28-32: mm[8..12] ^ mm[12..16]
-        for i in 0..4 {
-            node_key[28 + i] = mm[8 + i] ^ mm[12 + i];
-        }
+        let node_key = pack_node_key(&file_key, &nonce, &meta_mac);
 
         // Encrypt node key with master key
         let encrypted_node_key =

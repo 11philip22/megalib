@@ -91,6 +91,48 @@ pub fn make_username_hash(username: &str, key: &[u8; 16]) -> [u8; 8] {
     result
 }
 
+/// Pack the node key components into the 32-byte format used by Mega for upload.
+///
+/// This essentially obfuscates the file key and nonce using the calculated MAC.
+///
+/// # Arguments
+/// * `file_key` - Randomly generated 16-byte file key
+/// * `nonce` - Randomly generated 8-byte nonce
+/// * `meta_mac` - 16-byte MAC calculated from file chunks
+///
+/// # Returns
+/// 32-byte packed node key
+pub fn pack_node_key(file_key: &[u8; 16], nonce: &[u8; 8], meta_mac: &[u8; 16]) -> [u8; 32] {
+    let mut node_key = [0u8; 32];
+
+    // Helper to convert u8 slice to u32 array (native endian is fine for XOR if consistent)
+    // Mega uses 32-bit word operations.
+    // To match strict C logic, we can just iterate 4 bytes at a time.
+
+    // Logic:
+    // 0-4:   fk[0..4] ^ n[0..4]
+    // 4-8:   fk[4..8] ^ n[4..8]
+    // 8-12:  fk[8..12] ^ mm[0..4] ^ mm[4..8]
+    // 12-16: fk[12..16] ^ mm[8..12] ^ mm[12..16]
+    // 16-20: n[0..4]
+    // 20-24: n[4..8]
+    // 24-28: mm[0..4] ^ mm[4..8]
+    // 28-32: mm[8..12] ^ mm[12..16]
+
+    for i in 0..4 {
+        node_key[i] = file_key[i] ^ nonce[i];
+        node_key[4 + i] = file_key[4 + i] ^ nonce[4 + i];
+        node_key[8 + i] = file_key[8 + i] ^ meta_mac[i] ^ meta_mac[4 + i];
+        node_key[12 + i] = file_key[12 + i] ^ meta_mac[8 + i] ^ meta_mac[12 + i];
+        node_key[16 + i] = nonce[i];
+        node_key[20 + i] = nonce[4 + i];
+        node_key[24 + i] = meta_mac[i] ^ meta_mac[4 + i];
+        node_key[28 + i] = meta_mac[8 + i] ^ meta_mac[12 + i];
+    }
+
+    node_key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
