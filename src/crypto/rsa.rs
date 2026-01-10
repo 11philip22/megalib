@@ -113,7 +113,7 @@ fn append_mpi(buf: &mut Vec<u8>, n: &BigUint) {
 ///
 /// This ensures gcd(3, p-1) = 1, which is required for e=3.
 fn generate_prime_for_e3(rng: &mut impl Rng, bits: usize) -> Result<BigUint, String> {
-    for _ in 0..1000 {
+    for _ in 0..10000 {
         // Generate random odd number of specified bit length
         let mut bytes = vec![0u8; bits / 8];
         rng.fill(&mut bytes[..]);
@@ -142,7 +142,7 @@ fn generate_prime_for_e3(rng: &mut impl Rng, bits: usize) -> Result<BigUint, Str
         }
     }
 
-    Err("Failed to generate prime after 1000 attempts".to_string())
+    Err("Failed to generate prime after 10000 attempts".to_string())
 }
 
 /// Simple Miller-Rabin primality test.
