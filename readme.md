@@ -34,7 +34,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mega-rs = "0.1.0"
+megalib = "0.1.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
