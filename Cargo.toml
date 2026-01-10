@@ -33,6 +33,7 @@ base64 = "0.22"
 
 # Error handling
 thiserror = "1"
+image = "0.25.9"
 
 [dev-dependencies]
 tokio-test = "0.4"

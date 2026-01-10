@@ -39,6 +39,8 @@ pub struct Session {
     resume_enabled: bool,
     /// Progress callback for transfer progress
     progress_callback: Option<crate::progress::ProgressCallback>,
+    /// Whether to generate previews during uploads
+    previews_enabled: bool,
 }
 
 impl Session {
@@ -177,6 +179,7 @@ impl Session {
             share_keys: HashMap::new(),
             resume_enabled: false,
             progress_callback: None,
+            previews_enabled: false,
         })
     }
 
@@ -263,6 +266,30 @@ impl Session {
         } else {
             true // Continue if no callback
         }
+    }
+
+    /// Enable or disable preview generation during uploads.
+    ///
+    /// When enabled, thumbnails will be generated for supported image and video
+    /// files and uploaded alongside the file.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.enable_previews(true);
+    /// // Now uploads will generate and attach thumbnails
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn enable_previews(&mut self, enabled: bool) {
+        self.previews_enabled = enabled;
+    }
+
+    /// Check if preview generation is enabled.
+    pub fn previews_enabled(&self) -> bool {
+        self.previews_enabled
     }
 
     /// Save session to a file for later restoration.
@@ -405,6 +432,7 @@ impl Session {
             share_keys: HashMap::new(),
             resume_enabled: false,
             progress_callback: None,
+            previews_enabled: false,
         }))
     }
 }

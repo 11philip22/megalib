@@ -857,6 +857,88 @@ impl Session {
         Ok(())
     }
 
+    /// Upload a node attribute (thumbnail, preview) to MEGA's attribute storage.
+    ///
+    /// This is used internally when `enable_previews(true)` is set, but can also
+    /// be called directly for custom attributes.
+    ///
+    /// # Arguments
+    /// * `data` - Raw attribute data (e.g., JPEG thumbnail bytes)
+    /// * `attr_type` - Attribute type: "0" = thumbnail (128x128), "1" = preview  
+    /// * `node_key` - The 16-byte file key used to encrypt the attribute
+    ///
+    /// # Returns
+    /// Handle string like "0*ABC123" that can be added to file's `fa` field.
+    pub async fn upload_node_attribute(
+        &mut self,
+        data: &[u8],
+        attr_type: &str,
+        node_key: &[u8; 16],
+    ) -> Result<String> {
+        // Pad data to multiple of 16 bytes
+        let pad_len = if data.len() % 16 == 0 {
+            0
+        } else {
+            16 - (data.len() % 16)
+        };
+        let mut padded = data.to_vec();
+        padded.extend(std::iter::repeat(0u8).take(pad_len));
+
+        // Get upload URL via a:ufa API
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "ufa",
+                "s": padded.len(),
+                "ssl": 0
+            }))
+            .await?;
+
+        let upload_url = response
+            .get("p")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Failed to get attribute upload URL".to_string()))?;
+
+        // Encrypt data with AES-CBC using node key
+        let encrypted = aes128_cbc_encrypt(&padded, node_key);
+
+        // Upload encrypted data
+        let client = reqwest::Client::new();
+        let upload_response = client
+            .post(upload_url)
+            .header("Content-Type", "application/octet-stream")
+            .body(encrypted)
+            .send()
+            .await
+            .map_err(MegaError::RequestError)?;
+
+        if !upload_response.status().is_success() {
+            return Err(MegaError::Custom(format!(
+                "Attribute upload failed: {}",
+                upload_response.status()
+            )));
+        }
+
+        // Get handle from response (should be 8 bytes raw)
+        let handle_bytes = upload_response
+            .bytes()
+            .await
+            .map_err(MegaError::RequestError)?;
+
+        if handle_bytes.len() != 8 {
+            return Err(MegaError::Custom(format!(
+                "Invalid attribute handle length: {}",
+                handle_bytes.len()
+            )));
+        }
+
+        // Base64 encode the handle
+        let handle_b64 = base64url_encode(&handle_bytes);
+
+        // Return in format "type*handle"
+        Ok(format!("{}*{}", attr_type, handle_b64))
+    }
+
     /// Upload a file to a directory.
     ///
     /// # Arguments
@@ -1035,18 +1117,48 @@ impl Session {
             crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
         let key_b64 = base64url_encode(&encrypted_node_key);
 
-        // a:p
+        // Generate preview if enabled
+        let file_attr = if self.previews_enabled() {
+            if let Some(thumbnail_result) = crate::preview::generate_thumbnail(&path) {
+                match thumbnail_result {
+                    Ok(thumbnail_data) => {
+                        // Upload thumbnail as node attribute type "0"
+                        match self
+                            .upload_node_attribute(&thumbnail_data, "0", &file_key)
+                            .await
+                        {
+                            Ok(handle) => Some(handle),
+                            Err(_) => None, // Silently skip thumbnail on error
+                        }
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // a:p - Create file node
+        let mut node_data = json!({
+            "h": upload_handle,
+            "t": 0, // File
+            "a": attrs_b64,
+            "k": key_b64
+        });
+
+        // Add file attributes (thumbnail) if present
+        if let Some(fa) = &file_attr {
+            node_data["fa"] = json!(fa);
+        }
+
         let response = self
             .api_mut()
             .request(json!({
                 "a": "p",
                 "t": parent_handle,
-                "n": [{
-                    "h": upload_handle,
-                    "t": 0, // File
-                    "a": attrs_b64,
-                    "k": key_b64
-                }]
+                "n": [node_data]
             }))
             .await?;
 

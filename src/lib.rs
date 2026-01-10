@@ -32,6 +32,7 @@ pub mod crypto;
 pub mod error;
 pub mod fs;
 pub mod http;
+pub mod preview;
 pub mod progress;
 pub mod public;
 pub mod session;
