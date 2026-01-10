@@ -117,7 +117,7 @@ impl Session {
     pub async fn quota(&mut self) -> Result<Quota> {
         let response = self
             .api_mut()
-            .request(json!({"a": "uq", "xfer": 1}))
+            .request(json!({"a": "uq", "xfer": 1, "strg": 1}))
             .await?;
 
         let total = response.get("mstrg").and_then(|v| v.as_u64()).unwrap_or(0);
