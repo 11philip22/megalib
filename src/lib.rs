@@ -32,12 +32,14 @@ pub mod crypto;
 pub mod error;
 pub mod fs;
 pub mod http;
+pub mod progress;
 pub mod public;
 pub mod session;
 
 // Re-export commonly used types
 pub use error::{MegaError, Result};
 pub use fs::{Node, NodeType, Quota};
+pub use progress::{make_progress_bar, ProgressCallback, TransferProgress};
 pub use public::{
     download_public_file, get_public_file_info, open_folder, parse_folder_link, parse_mega_link,
     PublicFile, PublicFolder,

@@ -15,7 +15,6 @@ use crate::fs::Node;
 /// MEGA user session.
 ///
 /// This holds all authentication state needed for API requests.
-#[derive(Debug)]
 pub struct Session {
     /// API client for making requests
     pub(crate) api: ApiClient,
@@ -38,6 +37,8 @@ pub struct Session {
     pub(crate) share_keys: HashMap<String, [u8; 16]>,
     /// Whether resume is enabled for interrupted transfers
     resume_enabled: bool,
+    /// Progress callback for transfer progress
+    progress_callback: Option<crate::progress::ProgressCallback>,
 }
 
 impl Session {
@@ -175,6 +176,7 @@ impl Session {
             nodes: Vec::new(),
             share_keys: HashMap::new(),
             resume_enabled: false,
+            progress_callback: None,
         })
     }
 
@@ -221,6 +223,46 @@ impl Session {
     /// Check if resume is enabled for transfers.
     pub fn is_resume_enabled(&self) -> bool {
         self.resume_enabled
+    }
+
+    /// Set a progress callback for upload/download status.
+    ///
+    /// The callback will be called periodically during file transfers with
+    /// progress information. Return `false` from the callback to cancel the transfer.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    ///
+    /// // Use built-in progress bar
+    /// session.watch_status(megalib::make_progress_bar());
+    ///
+    /// // Or custom callback
+    /// session.watch_status(Box::new(|progress| {
+    ///     println!("{}% complete", progress.percent() as u32);
+    ///     true // continue transfer
+    /// }));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn watch_status(&mut self, callback: crate::progress::ProgressCallback) {
+        self.progress_callback = Some(callback);
+    }
+
+    /// Clear the progress callback.
+    pub fn clear_status(&mut self) {
+        self.progress_callback = None;
+    }
+
+    /// Call the progress callback if set.
+    pub(crate) fn report_progress(&mut self, progress: &crate::progress::TransferProgress) -> bool {
+        if let Some(ref mut callback) = self.progress_callback {
+            callback(progress)
+        } else {
+            true // Continue if no callback
+        }
     }
 
     /// Save session to a file for later restoration.
@@ -362,6 +404,7 @@ impl Session {
             nodes: Vec::new(),
             share_keys: HashMap::new(),
             resume_enabled: false,
+            progress_callback: None,
         }))
     }
 }

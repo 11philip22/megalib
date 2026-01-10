@@ -749,6 +749,7 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Failed to open temp file: {}", e)))?;
 
         let mut writer = BufWriter::new(file);
+        let filename = node.name.clone();
 
         // Download and decrypt
         let mut current_offset = resume_offset;
@@ -762,6 +763,13 @@ impl Session {
                 .write_all(&decrypted)
                 .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
             current_offset += chunk.len() as u64;
+
+            // Report progress
+            let progress =
+                crate::progress::TransferProgress::new(current_offset, node.size, &filename);
+            if !self.report_progress(&progress) {
+                return Err(MegaError::Custom("Download cancelled by user".to_string()));
+            }
         }
 
         // Flush and close
@@ -1129,6 +1137,12 @@ impl Session {
 
             offset += chunk_size;
             chunk_index += 1;
+
+            // Report progress
+            let progress = crate::progress::TransferProgress::new(offset, file_size, &file_name);
+            if !self.report_progress(&progress) {
+                return Err(MegaError::Custom("Upload cancelled by user".to_string()));
+            }
         }
 
         if upload_handle.is_empty() {
