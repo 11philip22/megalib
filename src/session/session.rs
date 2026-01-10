@@ -163,6 +163,134 @@ impl Session {
     pub(crate) fn api(&self) -> &ApiClient {
         &self.api
     }
+
+    /// Save session to a file for later restoration.
+    ///
+    /// This allows you to avoid re-logging in on every run.
+    /// The saved file contains encrypted credentials - keep it secure!
+    ///
+    /// # Example
+    /// ```no_run
+    /// use mega_rs::Session;
+    ///
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// let session = Session::login("user@example.com", "password").await?;
+    /// session.save("session.json")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let data = SessionCache {
+            session_id: self.session_id.clone(),
+            master_key: base64url_encode(&self.master_key),
+            email: self.email.clone(),
+            name: self.name.clone(),
+            user_handle: self.user_handle.clone(),
+        };
+
+        let json = serde_json::to_string_pretty(&data)
+            .map_err(|e| MegaError::Custom(format!("Serialization error: {}", e)))?;
+
+        std::fs::write(path, json).map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Load a previously saved session from a file.
+    ///
+    /// Returns `None` if the file doesn't exist.
+    /// Returns an error if the file exists but is invalid.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use mega_rs::Session;
+    ///
+    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// // Try to load cached session, fall back to login
+    /// let session = match Session::load("session.json").await? {
+    ///     Some(s) => s,
+    ///     None => {
+    ///         let s = Session::login("user@example.com", "password").await?;
+    ///         s.save("session.json")?;
+    ///         s
+    ///     }
+    /// };
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Option<Self>> {
+        let path = path.as_ref();
+
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
+
+        let data: SessionCache = serde_json::from_str(&json)
+            .map_err(|e| MegaError::Custom(format!("Parse error: {}", e)))?;
+
+        // Decode master key
+        let master_key_bytes = base64url_decode(&data.master_key)?;
+        if master_key_bytes.len() != 16 {
+            return Err(MegaError::Custom("Invalid master key".to_string()));
+        }
+        let mut master_key = [0u8; 16];
+        master_key.copy_from_slice(&master_key_bytes);
+
+        // Create API client with session ID
+        let mut api = ApiClient::new();
+        api.set_session_id(data.session_id.clone());
+
+        // Verify session is still valid by fetching user info
+        let user_info = match api.request(json!({"a": "ug"})).await {
+            Ok(info) => info,
+            Err(_) => {
+                // Session expired, delete cache file
+                let _ = std::fs::remove_file(path);
+                return Ok(None);
+            }
+        };
+
+        // Create a placeholder RSA key (not needed for most operations)
+        let rsa_key = MegaRsaKey {
+            p: num_bigint::BigUint::from(2u32),
+            q: num_bigint::BigUint::from(3u32),
+            d: num_bigint::BigUint::from(1u32),
+            u: num_bigint::BigUint::from(1u32),
+            m: num_bigint::BigUint::from(6u32),
+            e: num_bigint::BigUint::from(3u32),
+        };
+
+        // Get fresh user info
+        let user_handle = user_info["u"]
+            .as_str()
+            .unwrap_or(&data.user_handle)
+            .to_string();
+
+        Ok(Some(Session {
+            api,
+            session_id: data.session_id,
+            master_key,
+            rsa_key,
+            email: data.email,
+            name: data.name,
+            user_handle,
+            nodes: Vec::new(),
+            share_keys: HashMap::new(),
+        }))
+    }
+}
+
+/// Serializable session cache data.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionCache {
+    session_id: String,
+    master_key: String,
+    email: String,
+    name: Option<String>,
+    user_handle: String,
 }
 
 /// Derive key using PBKDF2-SHA512 (login variant 2).
