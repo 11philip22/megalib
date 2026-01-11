@@ -180,4 +180,30 @@ mod tests {
         assert_eq!(state.nonce, restored.nonce);
         assert_eq!(state.file_size, restored.file_size);
     }
+
+    #[test]
+    fn test_add_chunk_mac() {
+        let mut state = UploadState::new(
+            "url".to_string(),
+            [0u8; 16],
+            [0u8; 8],
+            1000,
+            "file".to_string(),
+            "handle".to_string(),
+            "hash".to_string(),
+        );
+
+        assert_eq!(state.offset, 0);
+        assert!(state.chunk_macs.is_empty());
+
+        state.add_chunk_mac([1u8; 16], 100);
+        assert_eq!(state.offset, 100);
+        assert_eq!(state.chunk_macs.len(), 1);
+        assert_eq!(state.chunk_macs[0], [1u8; 16]);
+
+        state.add_chunk_mac([2u8; 16], 200);
+        assert_eq!(state.offset, 300);
+        assert_eq!(state.chunk_macs.len(), 2);
+        assert_eq!(state.chunk_macs[1], [2u8; 16]);
+    }
 }
