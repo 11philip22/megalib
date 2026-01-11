@@ -281,8 +281,91 @@ mod tests {
 
     #[test]
     fn test_error_code_conversion() {
+        // Test specific known codes
+        assert_eq!(ApiErrorCode::from(-1), ApiErrorCode::Internal);
+        assert_eq!(ApiErrorCode::from(-2), ApiErrorCode::Args);
         assert_eq!(ApiErrorCode::from(-3), ApiErrorCode::Again);
+        assert_eq!(ApiErrorCode::from(-4), ApiErrorCode::RateLimit);
+        assert_eq!(ApiErrorCode::from(-5), ApiErrorCode::Failed);
+        assert_eq!(ApiErrorCode::from(-6), ApiErrorCode::TooManyIps);
+        assert_eq!(ApiErrorCode::from(-7), ApiErrorCode::AccessDenied);
+        assert_eq!(ApiErrorCode::from(-8), ApiErrorCode::Exist);
         assert_eq!(ApiErrorCode::from(-9), ApiErrorCode::NotExist);
+        assert_eq!(ApiErrorCode::from(-10), ApiErrorCode::Circular);
+        assert_eq!(ApiErrorCode::from(-11), ApiErrorCode::AccessViolation);
+        assert_eq!(ApiErrorCode::from(-12), ApiErrorCode::AppKey);
+        assert_eq!(ApiErrorCode::from(-13), ApiErrorCode::Expired);
+        assert_eq!(ApiErrorCode::from(-14), ApiErrorCode::NotConfirmed);
+        assert_eq!(ApiErrorCode::from(-15), ApiErrorCode::Blocked);
+        assert_eq!(ApiErrorCode::from(-16), ApiErrorCode::OverQuota);
+        assert_eq!(ApiErrorCode::from(-17), ApiErrorCode::TempUnavail);
+        assert_eq!(ApiErrorCode::from(-18), ApiErrorCode::TooManyConnections);
+
+        // Test unknown code
         assert_eq!(ApiErrorCode::from(-999), ApiErrorCode::Unknown);
+    }
+
+    #[test]
+    fn test_error_code_descriptions() {
+        assert_eq!(ApiErrorCode::Internal.description(), "Internal error");
+        assert_eq!(ApiErrorCode::Args.description(), "Invalid arguments");
+        assert_eq!(ApiErrorCode::Again.description(), "Try again");
+        assert_eq!(ApiErrorCode::RateLimit.description(), "Rate limit exceeded");
+        assert_eq!(ApiErrorCode::Failed.description(), "Upload failed");
+        assert_eq!(ApiErrorCode::TooManyIps.description(), "Too many IPs");
+        assert_eq!(ApiErrorCode::AccessDenied.description(), "Access denied");
+        assert_eq!(ApiErrorCode::Exist.description(), "Resource already exists");
+        assert_eq!(
+            ApiErrorCode::NotExist.description(),
+            "Resource does not exist"
+        );
+        assert_eq!(ApiErrorCode::Circular.description(), "Circular linking");
+        assert_eq!(
+            ApiErrorCode::AccessViolation.description(),
+            "Access violation"
+        );
+        assert_eq!(
+            ApiErrorCode::AppKey.description(),
+            "Application key required"
+        );
+        assert_eq!(ApiErrorCode::Expired.description(), "Session expired");
+        assert_eq!(ApiErrorCode::NotConfirmed.description(), "Not confirmed");
+        assert_eq!(ApiErrorCode::Blocked.description(), "Resource blocked");
+        assert_eq!(ApiErrorCode::OverQuota.description(), "Over quota");
+        assert_eq!(
+            ApiErrorCode::TempUnavail.description(),
+            "Temporarily unavailable"
+        );
+        assert_eq!(
+            ApiErrorCode::TooManyConnections.description(),
+            "Too many connections"
+        );
+        assert_eq!(ApiErrorCode::Unknown.description(), "Unknown error");
+    }
+
+    #[test]
+    fn test_client_creation() {
+        let client = ApiClient::new();
+        assert!(client.session_id.is_none());
+    }
+
+    #[test]
+    fn test_proxy_creation() {
+        let client = ApiClient::with_proxy("http://127.0.0.1:8080");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_session_management() {
+        let mut client = ApiClient::new();
+        assert!(client.session_id().is_none());
+
+        // Set session
+        client.set_session_id("test_session_id".to_string());
+        assert_eq!(client.session_id(), Some("test_session_id"));
+
+        // Clear session
+        client.clear_session_id();
+        assert!(client.session_id().is_none());
     }
 }
