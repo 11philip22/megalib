@@ -168,3 +168,103 @@ impl Quota {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_type_conversion() {
+        assert_eq!(NodeType::from_i64(0), Some(NodeType::File));
+        assert_eq!(NodeType::from_i64(1), Some(NodeType::Folder));
+        assert_eq!(NodeType::from_i64(2), Some(NodeType::Root));
+        assert_eq!(NodeType::from_i64(3), Some(NodeType::Inbox));
+        assert_eq!(NodeType::from_i64(4), Some(NodeType::Trash));
+        assert_eq!(NodeType::from_i64(8), Some(NodeType::Contact));
+        assert_eq!(NodeType::from_i64(9), Some(NodeType::Network));
+        assert_eq!(NodeType::from_i64(99), None);
+    }
+
+    #[test]
+    fn test_node_type_properties() {
+        assert!(!NodeType::File.is_container());
+        assert!(NodeType::Folder.is_container());
+        assert!(NodeType::Root.is_container());
+        assert!(NodeType::Inbox.is_container());
+        assert!(NodeType::Trash.is_container());
+        assert!(NodeType::Network.is_container());
+        assert!(!NodeType::Contact.is_container());
+    }
+
+    #[test]
+    fn test_node_helper_methods() {
+        let file_node = Node {
+            name: "test.txt".to_string(),
+            handle: "h1".to_string(),
+            parent_handle: None,
+            node_type: NodeType::File,
+            size: 100,
+            timestamp: 0,
+            key: vec![],
+            path: None,
+            link: None,
+        };
+
+        assert!(file_node.is_file());
+        assert!(!file_node.is_folder());
+        assert!(!file_node.is_contact());
+
+        let folder_node = Node {
+            name: "Folder".to_string(),
+            handle: "h2".to_string(),
+            parent_handle: None,
+            node_type: NodeType::Folder,
+            size: 0,
+            timestamp: 0,
+            key: vec![],
+            path: None,
+            link: None,
+        };
+
+        assert!(!folder_node.is_file());
+        assert!(folder_node.is_folder());
+    }
+
+    #[test]
+    fn test_node_link_generation() {
+        let node = Node {
+            name: "test.txt".to_string(),
+            handle: "h1".to_string(),
+            parent_handle: None,
+            node_type: NodeType::File,
+            size: 100,
+            timestamp: 0,
+            key: vec![1, 2, 3, 4], // Fake key
+            path: None,
+            link: Some("LINK_HANDLE".to_string()),
+        };
+
+        assert!(node.is_exported());
+
+        let link_no_key = node.get_link(false).unwrap();
+        assert_eq!(link_no_key, "https://mega.nz/file/LINK_HANDLE");
+
+        let link_with_key = node.get_link(true).unwrap();
+        assert!(link_with_key.contains("#"));
+        assert!(link_with_key.contains("LINK_HANDLE"));
+    }
+
+    #[test]
+    fn test_quota_calculations() {
+        let quota = Quota {
+            total: 1000,
+            used: 250,
+        };
+
+        assert_eq!(quota.free(), 750);
+        assert_eq!(quota.usage_percent(), 25.0);
+
+        let empty_quota = Quota { total: 0, used: 0 };
+        assert_eq!(empty_quota.usage_percent(), 0.0);
+    }
+}
