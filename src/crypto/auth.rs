@@ -112,3 +112,30 @@ fn rsa_decrypt_crt(
 
     &t * p + &xp
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_key_v2() {
+        let password = "password";
+        let salt = b"salt";
+        // PBKDF2-HMAC-SHA512 with 100,000 iterations
+        // We just check it runs and produces 32 bytes
+        let key = derive_key_v2(password, salt).expect("Derivation failed");
+        assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_key() {
+        let key_to_encrypt = [1u8; 16];
+        let password_key = [2u8; 16];
+
+        let encrypted = encrypt_key(&key_to_encrypt, &password_key);
+        let b64 = base64url_encode(&encrypted);
+
+        let decrypted = decrypt_key(&b64, &password_key).expect("Decryption failed");
+        assert_eq!(decrypted, key_to_encrypt);
+    }
+}

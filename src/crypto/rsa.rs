@@ -403,4 +403,18 @@ mod tests {
         // Verify: a * inv ≡ 1 (mod m)
         assert_eq!((&a * &inv) % &m, BigUint::one());
     }
+
+    #[test]
+    fn test_encrypt_decrypt() {
+        let key = MegaRsaKey::generate().expect("Failed to generate key");
+
+        let plaintext = b"Hello MEGA RSA!";
+        let ciphertext = key.encrypt(plaintext);
+
+        assert!(!ciphertext.is_empty());
+        assert_ne!(ciphertext, plaintext);
+
+        let decrypted = key.decrypt(&ciphertext).expect("Failed to decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
 }
