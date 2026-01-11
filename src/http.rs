@@ -60,3 +60,32 @@ impl Default for HttpClient {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_creation() {
+        let _client = HttpClient::new();
+        let _default = HttpClient::default();
+    }
+
+    #[test]
+    fn test_proxy_creation() {
+        let client = HttpClient::with_proxy("http://127.0.0.1:8080");
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_proxy_invalid() {
+        // reqwest::Proxy::all fails on empty or really bad URLs?
+        // Actually reqwest might be lenient on "all". Let's try something clearly invalid or empty.
+        // If "invalid-proxy" is accepted by reqwest but fails at connection time, this test might need adjustment.
+        // However, `reqwest::Proxy::all` usually parses the URI.
+
+        // "http" is not a valid proxy URL by itself (needs host)
+        let res = HttpClient::with_proxy(":::::::");
+        assert!(res.is_err());
+    }
+}
