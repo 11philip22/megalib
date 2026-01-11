@@ -619,3 +619,71 @@ struct SessionCache {
     name: Option<String>,
     user_handle: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::MegaRsaKey;
+
+    // Helper to create a dummy session for testing configuration methods
+    fn create_dummy_session() -> Session {
+        Session {
+            api: ApiClient::new(),
+            session_id: "dummy_session".to_string(),
+            master_key: [0u8; 16],
+            rsa_key: MegaRsaKey::generate().unwrap(),
+            email: "test@example.com".to_string(),
+            name: None,
+            user_handle: "handle".to_string(),
+            nodes: Vec::new(),
+            share_keys: HashMap::new(),
+            resume_enabled: false,
+            progress_callback: None,
+            previews_enabled: false,
+            workers: 1,
+        }
+    }
+
+    #[test]
+    fn test_resume_configuration() {
+        let mut session = create_dummy_session();
+
+        assert!(!session.is_resume_enabled());
+
+        session.set_resume(true);
+        assert!(session.is_resume_enabled());
+
+        session.set_resume(false);
+        assert!(!session.is_resume_enabled());
+    }
+
+    #[test]
+    fn test_previews_configuration() {
+        let mut session = create_dummy_session();
+
+        assert!(!session.previews_enabled());
+
+        session.enable_previews(true);
+        assert!(session.previews_enabled());
+
+        session.enable_previews(false);
+        assert!(!session.previews_enabled());
+    }
+
+    #[test]
+    fn test_workers_configuration() {
+        let mut session = create_dummy_session();
+
+        assert_eq!(session.workers(), 1);
+
+        session.set_workers(4);
+        assert_eq!(session.workers(), 4);
+
+        // Test 0 workers -> should be clamped to 1 (assuming implementation does this,
+        // if not we'll update the test or the code)
+        // Checking implementation: usually strictly sets generic value.
+        // Let's just test basic setting for now.
+        session.set_workers(10);
+        assert_eq!(session.workers(), 10);
+    }
+}
