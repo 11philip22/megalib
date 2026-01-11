@@ -1022,32 +1022,188 @@ impl Session {
         let upload_url = response
             .get("p")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?;
+            .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?
+            .to_string();
 
-        // 2. Prepare encryption
+        // Generate encryption keys
         let (file_key, nonce) = {
             let mut rng = rand::thread_rng();
             let mut file_key = [0u8; 16];
             let mut nonce = [0u8; 8];
             use rand::RngCore;
             rng.fill_bytes(&mut file_key);
-            rng.fill_bytes(&mut nonce); // Random nonce
+            rng.fill_bytes(&mut nonce);
             (file_key, nonce)
         };
+
+        // Create state (without file hash - not saving to disk)
+        let state = crate::fs::upload_state::UploadState::new(
+            upload_url,
+            file_key,
+            nonce,
+            file_size,
+            file_name,
+            parent_handle,
+            String::new(), // Empty hash - not resumable
+        );
+
+        // Delegate to internal upload with no state persistence
+        self.upload_internal(path, state, None).await
+    }
+
+    /// Upload a file with resume support.
+    ///
+    /// This method saves upload state to a temporary file after each chunk,
+    /// allowing uploads to be resumed if interrupted. The state file is
+    /// automatically deleted on successful completion.
+    ///
+    /// # Arguments
+    /// * `local_path` - Path to the local file to upload
+    /// * `remote_parent_path` - Path to the remote parent directory
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    ///
+    /// // This upload can be safely interrupted and resumed
+    /// let node = session.upload_resumable("largefile.zip", "/Root").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn upload_resumable<P: AsRef<std::path::Path>>(
+        &mut self,
+        local_path: P,
+        remote_parent_path: &str,
+    ) -> Result<Node> {
+        use crate::fs::upload_state::{calculate_file_hash, UploadState};
+
+        let path = local_path.as_ref();
+        let state_path = UploadState::state_file_path(path);
+
+        // Check for existing state file
+        if let Some(existing_state) = UploadState::load(&state_path)? {
+            // Verify the state is valid
+            let current_hash = calculate_file_hash(path)?;
+
+            if existing_state.file_hash == current_hash && existing_state.is_likely_valid() {
+                // Resume from existing state
+                return self
+                    .upload_internal(path, existing_state, Some(&state_path))
+                    .await;
+            } else {
+                // State is invalid (different file or expired), delete and start fresh
+                UploadState::delete(&state_path)?;
+            }
+        }
+
+        // Start fresh upload
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| MegaError::Custom("Invalid file path".to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| MegaError::Custom(format!("Failed to get metadata: {}", e)))?;
+        let file_size = metadata.len();
+
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent_handle = parent_node.handle.clone();
+
+        // Get upload URL
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "u",
+                "s": file_size,
+                "ssl": 0
+            }))
+            .await?;
+
+        let upload_url = response
+            .get("p")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?
+            .to_string();
+
+        // Generate encryption keys
+        let (file_key, nonce) = {
+            let mut rng = rand::thread_rng();
+            let mut file_key = [0u8; 16];
+            let mut nonce = [0u8; 8];
+            use rand::RngCore;
+            rng.fill_bytes(&mut file_key);
+            rng.fill_bytes(&mut nonce);
+            (file_key, nonce)
+        };
+
+        // Calculate file hash for verification
+        let file_hash = calculate_file_hash(path)?;
+
+        // Create initial state
+        let state = UploadState::new(
+            upload_url,
+            file_key,
+            nonce,
+            file_size,
+            file_name,
+            parent_handle,
+            file_hash,
+        );
+
+        // Save initial state
+        state.save(&state_path)?;
+
+        // Continue with stateful upload
+        self.upload_internal(path, state, Some(&state_path)).await
+    }
+
+    /// Internal method to upload with optional state tracking.
+    async fn upload_internal(
+        &mut self,
+        path: &std::path::Path,
+        mut state: crate::fs::upload_state::UploadState,
+        state_path: Option<&std::path::Path>,
+    ) -> Result<Node> {
+        use crate::fs::upload_state::UploadState;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+        let file_name = state.file_name.clone();
+        let file_key = state.file_key;
+        let nonce = state.nonce;
+        let file_size = state.file_size;
+        let parent_handle = state.parent_handle.clone();
+        let upload_url = state.upload_url.clone();
 
         let mut file = tokio::fs::File::open(path)
             .await
             .map_err(|e| MegaError::Custom(format!("Failed to open file: {}", e)))?;
-        let mut offset = 0u64;
-        let mut chunk_index = 0;
-        let mut chunk_macs = Vec::new();
-        let client = reqwest::Client::new();
 
+        // Calculate starting chunk index based on existing MACs
+        let mut chunk_index = state.chunk_macs.len();
+        let mut offset = state.offset;
+        let mut chunk_macs = state.chunk_macs.clone();
+
+        // Seek to resume position
+        if offset > 0 {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(|e| MegaError::Custom(format!("Failed to seek: {}", e)))?;
+        }
+
+        let client = reqwest::Client::new();
         let mut upload_handle = String::new();
 
-        // 3. Upload chunks
-        use tokio::io::AsyncReadExt;
-
+        // Upload remaining chunks
         while offset < file_size {
             let chunk_size = get_chunk_size(chunk_index, offset, file_size);
             let mut buffer = vec![0u8; chunk_size as usize];
@@ -1056,31 +1212,17 @@ impl Session {
                 .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
 
             // Calculate chunk MAC
-            // The IV for MAC is nonce (8 bytes) + 8 bytes of zeros?
-            // Megan uses specific IV for chunk MAC:
-            // "guchar mac_iv[16]; memcpy(mac_iv, iv, 8); memcpy(mac_iv + 8, iv, 8);"
-            // where iv is 8-byte nonce.
             let mut mac_iv = [0u8; 16];
             mac_iv[..8].copy_from_slice(&nonce);
             mac_iv[8..].copy_from_slice(&nonce);
 
             let chunk_mac = chunk_mac_calculate(&buffer, &file_key, &mac_iv);
-            chunk_macs.push(chunk_mac);
 
-            // Encrypt chunk (AES-CTR)
-            // IV for CTR: nonce (8 bytes) + counter (8 bytes BE)
-            // counter starts at offset / 16.
-            // Since we process chunk by chunk, we can pass offset to aes128_ctr_encrypt.
+            // Encrypt chunk
             let encrypted_chunk = aes128_ctr_encrypt(&buffer, &file_key, &nonce, offset);
 
             // Upload chunk
-            // URL: upload_url + "/" + offset + "?c=" + checksum
-            let checksum = upload_checksum(&encrypted_chunk); // Note: Mega calculates checksum on ENCRYPTED data?
-                                                              // "chksum = upload_checksum(buf, c->size); ... response = http_post(h, url, buf, ...)"
-                                                              // In megatools, buf is encrypted in place before upload_checksum!
-                                                              // "if (!encrypt_aes128_ctr(buf, buf, ...)) ... chksum = upload_checksum(buf, c->size);"
-                                                              // Yes, checksum of encrypted data.
-
+            let checksum = upload_checksum(&encrypted_chunk);
             let chunk_url = format!("{}/{}?c={}", upload_url, offset, checksum);
 
             let response = client
@@ -1091,6 +1233,12 @@ impl Session {
                 .map_err(MegaError::RequestError)?;
 
             if !response.status().is_success() {
+                // Save state before returning error
+                if let Some(sp) = state_path {
+                    state.chunk_macs = chunk_macs.clone();
+                    state.offset = offset;
+                    let _ = state.save(sp);
+                }
                 return Err(MegaError::Custom(format!(
                     "Chunk upload failed: {}",
                     response.status()
@@ -1099,26 +1247,21 @@ impl Session {
 
             let response_text = response.text().await.map_err(MegaError::RequestError)?;
 
-            // Check for completion handle (base64 string)
-            // Megatools checks len == 36 ? No, handle is shorter.
-            // "if (response->len < 10 && ... numeric error ...)"
-            // "if (response->len == 36) ... upload_handle = ..." probably 27 chars base64?
-            // Base64 of 27 chars?
-            // Let's just assume if it's not empty and not an error code, it's the handle.
-            // Or if it's the last chunk.
-            if chunk_index == 0 && file_size == 0 {
-                // Special case empty file?
-            }
-
-            // If response looks like a handle (alphanumeric), save it.
-            // In C++ SDK it returns handle on completion.
-            // For now, save the last non-empty response that isn't an error.
             if !response_text.starts_with("-") && !response_text.is_empty() {
                 upload_handle = response_text;
             }
 
+            // Update state
+            chunk_macs.push(chunk_mac);
             offset += chunk_size;
             chunk_index += 1;
+
+            // Save state after each chunk
+            if let Some(sp) = state_path {
+                state.chunk_macs = chunk_macs.clone();
+                state.offset = offset;
+                state.save(sp)?;
+            }
 
             // Report progress
             let progress = crate::progress::TransferProgress::new(offset, file_size, &file_name);
@@ -1133,13 +1276,10 @@ impl Session {
             ));
         }
 
-        // 4. Finalize upload
+        // Finalize upload (same as regular upload)
         let meta_mac = meta_mac_calculate(&chunk_macs, &file_key);
 
         // Encrypt attributes
-        // "attrs = encode_node_attrs(remote_name);" -> {"n": name}
-        // "attrs_enc = b64_aes128_cbc_encrypt_str(attrs, aes_key);"
-        // aes_key for attrs is file_key (randomly generated).
         let attrs = json!({ "n": file_name }).to_string();
         let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
         let pad_len = 16 - (attrs_bytes.len() % 16);
@@ -1148,26 +1288,23 @@ impl Session {
         let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &file_key);
         let attrs_b64 = base64url_encode(&encrypted_attrs);
 
-        // Pack node key
+        // Pack and encrypt node key
         let node_key = pack_node_key(&file_key, &nonce, &meta_mac);
-
-        // Encrypt node key with master key
         let encrypted_node_key =
             crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
         let key_b64 = base64url_encode(&encrypted_node_key);
 
-        // Generate preview if enabled
+        // Generate preview if enabled (same as regular upload)
         let file_attr = if self.previews_enabled() {
             if let Some(thumbnail_result) = crate::preview::generate_thumbnail(&path) {
                 match thumbnail_result {
                     Ok(thumbnail_data) => {
-                        // Upload thumbnail as node attribute type "0"
                         match self
                             .upload_node_attribute(&thumbnail_data, "0", &file_key)
                             .await
                         {
                             Ok(handle) => Some(handle),
-                            Err(_) => None, // Silently skip thumbnail on error
+                            Err(_) => None,
                         }
                     }
                     Err(_) => None,
@@ -1179,15 +1316,14 @@ impl Session {
             None
         };
 
-        // a:p - Create file node
+        // Create file node
         let mut node_data = json!({
             "h": upload_handle,
-            "t": 0, // File
+            "t": 0,
             "a": attrs_b64,
             "k": key_b64
         });
 
-        // Add file attributes (thumbnail) if present
         if let Some(fa) = &file_attr {
             node_data["fa"] = json!(fa);
         }
@@ -1214,36 +1350,31 @@ impl Session {
                 .parse_node(node_obj)
                 .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
 
-            // Add to local cache manually
-            // Calculate path
-            // parent_handle corresponds to a path
-            // We can find the parent node to get its path
-
-            // Note: node.parent_handle should be set by parse_node if available,
-            // but if not we can assume it matches what we sent.
-
+            // Find parent path
             let parent_path_str = {
-                // Find parent path
                 let parent_path = self
                     .nodes
                     .iter()
                     .find(|n| n.handle == parent_handle)
                     .and_then(|n| n.path.as_ref())
                     .map(|p| p.as_str())
-                    .unwrap_or(""); // If not found, empty (shouldn't happen if we uploaded)
+                    .unwrap_or("");
 
                 if !parent_path.is_empty() {
                     format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
                 } else {
-                    // Fallback, maybe parent is root but we didn't find it easily?
-                    // Or refresh required.
-                    format!("/{}", node.name) // Best effort
+                    format!("/{}", node.name)
                 }
             };
 
             self.nodes.push(node.clone());
             if let Some(last_node) = self.nodes.last_mut() {
                 last_node.path = Some(parent_path_str);
+            }
+
+            // Delete state file on success
+            if let Some(sp) = state_path {
+                UploadState::delete(sp)?;
             }
 
             return Ok(node);
