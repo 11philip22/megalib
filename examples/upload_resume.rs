@@ -73,6 +73,9 @@ async fn main() -> Result<()> {
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
+    // Enable parallel uploads (e.g., 4 concurrent chunks)
+    session.set_workers(4);
+
     // Check if remote parent exists
     if session.stat(&remote_parent).is_none() {
         eprintln!("Error: Remote directory not found: {}", remote_parent);

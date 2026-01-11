@@ -62,6 +62,9 @@ async fn main() -> Result<()> {
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
+    // Enable parallel downloads
+    session.set_workers(4);
+
     println!("Looking for: {}", remote_path);
     let node = session
         .stat(&remote_path)

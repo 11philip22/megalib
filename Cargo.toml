@@ -35,6 +35,7 @@ base64 = "0.22"
 thiserror = "1"
 image = "0.25.9"
 hex = "0.4.3"
+futures = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

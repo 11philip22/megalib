@@ -387,6 +387,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable resume support
     session.set_resume(true);
     
+    // Speed up large downloads with parallel workers
+    session.set_workers(4);
+    
     // download_to_file automatically resumes partial downloads
     if let Some(node) = session.stat("/Root/LargeVideo.mp4") {
         session.download_to_file(&node, "video.mp4").await?;
@@ -407,6 +410,9 @@ use megalib::Session;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = Session::login("user@example.com", "password").await?;
     session.refresh().await?;
+
+    // Speed up large uploads with parallel workers
+    session.set_workers(4);
     
     // upload_resumable saves state to .megalib_upload file
     // If interrupted, re-running will resume from last chunk
@@ -564,18 +570,40 @@ Clone the repository and run the included examples:
 # Register
 cargo run --example register -- --email test@example.com --password TestPass123 --name "Test User"
 
+# Verify Registration
+cargo run --example verify -- "https://mega.nz/#confirm..."
+
 # Login and list files
 cargo run --example ls -- --email test@example.com --password TestPass123 --path /Root/
+
+# Session Caching
+cargo run --example cached_session -- --email test@example.com --password TestPass123
+
+# File Operations
+cargo run --example mkdir -- --email test@example.com --password TestPass123 /Root/NewFolder
+cargo run --example mv -- --email test@example.com --password TestPass123 /Root/file.txt /Root/NewFolder/
+cargo run --example rename -- --email test@example.com --password TestPass123 /Root/file.txt "new_name.txt"
+cargo run --example rm -- --email test@example.com --password TestPass123 /Root/delete_me.txt
+cargo run --example stat -- --email test@example.com --password TestPass123 /Root/file.txt
 
 # Upload (standard)
 cargo run --example upload -- --email test@example.com --password TestPass123 local_file.txt /Root/
 
-# Upload with resume support
+# Upload with resume support & parallel workers
 cargo run --example upload_resume -- --email test@example.com --password TestPass123 large_file.zip /Root/
 
-# Download with resume support
+# Download (standard)
+cargo run --example download -- --email test@example.com --password TestPass123 /Root/file.zip ./file.zip
+
+# Download with resume support & parallel workers
 cargo run --example download_resume -- --email test@example.com --password TestPass123 /Root/file.zip ./file.zip
 
 # Export public link
 cargo run --example export -- --email test@example.com --password TestPass123 /Root/file.txt
+
+# Public File Download (no login)
+cargo run --example download_public -- "https://mega.nz/file/..."
+
+# Public Folder Browser (no login)
+cargo run --example folder -- "https://mega.nz/folder/..."
 ```

@@ -40,6 +40,8 @@ pub struct Session {
     progress_callback: Option<crate::progress::ProgressCallback>,
     /// Whether to generate previews during uploads
     previews_enabled: bool,
+    /// Number of concurrent transfer workers (default: 1 for sequential)
+    workers: usize,
 }
 
 impl Session {
@@ -179,6 +181,7 @@ impl Session {
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
+            workers: 1,
         })
     }
 
@@ -288,6 +291,32 @@ impl Session {
     /// Check if preview generation is enabled.
     pub fn previews_enabled(&self) -> bool {
         self.previews_enabled
+    }
+
+    /// Set the number of concurrent transfer workers.
+    ///
+    /// Higher values can speed up large file transfers by uploading/downloading
+    /// multiple chunks in parallel. Default is 1 (sequential transfers).
+    ///
+    /// # Arguments
+    /// * `workers` - Number of concurrent workers (1-16, clamped to range)
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.set_workers(4); // Use 4 parallel transfers
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_workers(&mut self, workers: usize) {
+        self.workers = workers.clamp(1, 16);
+    }
+
+    /// Get the current number of transfer workers.
+    pub fn workers(&self) -> usize {
+        self.workers
     }
 
     /// Save session to a file for later restoration.
@@ -431,6 +460,7 @@ impl Session {
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
+            workers: 1,
         }))
     }
 }

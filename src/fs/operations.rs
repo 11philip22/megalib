@@ -660,35 +660,6 @@ impl Session {
             .and_then(|v| v.as_str())
             .ok_or_else(|| MegaError::Custom("Failed to get download URL".to_string()))?;
 
-        // 2. Download content (with Range header if resuming)
-        let client = reqwest::Client::new();
-        let mut request = client.get(url);
-
-        if offset > 0 {
-            // Use HTTP Range header for resume
-            request = request.header("Range", format!("bytes={}-", offset));
-        }
-
-        let mut response = request.send().await.map_err(MegaError::RequestError)?;
-
-        // Check for valid response
-        // 200 OK = full content, 206 Partial Content = range request honored
-        let status = response.status();
-        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(MegaError::Custom(format!(
-                "Download failed with status: {}",
-                status
-            )));
-        }
-
-        // If we requested a range but got 200 (full content), server doesn't support Range
-        // We should abort and warn the user
-        if offset > 0 && status == reqwest::StatusCode::OK {
-            return Err(MegaError::Custom(
-                "Server does not support resume (Range header not honored)".to_string(),
-            ));
-        }
-
         // 3. Prepare decryption
         let k = &node.key;
         if k.len() != 32 {
@@ -709,20 +680,132 @@ impl Session {
             nonce[i] = k[i + 16];
         }
 
-        // 4. Stream and decrypt (starting from the correct offset for CTR mode)
-        let filename = node.name.clone();
-        let mut current_offset = offset;
-        while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
-            // Decrypt chunk - AES-CTR correctly handles offset for keystream
-            let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
-            writer
-                .write_all(&decrypted)
-                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
-            current_offset += chunk.len() as u64;
+        // If sequential (workers = 1), just stream the response body as before
+        if self.workers() <= 1 {
+            let client = reqwest::Client::new();
+            let mut request = client.get(url);
+            if offset > 0 {
+                request = request.header("Range", format!("bytes={}-", offset));
+            }
+            let mut response = request.send().await.map_err(MegaError::RequestError)?;
 
-            // Report progress (optional - only fires if callback is set)
+            let status = response.status();
+            if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+                return Err(MegaError::Custom(format!(
+                    "Download failed with status: {}",
+                    status
+                )));
+            }
+            if offset > 0 && status == reqwest::StatusCode::OK {
+                return Err(MegaError::Custom(
+                    "Server does not support resume".to_string(),
+                ));
+            }
+
+            let mut current_offset = offset;
+            let filename = node.name.clone();
+            while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+                let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
+                writer
+                    .write_all(&decrypted)
+                    .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+                current_offset += chunk.len() as u64;
+
+                let progress =
+                    crate::progress::TransferProgress::new(current_offset, node.size, &filename);
+                if !self.report_progress(&progress) {
+                    return Err(MegaError::Custom("Download cancelled by user".to_string()));
+                }
+            }
+            return Ok(());
+        }
+
+        // Parallel download path
+        use futures::stream::{self, StreamExt};
+
+        let file_size = node.size;
+        let chunk_size = 1024 * 1024; // 1MB chunks
+
+        // Create work items (chunks)
+        let mut chunks = Vec::new();
+        let mut iter_offset = offset;
+
+        while iter_offset < file_size {
+            let end = std::cmp::min(iter_offset + chunk_size, file_size);
+            chunks.push((iter_offset, end));
+            iter_offset = end;
+        }
+
+        let workers = self.workers();
+        let url = url.to_string(); // Take ownership for closure
+
+        let mut stream = stream::iter(chunks)
+            .map(|(start, end)| {
+                let chunk_url = url.clone();
+                let aes_key = aes_key;
+                let nonce = nonce;
+
+                async move {
+                    let client = reqwest::Client::new();
+                    let response = client
+                        .get(&chunk_url)
+                        // Range is inclusive end-byte
+                        .header("Range", format!("bytes={}-{}", start, end - 1))
+                        .send()
+                        .await
+                        .map_err(MegaError::RequestError)?;
+
+                    if !response.status().is_success()
+                        && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
+                    {
+                        return Err(MegaError::Custom(format!(
+                            "Chunk download failed: {}",
+                            response.status()
+                        )));
+                    }
+
+                    // Read whole chunk to memory
+                    let bytes = response.bytes().await.map_err(MegaError::RequestError)?;
+
+                    // Verify size
+                    if bytes.len() as u64 != (end - start) {
+                        // Some servers might return full content if Range is ignored, catch that
+                        if bytes.len() as u64 > (end - start) {
+                            return Err(MegaError::Custom(
+                                "Server returned more data than requested".to_string(),
+                            ));
+                        }
+                    }
+
+                    // Decrypt
+                    let decrypted = aes128_ctr_decrypt(&bytes, &aes_key, &nonce, start);
+
+                    Ok((decrypted, start, end))
+                }
+            })
+            .buffered(workers); // Ordered parallelism
+
+        let filename = node.name.clone();
+        let mut current_pos = offset;
+
+        while let Some(result) = stream.next().await {
+            let (data, start, end) = result?;
+
+            // Safety check for ordering
+            if start != current_pos {
+                return Err(MegaError::Custom(format!(
+                    "Chunk ordering mismatch: expected {}, got {}",
+                    current_pos, start
+                )));
+            }
+
+            writer
+                .write_all(&data)
+                .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+            current_pos = end;
+
             let progress =
-                crate::progress::TransferProgress::new(current_offset, node.size, &filename);
+                crate::progress::TransferProgress::new(current_pos, file_size, &filename);
             if !self.report_progress(&progress) {
                 return Err(MegaError::Custom("Download cancelled by user".to_string()));
             }
@@ -1257,7 +1340,7 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Failed to open file: {}", e)))?;
 
         // Calculate starting chunk index based on existing MACs
-        let mut chunk_index = state.chunk_macs.len();
+        let chunk_index = state.chunk_macs.len();
         let mut offset = state.offset;
         let mut chunk_macs = state.chunk_macs.clone();
 
@@ -1268,73 +1351,135 @@ impl Session {
                 .map_err(|e| MegaError::Custom(format!("Failed to seek: {}", e)))?;
         }
 
-        let client = reqwest::Client::new();
         let mut upload_handle = String::new();
 
-        // Upload remaining chunks
-        while offset < file_size {
-            let chunk_size = get_chunk_size(chunk_index, offset, file_size);
-            let mut buffer = vec![0u8; chunk_size as usize];
-            file.read_exact(&mut buffer)
-                .await
-                .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
+        // Create chunk list for parallel processing
+        let mut chunks = Vec::new();
+        let mut iter_offset = offset;
+        let mut iter_index = chunk_index;
 
-            // Calculate chunk MAC
-            let mut mac_iv = [0u8; 16];
-            mac_iv[..8].copy_from_slice(&nonce);
-            mac_iv[8..].copy_from_slice(&nonce);
+        while iter_offset < file_size {
+            let chunk_size = get_chunk_size(iter_index, iter_offset, file_size);
+            chunks.push((iter_index, iter_offset, chunk_size));
+            iter_offset += chunk_size;
+            iter_index += 1;
+        }
 
-            let chunk_mac = chunk_mac_calculate(&buffer, &file_key, &mac_iv);
+        use futures::stream::{self, StreamExt};
 
-            // Encrypt chunk
-            let encrypted_chunk = aes128_ctr_encrypt(&buffer, &file_key, &nonce, offset);
+        let path_buf = path.to_path_buf();
+        let workers = self.workers();
 
-            // Upload chunk
-            let checksum = upload_checksum(&encrypted_chunk);
-            let chunk_url = format!("{}/{}?c={}", upload_url, offset, checksum);
+        let mut stream = stream::iter(chunks)
+            .map(|(_index, chunk_offset, chunk_size)| {
+                let path = path_buf.clone();
+                let file_key = file_key;
+                let nonce = nonce;
+                let upload_url = upload_url.clone();
+                let file_name_clone = file_name.clone();
 
-            let response = client
-                .post(&chunk_url)
-                .body(encrypted_chunk)
-                .send()
-                .await
-                .map_err(MegaError::RequestError)?;
+                async move {
+                    // Open file for this chunk
+                    let mut file = tokio::fs::File::open(&path)
+                        .await
+                        .map_err(|e| MegaError::Custom(format!("Failed to open file: {}", e)))?;
 
-            if !response.status().is_success() {
-                // Save state before returning error
-                if let Some(sp) = state_path {
-                    state.chunk_macs = chunk_macs.clone();
-                    state.offset = offset;
-                    let _ = state.save(sp);
+                    file.seek(std::io::SeekFrom::Start(chunk_offset))
+                        .await
+                        .map_err(|e| MegaError::Custom(format!("Failed to seek: {}", e)))?;
+
+                    let mut buffer = vec![0u8; chunk_size as usize];
+                    file.read_exact(&mut buffer)
+                        .await
+                        .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
+
+                    // Calculate chunk MAC
+                    let mut mac_iv = [0u8; 16];
+                    mac_iv[..8].copy_from_slice(&nonce);
+                    mac_iv[8..].copy_from_slice(&nonce);
+
+                    let chunk_mac = chunk_mac_calculate(&buffer, &file_key, &mac_iv);
+
+                    // Encrypt chunk
+                    let encrypted_chunk =
+                        aes128_ctr_encrypt(&buffer, &file_key, &nonce, chunk_offset);
+
+                    // Upload chunk
+                    let checksum = upload_checksum(&encrypted_chunk);
+                    let chunk_url = format!("{}/{}?c={}", upload_url, chunk_offset, checksum);
+
+                    let client = reqwest::Client::new();
+                    let response = client
+                        .post(&chunk_url)
+                        .body(encrypted_chunk)
+                        .send()
+                        .await
+                        .map_err(MegaError::RequestError)?;
+
+                    if !response.status().is_success() {
+                        return Err(MegaError::Custom(format!(
+                            "Chunk upload failed: {}",
+                            response.status()
+                        )));
+                    }
+
+                    let response_text = response.text().await.map_err(MegaError::RequestError)?;
+                    let handle = if !response_text.starts_with("-") && !response_text.is_empty() {
+                        Some(response_text)
+                    } else {
+                        None
+                    };
+
+                    Ok((
+                        chunk_mac,
+                        chunk_offset + chunk_size,
+                        handle,
+                        file_name_clone,
+                    ))
                 }
-                return Err(MegaError::Custom(format!(
-                    "Chunk upload failed: {}",
-                    response.status()
-                )));
-            }
+            })
+            .buffered(workers); // Run up to 'workers' chunks in parallel, return in order
 
-            let response_text = response.text().await.map_err(MegaError::RequestError)?;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok((chunk_mac, new_offset, handle, fname)) => {
+                    if let Some(h) = handle {
+                        upload_handle = h;
+                    }
 
-            if !response_text.starts_with("-") && !response_text.is_empty() {
-                upload_handle = response_text;
-            }
+                    // Update state - because we used .buffered(), results come in original order
+                    chunk_macs.push(chunk_mac);
+                    offset = new_offset;
 
-            // Update state
-            chunk_macs.push(chunk_mac);
-            offset += chunk_size;
-            chunk_index += 1;
+                    // Save state
+                    if let Some(sp) = state_path {
+                        state.chunk_macs = chunk_macs.clone();
+                        state.offset = offset;
+                        state.save(sp)?;
+                    }
 
-            // Save state after each chunk
-            if let Some(sp) = state_path {
-                state.chunk_macs = chunk_macs.clone();
-                state.offset = offset;
-                state.save(sp)?;
-            }
-
-            // Report progress
-            let progress = crate::progress::TransferProgress::new(offset, file_size, &file_name);
-            if !self.report_progress(&progress) {
-                return Err(MegaError::Custom("Upload cancelled by user".to_string()));
+                    // Report progress
+                    let progress =
+                        crate::progress::TransferProgress::new(offset, file_size, &fname);
+                    if !self.report_progress(&progress) {
+                        // Save state before cancelling
+                        if let Some(sp) = state_path {
+                            state.chunk_macs = chunk_macs.clone();
+                            state.offset = offset;
+                            let _ = state.save(sp);
+                        }
+                        return Err(MegaError::Custom("Upload cancelled by user".to_string()));
+                    }
+                }
+                Err(e) => {
+                    // Save state before returning error
+                    if let Some(sp) = state_path {
+                        state.chunk_macs = chunk_macs.clone();
+                        state.offset = offset;
+                        let _ = state.save(sp);
+                    }
+                    return Err(e);
+                }
             }
         }
 
