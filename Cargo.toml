@@ -3,7 +3,7 @@ name = "megalib"
 version = "0.1.0"
 edition = "2021"
 description = "Rust client library for Mega.nz cloud storage"
-license = "MIT OR Apache-2.0"
+license = "GPL-2.0-or-later"
 
 [dependencies]
 # Async runtime

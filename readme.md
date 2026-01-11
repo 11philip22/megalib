@@ -10,6 +10,7 @@ This library provides a clean, asynchronous Rust interface for interacting with 
   - Full registration flow (account creation + email verification)
   - Login (supports both v1 and v2/PBKDF2 authentication)
   - Session management and caching
+  - Password Change (`change_password`)
 
 - **Filesystem**:
   - Fetch filesystem tree
@@ -24,6 +25,7 @@ This library provides a clean, asynchronous Rust interface for interacting with 
 - **File Transfer**:
   - File upload with optional resume support
   - File download with resume support
+  - Parallel transfer workers support
   - Progress callbacks for monitoring transfers
   - Text/Video/Image streaming support
   - Automatic thumbnail generation on upload
@@ -34,6 +36,11 @@ This library provides a clean, asynchronous Rust interface for interacting with 
   - Get node by handle
   - Check ancestor relationships
   - Check write permissions
+
+- **Sharing & Contacts**:
+  - Share folders with other users (`share_folder`)
+  - List contacts (`list_contacts`)
+  - Access incoming shared folders
 
 ## Installation
 
@@ -531,7 +538,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### Share a folder with another MEGA user.
+#### Share a folder
+ 
+Share a folder with another MEGA user.
  
 ```rust
 // Share folder with friend@example.com (Read-only)
@@ -543,7 +552,6 @@ Access levels:
 - `1`: Read/Write
 - `2`: Full Access
  
-
 
 ### 6. Public Links & Folders (No Login Required)
 
@@ -643,3 +651,11 @@ cargo run --example download_public -- "https://mega.nz/file/..."
 # Public Folder Browser (no login)
 cargo run --example folder -- "https://mega.nz/folder/..."
 ```
+
+## License
+
+This project is licensed under the GNU General Public License v2.0 (GPLv2).
+
+## Disclaimer
+
+This is an unofficial client library and is not affiliated with, associated with, authorized by, endorsed by, or in any way officially connected with Mega Limited.
