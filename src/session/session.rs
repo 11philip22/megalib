@@ -8,7 +8,10 @@ use serde_json::json;
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::{aes128_ecb_decrypt, make_password_key, make_username_hash, MegaRsaKey};
+use crate::crypto::{
+    aes128_ecb_decrypt, aes128_ecb_encrypt, make_password_key, make_random_key, make_username_hash,
+    MegaRsaKey,
+};
 use crate::error::{MegaError, Result};
 use crate::fs::Node;
 
@@ -319,6 +322,63 @@ impl Session {
         self.workers
     }
 
+    /// Change the current user's password.
+    ///
+    /// This updates the password on the server by re-encrypting the master key
+    /// with a new key derived from the new password and a fresh salt.
+    ///
+    /// # Arguments
+    /// * `new_password` - The new password to set
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "old_password").await?;
+    /// session.change_password("new_secure_password").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn change_password(&mut self, new_password: &str) -> Result<()> {
+        // 1. Generate new 16-byte random salt
+        let salt = make_random_key();
+        let salt_b64 = base64url_encode(&salt);
+
+        // 2. Derive new keys (V2)
+        let derived = derive_key_v2(new_password, &salt)?;
+        let password_key: [u8; 16] = derived[..16].try_into().unwrap();
+        let user_hash = base64url_encode(&derived[16..32]);
+
+        // 3. Re-encrypt the master key with the new password key
+        let encrypted_master_key = encrypt_key(&self.master_key, &password_key);
+        let k_b64 = base64url_encode(&encrypted_master_key);
+
+        // 4. Send 'up' request to update profile
+        let response = self
+            .api
+            .request(json!({
+                "a": "up",
+                "k": k_b64,
+                "uh": user_hash,
+                "s": salt_b64
+            }))
+            .await?;
+
+        // Check for error code if any
+        if let Some(err_code) = response.as_i64() {
+            if err_code < 0 {
+                // Fix: Fully qualified path to ApiErrorCode
+                let error_code = crate::api::client::ApiErrorCode::from(err_code);
+                return Err(MegaError::ApiError {
+                    code: err_code as i32,
+                    message: error_code.description().to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Save session to a file for later restoration.
     ///
     /// This allows you to avoid re-logging in on every run.
@@ -486,6 +546,11 @@ fn derive_key_v2(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
         .map_err(|_| MegaError::CryptoError("PBKDF2 failed".to_string()))?;
 
     Ok(key)
+}
+
+/// Encrypt a key to base64 using AES-128-ECB.
+fn encrypt_key(key_to_encrypt: &[u8; 16], password_key: &[u8; 16]) -> Vec<u8> {
+    aes128_ecb_encrypt(key_to_encrypt, password_key)
 }
 
 /// Decrypt a key from base64 using AES-128-ECB.

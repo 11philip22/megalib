@@ -110,6 +110,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Change Password
+ 
+```rust
+use megalib::Session;
+ 
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "old_password").await?;
+    
+    session.change_password("new_secure_password").await?;
+    println!("Password changed successfully!");
+    
+    Ok(())
+}
+```
+ 
 ### 2. Session Management
 
 #### Session Caching
@@ -572,6 +588,9 @@ cargo run --example register -- --email test@example.com --password TestPass123 
 
 # Verify Registration
 cargo run --example verify -- "https://mega.nz/#confirm..."
+
+# Change Password
+cargo run --example passwd -- --email test@example.com --old OldPass --new NewPass
 
 # Login and list files
 cargo run --example ls -- --email test@example.com --password TestPass123 --path /Root/
