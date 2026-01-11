@@ -215,6 +215,103 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Storage Quota
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    
+    let quota = session.quota().await?;
+    println!("Used: {} / {} bytes ({:.1}%)", 
+        quota.used, quota.total, quota.usage_percent());
+    println!("Free: {} bytes", quota.free());
+    
+    Ok(())
+}
+```
+
+#### Node Type Checks
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    for node in session.list("/Root", true)? {
+        if node.is_file() {
+            println!("File: {} ({} bytes)", node.name, node.size);
+        } else if node.is_folder() {
+            println!("Folder: {}/", node.name);
+        }
+        
+        // Check if already exported
+        if node.is_exported() {
+            if let Some(url) = node.get_link(true) {
+                println!("  Public link: {}", url);
+            }
+        }
+    }
+    
+    Ok(())
+}
+```
+
+#### Node Operations
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    // Get node by handle (useful for API integrations)
+    if let Some(node) = session.get_node_by_handle("ABC123xyz") {
+        println!("Found: {}", node.name);
+    }
+
+    // Check if a node is inside a folder
+    let file = session.stat("/Root/Documents/report.pdf").unwrap();
+    let folder = session.stat("/Root/Documents").unwrap();
+    if session.node_has_ancestor(file, folder) {
+        println!("File is inside Documents folder");
+    }
+
+    // Check if node is writable
+    if file.is_writable() {
+        println!("Can modify this file");
+    }
+
+    Ok(())
+}
+```
+
+#### List Contacts
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    // List users who have shared files with you
+    for contact in session.list_contacts() {
+        println!("Contact: {} ({})", contact.name, contact.handle);
+    }
+
+    Ok(())
+}
+```
+
 ### 4. File Transfer
 
 #### Upload
@@ -229,6 +326,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let node = session.upload("local_file.txt", "/Root/Project").await?;
     println!("Uploaded: {}", node.name);
+    
+    Ok(())
+}
+```
+
+#### Upload with Thumbnail Generation
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    // Enable automatic thumbnail generation for images/videos
+    session.enable_previews(true);
+
+    // Upload will now generate and attach thumbnails
+    let node = session.upload("photo.jpg", "/Root/Photos").await?;
+    println!("Uploaded with thumbnail: {}", node.name);
     
     Ok(())
 }
@@ -338,6 +456,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let url = session.export("/Root/Project/final.txt").await?;
     println!("Public Download Link: {}", url);
+    
+    Ok(())
+}
+```
+
+#### Export Multiple Files
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    // Export multiple files in one batch (more efficient)
+    let paths = &["/Root/doc1.pdf", "/Root/doc2.pdf", "/Root/image.png"];
+    let results = session.export_many(paths).await?;
+    
+    for (path, url) in results {
+        println!("{} -> {}", path, url);
+    }
+    
+    Ok(())
+}
+```
+
+#### Get Existing Export Link
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+
+    if let Some(node) = session.stat("/Root/shared_file.txt") {
+        // Get link if already exported
+        if let Some(url) = node.get_link(true) {
+            println!("Existing link: {}", url);
+        }
+        
+        // Get just the key (for manual link construction)
+        if let Some(key) = node.get_key() {
+            println!("Node key: {}", key);
+        }
+    }
     
     Ok(())
 }
