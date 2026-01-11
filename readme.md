@@ -22,11 +22,18 @@ This library provides a clean, asynchronous Rust interface for interacting with 
   - Access Public Folders (`open_folder`)
 
 - **File Transfer**:
-  - Secure file upload
-  - Secure file download
+  - File upload with optional resume support
+  - File download with resume support
+  - Progress callbacks for monitoring transfers
   - Text/Video/Image streaming support
+  - Automatic thumbnail generation on upload
   - Public link generation (`export`, `export_many`)
   - Proxy support (HTTP/HTTPS/SOCKS5)
+
+- **Node Operations**:
+  - Get node by handle
+  - Check ancestor relationships
+  - Check write permissions
 
 ## Installation
 
@@ -45,7 +52,7 @@ tokio = { version = "1", features = ["full"] }
 #### Registration
 
 ```rust
-use mega_rs::session::registration::{register, verify_registration};
+use megalib::session::registration::{register, verify_registration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Step 2: Complete registration with the link
     let link = "https://mega.nz/#confirm..."; // From email
-    let restored_state = mega_rs::session::registration::RegistrationState::deserialize(&state_str)?;
+    let restored_state = megalib::session::registration::RegistrationState::deserialize(&state_str)?;
     
     verify_registration(&restored_state, link).await?;
     println!("Account verified successfully!");
@@ -72,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### Login (Standard)
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -87,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 The library supports HTTP, HTTPS, and SOCKS5 proxies.
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -110,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Save your session to avoid logging in every time.
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 When loading a cached session, you can optionally specify a proxy to use for the restored session.
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -160,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### List Files and Get Info
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -185,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### File Management (mkdir, mv, rename, rm)
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -213,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### Upload
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -230,7 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### Download
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 use std::fs::File;
 
 #[tokio::main]
@@ -247,30 +254,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-#### Resume Support
+#### Download Resume Support
 
 Enable resumption of interrupted downloads.
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
     
     // Enable resume support
     session.set_resume(true);
     
-    // If "partial_download.tmp" exists and is smaller than the remote file,
-    // download() will attempt to resume from the current size.
+    // download_to_file automatically resumes partial downloads
     if let Some(node) = session.stat("/Root/LargeVideo.mp4") {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open("partial_download.tmp")?;
-            
-        session.download(node, &mut file).await?;
+        session.download_to_file(&node, "video.mp4").await?;
     }
+    
+    Ok(())
+}
+```
+
+#### Upload with Resume Support
+
+For large uploads that may be interrupted:
+
+```rust
+use megalib::Session;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+    
+    // upload_resumable saves state to .megalib_upload file
+    // If interrupted, re-running will resume from last chunk
+    let node = session.upload_resumable("large_file.zip", "/Root").await?;
+    println!("Uploaded: {}", node.name);
+    
+    Ok(())
+}
+```
+
+#### Progress Callbacks
+
+Monitor transfer progress:
+
+```rust
+use megalib::{Session, progress::TransferProgress};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut session = Session::login("user@example.com", "password").await?;
+    session.refresh().await?;
+    
+    // Set progress callback
+    session.watch_status(Box::new(|progress: &TransferProgress| {
+        println!("{:.1}% - {}", progress.percent(), progress.filename);
+        true // Return false to cancel
+    }));
+    
+    // Upload/download will now report progress
+    session.upload("file.txt", "/Root").await?;
     
     Ok(())
 }
@@ -281,7 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### Export Public Link
 
 ```rust
-use mega_rs::Session;
+use megalib::Session;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -302,7 +350,7 @@ You can interact with public MEGA links without logging in.
 #### Download a Public File
 
 ```rust
-use mega_rs::public::download_public_file;
+use megalib::public::download_public_file;
 use std::fs::File;
 
 #[tokio::main]
@@ -320,7 +368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #### Browse and Download from Public Folder
 
 ```rust
-use mega_rs::public::open_folder;
+use megalib::public::open_folder;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -353,9 +401,15 @@ cargo run --example register -- --email test@example.com --password TestPass123 
 # Login and list files
 cargo run --example ls -- --email test@example.com --password TestPass123 --path /Root/
 
-# Upload
-cargo run --example upload -- --email test@example.com --password TestPass123 --src ./Cargo.toml --dst /Root/
+# Upload (standard)
+cargo run --example upload -- --email test@example.com --password TestPass123 local_file.txt /Root/
 
-# Use with Proxy (set HTTPS_PROXY env var or modify example code)
-# Most examples use the standard Session::login, but you can modify them to use Session::login_with_proxy
+# Upload with resume support
+cargo run --example upload_resume -- --email test@example.com --password TestPass123 large_file.zip /Root/
+
+# Download with resume support
+cargo run --example download_resume -- --email test@example.com --password TestPass123 /Root/file.zip ./file.zip
+
+# Export public link
+cargo run --example export -- --email test@example.com --password TestPass123 /Root/file.txt
 ```
