@@ -72,6 +72,33 @@ impl MegaRsaKey {
         base64url_encode(&data)
     }
 
+    /// Decode public key from MEGA's MPI format (base64).
+    pub fn from_encoded_public_key(b64: &str) -> Result<Self, String> {
+        let data =
+            crate::base64::base64url_decode(b64).map_err(|_| "Invalid base64".to_string())?;
+
+        // Helper to read MPI locally since it's private in auth.rs/session.rs
+        // Re-implementing simplified read_mpi here or making it public in auth?
+        // Let's implement a private helper here since it's needed.
+
+        let mut pos = 0;
+        let m = read_mpi(&data, &mut pos).map_err(|e| e)?;
+        let e = read_mpi(&data, &mut pos).map_err(|e| e)?;
+
+        // For public key, we don't have p, q, d, u.
+        // We can fill them with zero or make them Option in struct?
+        // Struct defines them as BigUint, so we set them to 0.
+
+        Ok(Self {
+            m,
+            e,
+            p: BigUint::zero(),
+            q: BigUint::zero(),
+            d: BigUint::zero(),
+            u: BigUint::zero(),
+        })
+    }
+
     /// Encode private key encrypted with master key in MEGA's format.
     ///
     /// Format: MPI(p) + MPI(q) + MPI(d) + MPI(u), all AES-encrypted
@@ -123,6 +150,22 @@ impl MegaRsaKey {
 
         Some(result)
     }
+
+    /// Encrypt data using RSA public key.
+    ///
+    /// Used for encrypting share keys for other users.
+    /// c = m^e mod n
+    ///
+    /// # Arguments
+    /// * `plaintext` - Data to encrypt
+    ///
+    /// # Returns
+    /// Encrypted data as bytes
+    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
+        let m = BigUint::from_bytes_be(plaintext);
+        let c = mod_pow(&m, &self.e, &self.m);
+        c.to_bytes_be()
+    }
 }
 
 /// Append a number in MPI (Multi-Precision Integer) format.
@@ -140,6 +183,26 @@ fn append_mpi(buf: &mut Vec<u8>, n: &BigUint) {
 
     buf.extend_from_slice(&bit_len.to_be_bytes());
     buf.extend_from_slice(&bytes);
+}
+
+/// Read an MPI (Multi-Precision Integer) from a byte slice.
+pub fn read_mpi(data: &[u8], pos: &mut usize) -> Result<BigUint, String> {
+    if *pos + 2 > data.len() {
+        return Err("MPI truncated".to_string());
+    }
+
+    let bit_len = u16::from_be_bytes([data[*pos], data[*pos + 1]]) as usize;
+    let byte_len = (bit_len + 7) / 8;
+    *pos += 2;
+
+    if *pos + byte_len > data.len() {
+        return Err("MPI data truncated".to_string());
+    }
+
+    let bytes = &data[*pos..*pos + byte_len];
+    *pos += byte_len;
+
+    Ok(BigUint::from_bytes_be(bytes))
 }
 
 /// Generate a random prime p such that p ≡ 2 (mod 3).

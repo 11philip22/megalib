@@ -13,7 +13,7 @@ use crate::crypto::{
     make_password_key, make_random_key, make_username_hash, MegaRsaKey,
 };
 use crate::error::{MegaError, Result};
-use crate::fs::Node;
+use crate::fs::{Node, NodeType};
 
 /// MEGA user session.
 ///
@@ -322,6 +322,11 @@ impl Session {
         self.workers
     }
 
+    /// Get all nodes in the session cache.
+    pub fn nodes(&self) -> &[crate::fs::Node] {
+        &self.nodes
+    }
+
     /// Change the current user's password.
     ///
     /// This updates the password on the server by re-encrypting the master key
@@ -407,6 +412,86 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Serialization error: {}", e)))?;
 
         std::fs::write(path, json).map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Get a user's public key (for sharing).
+    pub async fn get_public_key(&mut self, email: &str) -> Result<MegaRsaKey> {
+        let response = self
+            .api
+            .request(json!({
+                "a": "uk",
+                "u": email
+            }))
+            .await?;
+
+        let pubk_b64 = response["pubk"]
+            .as_str()
+            .ok_or_else(|| MegaError::Custom("Public key not found for user".to_string()))?;
+
+        MegaRsaKey::from_encoded_public_key(pubk_b64)
+            .map_err(|e| MegaError::CryptoError(format!("Invalid public key: {}", e)))
+    }
+
+    /// Share a folder with another user.
+    ///
+    /// # Arguments
+    /// * `node_handle` - Handle of the folder to share
+    /// * `email` - Email of the user to share with
+    /// * `level` - Access level (0=Read-only, 1=Read/Write, 2=Full Access)
+    pub async fn share_folder(&mut self, node_handle: &str, email: &str, level: i32) -> Result<()> {
+        // 1. Find the node to get its key - clone it to release borrow
+        let node_key = {
+            let node = self
+                .nodes
+                .iter()
+                .find(|n| n.handle == node_handle)
+                .ok_or_else(|| MegaError::Custom("Node not found".to_string()))?;
+
+            if node.node_type != NodeType::Folder {
+                return Err(MegaError::Custom("Can only share folders".to_string()));
+            }
+
+            if node.key.is_empty() {
+                return Err(MegaError::Custom("Node key not available".to_string()));
+            }
+            node.key.clone()
+        };
+
+        // 2. Fetch recipient's public key
+        let pub_key = self.get_public_key(email).await?;
+
+        // 3. Encrypt the node key with recipient's public key
+        let encrypted_key = pub_key.encrypt(&node_key);
+        let key_b64 = base64url_encode(&encrypted_key);
+
+        // 4. Send share command ('s2')
+        // 'ok': Output Key (encrypted share key)
+        let response = self
+            .api
+            .request(json!({
+                "a": "s2",
+                "n": node_handle,
+                "s": [{
+                    "u": email,
+                    "l": level
+                }],
+                "ok": key_b64
+            }))
+            .await?;
+
+        // Check for error code
+        if let Some(err_code) = response.as_i64() {
+            if err_code < 0 {
+                // Fix: Fully qualified path to ApiErrorCode
+                let error_code = crate::api::client::ApiErrorCode::from(err_code);
+                return Err(MegaError::ApiError {
+                    code: err_code as i32,
+                    message: error_code.description().to_string(),
+                });
+            }
+        }
 
         Ok(())
     }

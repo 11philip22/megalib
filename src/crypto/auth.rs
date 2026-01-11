@@ -2,6 +2,8 @@
 
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::{aes128_ecb_decrypt, aes128_ecb_encrypt, MegaRsaKey};
+// Import read_mpi from rsa module
+use crate::crypto::rsa::read_mpi;
 use crate::error::{MegaError, Result};
 use num_bigint::BigUint;
 
@@ -44,10 +46,10 @@ pub fn decrypt_private_key(b64: &str, master_key: &[u8; 16]) -> Result<MegaRsaKe
     // Parse MPI format: p, q, d, u
     let mut pos = 0;
 
-    let p = read_mpi(&decrypted, &mut pos)?;
-    let q = read_mpi(&decrypted, &mut pos)?;
-    let d = read_mpi(&decrypted, &mut pos)?;
-    let u = read_mpi(&decrypted, &mut pos)?;
+    let p = read_mpi(&decrypted, &mut pos).map_err(MegaError::CryptoError)?;
+    let q = read_mpi(&decrypted, &mut pos).map_err(MegaError::CryptoError)?;
+    let d = read_mpi(&decrypted, &mut pos).map_err(MegaError::CryptoError)?;
+    let u = read_mpi(&decrypted, &mut pos).map_err(MegaError::CryptoError)?;
 
     // Compute m = p * q and e = 3 (MEGA always uses e=3)
     let m = &p * &q;
@@ -56,33 +58,13 @@ pub fn decrypt_private_key(b64: &str, master_key: &[u8; 16]) -> Result<MegaRsaKe
     Ok(MegaRsaKey { p, q, d, u, m, e })
 }
 
-/// Read an MPI (Multi-Precision Integer) from a byte slice.
-fn read_mpi(data: &[u8], pos: &mut usize) -> Result<num_bigint::BigUint> {
-    if *pos + 2 > data.len() {
-        return Err(MegaError::CryptoError("MPI truncated".to_string()));
-    }
-
-    let bit_len = u16::from_be_bytes([data[*pos], data[*pos + 1]]) as usize;
-    let byte_len = (bit_len + 7) / 8;
-    *pos += 2;
-
-    if *pos + byte_len > data.len() {
-        return Err(MegaError::CryptoError("MPI data truncated".to_string()));
-    }
-
-    let bytes = &data[*pos..*pos + byte_len];
-    *pos += byte_len;
-
-    Ok(BigUint::from_bytes_be(bytes))
-}
-
 /// Decrypt session ID using RSA.
 pub fn decrypt_session_id(csid_b64: &str, rsa_key: &MegaRsaKey) -> Result<String> {
     let data = base64url_decode(csid_b64)?;
 
     // Read MPI
     let mut pos = 0;
-    let ciphertext = read_mpi(&data, &mut pos)?;
+    let ciphertext = read_mpi(&data, &mut pos).map_err(MegaError::CryptoError)?;
 
     // RSA decrypt using CRT
     let plaintext = rsa_decrypt_crt(&ciphertext, &rsa_key.d, &rsa_key.p, &rsa_key.q, &rsa_key.u);
@@ -129,19 +111,4 @@ fn rsa_decrypt_crt(
     };
 
     &t * p + &xp
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_read_mpi() {
-        // MPI with 16 bits (2 bytes) of data: 0x1234
-        let data = vec![0x00, 0x10, 0x12, 0x34]; // 16 bits, then 0x1234
-        let mut pos = 0;
-        let result = read_mpi(&data, &mut pos).unwrap();
-        assert_eq!(result, num_bigint::BigUint::from(0x1234u32));
-        assert_eq!(pos, 4);
-    }
 }

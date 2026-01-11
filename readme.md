@@ -531,6 +531,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### Share a folder with another MEGA user.
+ 
+```rust
+// Share folder with friend@example.com (Read-only)
+session.share_folder("FOLDER_HANDLE", "friend@example.com", 0).await?;
+```
+ 
+Access levels:
+- `0`: Read-only
+- `1`: Read/Write
+- `2`: Full Access
+ 
+
+
 ### 6. Public Links & Folders (No Login Required)
 
 You can interact with public MEGA links without logging in.
@@ -619,6 +633,9 @@ cargo run --example download_resume -- --email test@example.com --password TestP
 
 # Export public link
 cargo run --example export -- --email test@example.com --password TestPass123 /Root/file.txt
+
+# Share a folder
+cargo run --example share -- --email test@example.com --password TestPass123 --folder /Root/Documents --recipient friend@example.com --level 0
 
 # Public File Download (no login)
 cargo run --example download_public -- "https://mega.nz/file/..."
