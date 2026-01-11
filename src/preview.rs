@@ -195,4 +195,15 @@ mod tests {
         assert!(!is_video("jpg"));
         assert!(!is_video("txt"));
     }
+    #[test]
+    fn test_generate_image_thumbnail_invalid_data() {
+        let garbage = [0u8; 100];
+        assert!(generate_image_thumbnail(&garbage).is_err());
+    }
+
+    #[test]
+    fn test_generate_thumbnail_unsupported() {
+        let path = Path::new("test.txt");
+        assert!(generate_thumbnail(path).is_none());
+    }
 }
