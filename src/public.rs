@@ -671,4 +671,19 @@ mod tests {
     fn test_parse_mega_link_invalid() {
         assert!(parse_mega_link("https://example.com/file").is_err());
     }
+
+    #[test]
+    fn test_parse_folder_link_new_format() {
+        let (handle, key) =
+            parse_folder_link("https://mega.nz/folder/XYZ789#folderkey123").unwrap();
+        assert_eq!(handle, "XYZ789");
+        assert_eq!(key, "folderkey123");
+    }
+
+    #[test]
+    fn test_parse_folder_link_legacy_format() {
+        let (handle, key) = parse_folder_link("https://mega.nz/#F!XYZ789!folderkey123").unwrap();
+        assert_eq!(handle, "XYZ789");
+        assert_eq!(key, "folderkey123");
+    }
 }
