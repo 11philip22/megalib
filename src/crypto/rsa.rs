@@ -90,6 +90,39 @@ impl MegaRsaKey {
         let encrypted = aes128_ecb_encrypt(&data, master_key);
         base64url_encode(&encrypted)
     }
+
+    /// Decrypt data using RSA private key.
+    ///
+    /// Used for decrypting share keys from other users.
+    /// The ciphertext is interpreted as a big-endian integer and
+    /// decrypted using m = c^d mod n.
+    ///
+    /// # Arguments
+    /// * `ciphertext` - Encrypted data (raw bytes, big-endian integer)
+    ///
+    /// # Returns
+    /// Decrypted data as bytes, or None if decryption fails.
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Option<Vec<u8>> {
+        if ciphertext.is_empty() {
+            return None;
+        }
+
+        // Interpret ciphertext as big-endian integer
+        let c = BigUint::from_bytes_be(ciphertext);
+
+        // RSA decryption: m = c^d mod n
+        let m = mod_pow(&c, &self.d, &self.m);
+
+        // Convert back to bytes
+        let result = m.to_bytes_be();
+
+        // Result should be at least 16 bytes for a share key
+        if result.is_empty() {
+            return None;
+        }
+
+        Some(result)
+    }
 }
 
 /// Append a number in MPI (Multi-Precision Integer) format.

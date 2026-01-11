@@ -317,19 +317,37 @@ impl Session {
     }
 
     /// Parse share keys from the "ok" array response.
+    ///
+    /// Share keys can be encrypted with:
+    /// - AES (master key) - for your own shares (key length <= 22 base64 chars)
+    /// - RSA (private key) - for shares from other users (key length > 22 base64 chars)
     fn parse_share_keys(&mut self, ok_array: &[Value]) {
         for ok in ok_array {
             if let (Some(h), Some(k)) = (
                 ok.get("h").and_then(|v| v.as_str()),
                 ok.get("k").and_then(|v| v.as_str()),
             ) {
-                // Decrypt share key with master key
-                if let Ok(encrypted) = base64url_decode(k) {
-                    let decrypted = aes128_ecb_decrypt(&encrypted, self.master_key());
-                    if decrypted.len() >= 16 {
-                        let mut key = [0u8; 16];
-                        key.copy_from_slice(&decrypted[..16]);
-                        self.share_keys.insert(h.to_string(), key);
+                // Determine if RSA or AES based on key length (megatools heuristic)
+                if k.len() > 22 {
+                    // RSA-encrypted share key (from another user)
+                    if let Ok(encrypted) = base64url_decode(k) {
+                        if let Some(decrypted) = self.rsa_key().decrypt(&encrypted) {
+                            if decrypted.len() >= 16 {
+                                let mut key = [0u8; 16];
+                                key.copy_from_slice(&decrypted[..16]);
+                                self.share_keys.insert(h.to_string(), key);
+                            }
+                        }
+                    }
+                } else {
+                    // AES-encrypted share key (your own share)
+                    if let Ok(encrypted) = base64url_decode(k) {
+                        let decrypted = aes128_ecb_decrypt(&encrypted, self.master_key());
+                        if decrypted.len() >= 16 {
+                            let mut key = [0u8; 16];
+                            key.copy_from_slice(&decrypted[..16]);
+                            self.share_keys.insert(h.to_string(), key);
+                        }
                     }
                 }
             }

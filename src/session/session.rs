@@ -23,7 +23,6 @@ pub struct Session {
     /// User's master key (decrypted)
     pub(crate) master_key: [u8; 16],
     /// User's RSA private key
-    #[allow(dead_code)]
     rsa_key: MegaRsaKey,
     /// User's email
     pub email: String,
@@ -191,6 +190,11 @@ impl Session {
     /// Get the master key (for internal use).
     pub(crate) fn master_key(&self) -> &[u8; 16] {
         &self.master_key
+    }
+
+    /// Get the RSA private key (for decrypting share keys from other users).
+    pub(crate) fn rsa_key(&self) -> &MegaRsaKey {
+        &self.rsa_key
     }
 
     /// Get mutable reference to the API client.
