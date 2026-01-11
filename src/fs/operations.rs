@@ -141,6 +141,74 @@ impl Session {
             .find(|n| n.path.as_deref() == Some(&normalized_path))
     }
 
+    /// Get a node by its handle.
+    ///
+    /// # Arguments
+    /// * `handle` - The node handle (e.g., "ABC123xyz")
+    ///
+    /// # Returns
+    /// Node reference if found
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// if let Some(node) = session.get_node_by_handle("ABC123") {
+    ///     println!("Found: {}", node.name);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_node_by_handle(&self, handle: &str) -> Option<&Node> {
+        self.nodes.iter().find(|n| n.handle == handle)
+    }
+
+    /// Check if a node has a specific ancestor.
+    ///
+    /// This walks up the parent chain to check if `ancestor` is in
+    /// the path from `node` to the root.
+    ///
+    /// # Arguments
+    /// * `node` - The node to check
+    /// * `ancestor` - The potential ancestor node
+    ///
+    /// # Returns
+    /// `true` if `ancestor` is in `node`'s parent chain
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let file = session.stat("/Root/Documents/file.txt").unwrap();
+    /// let folder = session.stat("/Root/Documents").unwrap();
+    /// assert!(session.node_has_ancestor(file, folder));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn node_has_ancestor(&self, node: &Node, ancestor: &Node) -> bool {
+        let mut current_handle = node.parent_handle.as_ref();
+
+        // Walk up the tree (max 100 levels to prevent infinite loops)
+        for _ in 0..100 {
+            match current_handle {
+                Some(handle) if handle == &ancestor.handle => return true,
+                Some(handle) => {
+                    if let Some(parent) = self.get_node_by_handle(handle) {
+                        current_handle = parent.parent_handle.as_ref();
+                    } else {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// Get user storage quota.
     pub async fn quota(&mut self) -> Result<Quota> {
         let response = self

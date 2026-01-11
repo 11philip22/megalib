@@ -125,6 +125,23 @@ impl Node {
     pub fn is_exported(&self) -> bool {
         self.link.is_some()
     }
+
+    /// Check if this node is writable.
+    ///
+    /// For your own nodes, this always returns true. Nodes from shares
+    /// may have restricted permissions, but the current implementation
+    /// assumes all cached nodes are writable.
+    ///
+    /// # Returns
+    /// `true` if the node can be modified
+    pub fn is_writable(&self) -> bool {
+        // For now, all user's own nodes are writable
+        // In the future, this could check share permissions
+        matches!(
+            self.node_type,
+            NodeType::File | NodeType::Folder | NodeType::Root | NodeType::Trash | NodeType::Inbox
+        )
+    }
 }
 
 /// User storage quota information.
