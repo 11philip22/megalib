@@ -1,4 +1,4 @@
-//! # mega-rs
+//! # megalib
 //!
 //! Rust client library for Mega.nz cloud storage.
 //!
@@ -12,9 +12,9 @@
 //! Registration is a two-step process:
 //!
 //! ```no_run
-//! use mega_rs::session::{register, verify_registration};
+//! use megalib::session::{register, verify_registration};
 //!
-//! # async fn example() -> mega_rs::error::Result<()> {
+//! # async fn example() -> megalib::error::Result<()> {
 //! // Step 1: Initiate registration (sends verification email)
 //! let state = register("user@example.com", "SecurePassword123", "John Doe").await?;
 //! println!("Check your email! State to save: {}", state.serialize());

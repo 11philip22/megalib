@@ -1,8 +1,8 @@
-//! Error types for the mega-rs library.
+//! Error types for the megalib library.
 
 use thiserror::Error;
 
-/// Main error type for mega-rs operations.
+/// Main error type for megalib operations.
 #[derive(Error, Debug)]
 pub enum MegaError {
     /// HTTP request failed with status code.
@@ -50,5 +50,5 @@ pub enum MegaError {
     Custom(String),
 }
 
-/// Result type alias for mega-rs operations.
+/// Result type alias for megalib operations.
 pub type Result<T> = std::result::Result<T, MegaError>;

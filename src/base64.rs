@@ -11,7 +11,7 @@ use base64::{engine::general_purpose, Engine};
 ///
 /// # Example
 /// ```
-/// use mega_rs::base64::base64url_encode;
+/// use megalib::base64::base64url_encode;
 /// let encoded = base64url_encode(b"hello");
 /// assert!(!encoded.contains('='));
 /// assert!(!encoded.contains('+'));
@@ -30,7 +30,7 @@ pub fn base64url_encode(data: &[u8]) -> String {
 ///
 /// # Example
 /// ```
-/// use mega_rs::base64::{base64url_encode, base64url_decode};
+/// use megalib::base64::{base64url_encode, base64url_decode};
 /// let original = b"hello world";
 /// let encoded = base64url_encode(original);
 /// let decoded = base64url_decode(&encoded).unwrap();

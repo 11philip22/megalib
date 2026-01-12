@@ -54,9 +54,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use mega_rs::Session;
+    /// use megalib::Session;
     ///
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let session = Session::login("user@example.com", "password").await?;
     /// println!("Logged in as: {}", session.email);
     /// # Ok(())
@@ -75,9 +75,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use mega_rs::Session;
+    /// use megalib::Session;
     ///
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let session = Session::login_with_proxy(
     ///     "user@example.com",
     ///     "password",
@@ -391,9 +391,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use mega_rs::Session;
+    /// use megalib::Session;
     ///
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let session = Session::login("user@example.com", "password").await?;
     /// session.save("session.json")?;
     /// # Ok(())
@@ -503,9 +503,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use mega_rs::Session;
+    /// use megalib::Session;
     ///
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # async fn example() -> megalib::error::Result<()> {
     /// // Try to load cached session, fall back to login
     /// let session = match Session::load("session.json").await? {
     ///     Some(s) => s,

@@ -25,8 +25,8 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use mega_rs::Session;
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// let nodes = session.list("/", false)?;
@@ -234,8 +234,8 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use mega_rs::Session;
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// let url = session.export("/Root/myfile.txt").await?;
@@ -929,8 +929,8 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use mega_rs::Session;
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// session.mv("/Root/file.txt", "/Root/Documents").await?;
@@ -977,8 +977,8 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use mega_rs::Session;
-    /// # async fn example() -> mega_rs::error::Result<()> {
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// session.rename("/Root/old_name.txt", "new_name.txt").await?;

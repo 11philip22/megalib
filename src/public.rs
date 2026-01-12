@@ -84,9 +84,9 @@ pub fn parse_mega_link(url: &str) -> Result<(String, String)> {
 ///
 /// # Example
 /// ```no_run
-/// use mega_rs::public::get_public_file_info;
+/// use megalib::public::get_public_file_info;
 ///
-/// # async fn example() -> mega_rs::error::Result<()> {
+/// # async fn example() -> megalib::error::Result<()> {
 /// let info = get_public_file_info("https://mega.nz/file/ABC123#key").await?;
 /// println!("File: {} ({} bytes)", info.name, info.size);
 /// # Ok(())
@@ -154,7 +154,7 @@ pub async fn get_public_file_info(url: &str) -> Result<PublicFile> {
 ///
 /// # Example
 /// ```no_run
-/// use mega_rs::public::download_public_file;
+/// use megalib::public::download_public_file;
 /// use std::fs::File;
 /// use std::io::BufWriter;
 ///
@@ -397,7 +397,7 @@ pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
 ///
 /// # Example
 /// ```no_run
-/// use mega_rs::public::open_folder;
+/// use megalib::public::open_folder;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let folder = open_folder("https://mega.nz/folder/ABC123#key").await?;

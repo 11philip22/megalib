@@ -8,7 +8,7 @@ use rand::RngCore;
 ///
 /// # Example
 /// ```
-/// use mega_rs::crypto::make_random_key;
+/// use megalib::crypto::make_random_key;
 /// let key = make_random_key();
 /// assert_eq!(key.len(), 16);
 /// ```

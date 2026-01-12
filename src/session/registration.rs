@@ -88,9 +88,9 @@ impl RegistrationState {
 ///
 /// # Example
 /// ```no_run
-/// use mega_rs::session::register;
+/// use megalib::session::register;
 ///
-/// # async fn example() -> mega_rs::error::Result<()> {
+/// # async fn example() -> megalib::error::Result<()> {
 /// let state = register("user@example.com", "SecurePassword123", "John Doe").await?;
 /// println!("Check your email and run verify_registration with the link");
 /// println!("State to save: {}", state.serialize());
@@ -186,9 +186,9 @@ pub async fn register(email: &str, password: &str, name: &str) -> Result<Registr
 ///
 /// # Example
 /// ```no_run
-/// use mega_rs::session::{verify_registration, RegistrationState};
+/// use megalib::session::{verify_registration, RegistrationState};
 ///
-/// # async fn example() -> mega_rs::error::Result<()> {
+/// # async fn example() -> megalib::error::Result<()> {
 /// let state = RegistrationState::deserialize("...")?;
 /// let signup_key = "..."; // From email link
 /// verify_registration(&state, signup_key).await?;
