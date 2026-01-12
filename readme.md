@@ -652,6 +652,10 @@ cargo run --example download_public -- "https://mega.nz/file/..."
 cargo run --example folder -- "https://mega.nz/folder/..."
 ```
 
+## Acknowledgements
+
+This project is based on the work of [megatools](https://xff.cz/megatools/) by Ondřej Jirman, which provided the foundational understanding of the MEGA API protocol and served as a reference implementation.
+
 ## License
 
 This project is licensed under the GNU General Public License v2.0 (GPLv2) - see the [license](license) file for details.
