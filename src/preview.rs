@@ -1,8 +1,35 @@
 //! Preview/thumbnail generation for file uploads.
 //!
-//! Supports:
-//! - Images: Pure Rust via `image` crate (JPEG, PNG, GIF, BMP, TIFF, WebP)
-//! - Videos: External `ffmpegthumbnailer` tool (optional)
+//! This module provides functionality to generate 128x128 thumbnails for files before they are uploaded.
+//!
+//! # Supported Formats
+//!
+//! - **Images** (Native Rust): JPEG, PNG, GIF, BMP, TIFF, WebP, ICO.
+//! - **Videos** (External Tool): MP4, MKV, AVI, MOV, WMV, FLV, WEBM, MPG, MPEG, M4V.
+//!   - Requires `ffmpegthumbnailer` to be installed and available in the system PATH.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use megalib::preview::generate_thumbnail;
+//!
+//! fn main() {
+//!     let path = Path::new("my_photo.jpg");
+//!     
+//!     if let Some(result) = generate_thumbnail(path) {
+//!         match result {
+//!             Ok(thumbnail_data) => {
+//!                 println!("Generated thumbnail: {} bytes", thumbnail_data.len());
+//!                 // Upload thumbnail_data...
+//!             }
+//!             Err(e) => eprintln!("Failed to generate thumbnail: {}", e),
+//!         }
+//!     } else {
+//!         println!("No thumbnail support for this file type.");
+//!     }
+//! }
+//! ```
 
 use std::io::Cursor;
 use std::path::Path;
@@ -26,16 +53,41 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 /// Check if a file extension is a supported image format.
+///
+/// Case-insensitive comparison against supported extensions.
+///
+/// # Example
+/// ```
+/// use megalib::preview::is_image;
+///
+/// assert!(is_image("jpg"));
+/// assert!(is_image("PNG"));
+/// assert!(!is_image("txt"));
+/// ```
 pub fn is_image(extension: &str) -> bool {
     IMAGE_EXTENSIONS.contains(&extension.to_lowercase().as_str())
 }
 
 /// Check if a file extension is a supported video format.
+///
+/// Case-insensitive comparison against supported extensions.
+///
+/// # Example
+/// ```
+/// use megalib::preview::is_video;
+///
+/// assert!(is_video("mp4"));
+/// assert!(is_video("MKV"));
+/// assert!(!is_video("jpg"));
+/// ```
 pub fn is_video(extension: &str) -> bool {
     VIDEO_EXTENSIONS.contains(&extension.to_lowercase().as_str())
 }
 
 /// Generate a thumbnail from image data (pure Rust).
+///
+/// This function decodes the image data, crops and resizes it to 128x128 pixels using
+/// the Lanczos3 filter, and re-encodes it as a JPEG.
 ///
 /// # Arguments
 /// * `data` - Raw image file data
@@ -70,6 +122,8 @@ pub fn generate_image_thumbnail(data: &[u8]) -> Result<Vec<u8>> {
 
 /// Generate a thumbnail from an image file (pure Rust).
 ///
+/// Wrapper around `generate_image_thumbnail` that readsFromFile first.
+///
 /// # Arguments
 /// * `path` - Path to the image file
 pub fn generate_image_thumbnail_from_file<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
@@ -81,12 +135,13 @@ pub fn generate_image_thumbnail_from_file<P: AsRef<Path>>(path: P) -> Result<Vec
 /// Generate a thumbnail from a video file using ffmpegthumbnailer.
 ///
 /// Requires `ffmpegthumbnailer` to be installed and in PATH.
+/// It attempts to take a snapshot at 5% of the video duration.
 ///
 /// # Arguments
 /// * `path` - Path to the video file
 ///
 /// # Returns
-/// JPEG thumbnail data or error if ffmpegthumbnailer is not available.
+/// JPEG thumbnail data or error if ffmpegthumbnailer is not available or fails.
 pub fn generate_video_thumbnail<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
     // Create temp file for thumbnail
     let temp_dir = std::env::temp_dir();
@@ -146,6 +201,8 @@ pub fn generate_video_thumbnail<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
 }
 
 /// Check if ffmpegthumbnailer is available.
+///
+/// Returns `true` if the `ffmpegthumbnailer` command can be executed successfully.
 pub fn has_ffmpegthumbnailer() -> bool {
     Command::new("ffmpegthumbnailer")
         .arg("--help")
@@ -156,11 +213,25 @@ pub fn has_ffmpegthumbnailer() -> bool {
 
 /// Generate a thumbnail for a file (auto-detects format).
 ///
+/// This is the main entry point for thumbnail generation. It inspects the file extension
+/// and delegates to the appropriate generator.
+///
 /// # Arguments
 /// * `path` - Path to the file
 ///
 /// # Returns
-/// JPEG thumbnail data or None if format not supported.
+/// * `Some(Ok(Vec<u8>))` - Thumbnail generated successfully
+/// * `Some(Err(MegaError))` - Supported type but generation failed
+/// * `None` - Unsupported file type
+///
+/// # Example
+/// ```no_run
+/// use megalib::preview::generate_thumbnail;
+///
+/// if let Some(Ok(data)) = generate_thumbnail("video.mp4") {
+///     // use data
+/// }
+/// ```
 pub fn generate_thumbnail<P: AsRef<Path>>(path: P) -> Option<Result<Vec<u8>>> {
     let path = path.as_ref();
     let extension = path.extension()?.to_str()?.to_lowercase();

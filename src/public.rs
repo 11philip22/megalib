@@ -248,6 +248,10 @@ use crate::fs::node::{Node, NodeType};
 use std::collections::HashMap;
 
 /// A public folder session for browsing shared folders without login.
+///
+/// Returned by `open_folder`, this struct holds the structure of a shared folder.
+/// You can explore the folder contents using `list()` and `stat()`, and download
+/// files using `download()`.
 #[derive(Debug)]
 pub struct PublicFolder {
     /// Folder handle
@@ -395,14 +399,28 @@ pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
 ///
 /// This allows browsing and downloading from shared folders without login.
 ///
+/// # Arguments
+/// * `url` - MEGA folder link (e.g. `https://mega.nz/folder/...`)
+///
+/// # Returns
+/// A `PublicFolder` instance containing the folder structure and file list.
+///
 /// # Example
 /// ```no_run
 /// use megalib::public::open_folder;
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # async fn example() -> megalib::Result<()> {
 /// let folder = open_folder("https://mega.nz/folder/ABC123#key").await?;
-/// for node in folder.list("/", false) {
+///
+/// // List all files
+/// for node in folder.list("/", true) {
 ///     println!("{} ({} bytes)", node.name, node.size);
+/// }
+///
+/// // Download a specific file
+/// if let Some(node) = folder.stat("/Photos/vacation.jpg") {
+///     let mut file = std::fs::File::create("vacation.jpg")?;
+///     folder.download(node, &mut file).await?;
 /// }
 /// # Ok(())
 /// # }

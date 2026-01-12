@@ -4,8 +4,49 @@
 //!
 //! ## Features
 //!
-//! - Account registration
-//! - (More features coming soon)
+//! - **Authentication**: Login with email/password, support for HTTP proxies, and specific session handling.
+//!   - Full account registration flow (register + verify).
+//! - **Filesystem Operations**:
+//!   - List files and folders (support for recursive listing).
+//!   - Create directories (`mkdir`).
+//!   - Move (`mv`), rename, and delete (`rm`) files/folders.
+//!   - Get file attributes (`stat`) and user quota information.
+//! - **File Transfers**:
+//!   - Robust upload and download with automatic resume support.
+//!   - Parallel transfer workers for improved performance.
+//!   - Progress tracking with custom callbacks.
+//!   - Optional preview generation for media uploads.
+//! - **Sharing & Public Access**:
+//!   - Export public download links (`export`).
+//!   - Parse and download files from public MEGA links.
+//!   - Open and browse public folders (`open_folder`) without login.
+//!
+//! ## Example: Basic Usage
+//!
+//! ```no_run
+//! use megalib::Session;
+//!
+//! # async fn example() -> megalib::Result<()> {
+//! // Login
+//! let mut session = Session::login("user@example.com", "password").await?;
+//!
+//! // List files in root
+//! let files = session.list("/", false)?;
+//! for file in files {
+//!     println!("{} ({} bytes)", file.name, file.size);
+//! }
+//!
+//! // Upload a file with resume support
+//! session.upload_resumable("local_file.txt", "/Root").await?;
+//!
+//! // Download a file to local disk
+//! if let Some(node) = session.stat("/Root/remote_file.txt") {
+//!     session.download_to_file(node, "downloaded_file.txt").await?;
+//! }
+//!
+//! # Ok(())
+//! # }
+//! ```
 //!
 //! ## Example: Account Registration
 //!
@@ -14,7 +55,7 @@
 //! ```no_run
 //! use megalib::session::{register, verify_registration};
 //!
-//! # async fn example() -> megalib::error::Result<()> {
+//! # async fn example() -> megalib::Result<()> {
 //! // Step 1: Initiate registration (sends verification email)
 //! let state = register("user@example.com", "SecurePassword123", "John Doe").await?;
 //! println!("Check your email! State to save: {}", state.serialize());
