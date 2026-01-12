@@ -1,5 +1,11 @@
 # megalib
 
+[![Crates.io](https://img.shields.io/crates/v/megalib.svg)](https://crates.io/crates/megalib)
+[![Documentation](https://docs.rs/megalib/badge.svg)](https://docs.rs/megalib)
+[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+
+<img src="https://upload.wikimedia.org/wikipedia/commons/b/bc/MEGA_logo.png" alt="MEGA Logo" width="300">
+
 A Rust client library for the MEGA cloud storage service.
 
 This library provides a clean, asynchronous Rust interface for interacting with MEGA, supporting authentication, filesystem access, and file management.
