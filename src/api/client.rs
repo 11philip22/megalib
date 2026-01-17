@@ -4,7 +4,27 @@ use crate::error::{MegaError, Result};
 use crate::http::HttpClient;
 use serde_json::Value;
 use std::time::Duration;
-use tokio::time::sleep;
+
+// Cross-platform sleep function
+#[cfg(not(target_arch = "wasm32"))]
+async fn sleep(duration: Duration) {
+    tokio::time::sleep(duration).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn sleep(duration: Duration) {
+    use js_sys::Promise;
+    use wasm_bindgen_futures::JsFuture;
+
+    let millis = duration.as_millis() as i32;
+    let promise = Promise::new(&mut |resolve, _| {
+        let window = web_sys::window().expect("no window");
+        window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis)
+            .expect("setTimeout failed");
+    });
+    JsFuture::from(promise).await.unwrap();
+}
 
 /// Base URL for MEGA API
 const API_URL: &str = "https://g.api.mega.co.nz/cs";
@@ -127,6 +147,7 @@ impl ApiClient {
     ///
     /// # Arguments
     /// * `proxy` - Proxy URL (e.g., "http://proxy:8080" or "socks5://proxy:1080")
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_proxy(proxy: &str) -> crate::error::Result<Self> {
         Ok(Self {
             http: HttpClient::with_proxy(proxy)?,

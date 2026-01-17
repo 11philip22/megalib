@@ -1,12 +1,4 @@
 //! Filesystem operations for Session.
-
-use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufWriter, Write};
-use std::path::Path;
-
-use serde_json::{json, Value};
-
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::{
     aes128_cbc_decrypt, aes128_cbc_encrypt, aes128_ctr_decrypt, aes128_ctr_encrypt,
@@ -15,7 +7,24 @@ use crate::crypto::aes::{
 use crate::crypto::keys::pack_node_key;
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType, Quota};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::fs::upload_state::calculate_file_hash;
+use crate::fs::upload_state::UploadState;
 use crate::session::Session;
+use futures::io::Cursor;
+use futures::stream::{self, StreamExt};
+use rand::RngCore;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::{self, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{BufWriter, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 impl Session {
     /// Refresh the filesystem tree from the server.
@@ -512,7 +521,6 @@ impl Session {
         let node_key = {
             let mut rng = rand::thread_rng();
             let mut key_bytes = [0u8; 16];
-            use rand::RngCore;
             rng.fill_bytes(&mut key_bytes);
             key_bytes
         };
@@ -687,7 +695,7 @@ impl Session {
             if offset > 0 {
                 request = request.header("Range", format!("bytes={}-", offset));
             }
-            let mut response = request.send().await.map_err(MegaError::RequestError)?;
+            let response = request.send().await.map_err(MegaError::RequestError)?;
 
             let status = response.status();
             if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -704,7 +712,11 @@ impl Session {
 
             let mut current_offset = offset;
             let filename = node.name.clone();
-            while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+
+            let mut stream = response.bytes_stream();
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = chunk_result.map_err(MegaError::RequestError)?;
                 let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, current_offset);
                 writer
                     .write_all(&decrypted)
@@ -721,8 +733,6 @@ impl Session {
         }
 
         // Parallel download path
-        use futures::stream::{self, StreamExt};
-
         let file_size = node.size;
         let chunk_size = 1024 * 1024; // 1MB chunks
 
@@ -822,6 +832,8 @@ impl Session {
     /// - If interrupted and restarted, detect the partial download and resume
     /// - On successful completion, rename the temp file to the target path
     ///
+    /// This method is only available on native targets (not WASM).
+    ///
     /// # Arguments
     /// * `node` - The file node to download
     /// * `local_path` - Target file path
@@ -839,6 +851,7 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_to_file<P: AsRef<std::path::Path>>(
         &mut self,
         node: &Node,
@@ -1131,9 +1144,13 @@ impl Session {
 
     /// Upload a file to a directory.
     ///
+    /// This method is only available on native targets (not WASM).
+    /// For WASM, use `upload_from_bytes` or `upload_from_reader` instead.
+    ///
     /// # Arguments
     /// * `local_path` - Path to the local file to upload
     /// * `remote_parent_path` - Path to the remote parent directory
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
@@ -1181,7 +1198,6 @@ impl Session {
             let mut rng = rand::thread_rng();
             let mut file_key = [0u8; 16];
             let mut nonce = [0u8; 8];
-            use rand::RngCore;
             rng.fill_bytes(&mut file_key);
             rng.fill_bytes(&mut nonce);
             (file_key, nonce)
@@ -1208,6 +1224,8 @@ impl Session {
     /// allowing uploads to be resumed if interrupted. The state file is
     /// automatically deleted on successful completion.
     ///
+    /// This method is only available on native targets (not WASM).
+    ///
     /// # Arguments
     /// * `local_path` - Path to the local file to upload
     /// * `remote_parent_path` - Path to the remote parent directory
@@ -1224,13 +1242,12 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_resumable<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        use crate::fs::upload_state::{calculate_file_hash, UploadState};
-
         let path = local_path.as_ref();
         let state_path = UploadState::state_file_path(path);
 
@@ -1350,7 +1367,6 @@ impl Session {
         file_name: &str,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        use std::io::Cursor;
         self.upload_from_reader(
             Cursor::new(data.to_vec()),
             file_name,
@@ -1401,7 +1417,7 @@ impl Session {
         remote_parent_path: &str,
     ) -> Result<Node>
     where
-        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send,
+        R: futures::io::AsyncRead + futures::io::AsyncSeek + Unpin + Send,
     {
         let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
             MegaError::Custom(format!(
@@ -1432,7 +1448,6 @@ impl Session {
             let mut rng = rand::thread_rng();
             let mut file_key = [0u8; 16];
             let mut nonce = [0u8; 8];
-            use rand::RngCore;
             rng.fill_bytes(&mut file_key);
             rng.fill_bytes(&mut nonce);
             (file_key, nonce)
@@ -1453,15 +1468,13 @@ impl Session {
     }
 
     /// Internal method to upload with optional state tracking.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn upload_internal(
         &mut self,
         path: &std::path::Path,
         mut state: crate::fs::upload_state::UploadState,
         state_path: Option<&std::path::Path>,
     ) -> Result<Node> {
-        use crate::fs::upload_state::UploadState;
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
         let file_name = state.file_name.clone();
         let file_key = state.file_key;
         let nonce = state.nonce;
@@ -1498,8 +1511,6 @@ impl Session {
             iter_offset += chunk_size;
             iter_index += 1;
         }
-
-        use futures::stream::{self, StreamExt};
 
         let path_buf = path.to_path_buf();
         let workers = self.workers();
@@ -1667,15 +1678,11 @@ impl Session {
     }
 
     /// Internal method to upload from an async reader (sequential, no resume support).
-    async fn upload_internal_stream<R>(
-        &mut self,
-        mut reader: R,
-        state: crate::fs::upload_state::UploadState,
-    ) -> Result<Node>
+    async fn upload_internal_stream<R>(&mut self, mut reader: R, state: UploadState) -> Result<Node>
     where
-        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send,
+        R: futures::io::AsyncRead + futures::io::AsyncSeek + Unpin + Send,
     {
-        use tokio::io::AsyncReadExt;
+        use futures::io::AsyncReadExt;
 
         let file_name = state.file_name.clone();
         let file_key = state.file_key;

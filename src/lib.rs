@@ -73,6 +73,7 @@ pub mod crypto;
 pub mod error;
 pub mod fs;
 pub mod http;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod preview;
 pub mod progress;
 pub mod public;

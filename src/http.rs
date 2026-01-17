@@ -18,6 +18,9 @@ impl HttpClient {
     }
 
     /// Create a new HTTP client with a proxy.
+    ///
+    /// This method is only available on native targets (not WASM).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_proxy(proxy: &str) -> Result<Self> {
         let proxy = reqwest::Proxy::all(proxy)
             .map_err(|e| MegaError::CryptoError(format!("Invalid proxy: {}", e)))?;

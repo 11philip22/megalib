@@ -92,9 +92,20 @@ impl Session {
 
     /// Internal login implementation.
     async fn login_internal(email: &str, password: &str, proxy: Option<&str>) -> Result<Self> {
-        let mut api = match proxy {
-            Some(p) => ApiClient::with_proxy(p)?,
-            None => ApiClient::new(),
+        let mut api = if let Some(p) = proxy {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ApiClient::with_proxy(p)?
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                return Err(MegaError::Custom(format!(
+                    "Proxy support not available in WASM (ignored proxy: {})",
+                    p
+                )));
+            }
+        } else {
+            ApiClient::new()
         };
         let email_lower = email.to_lowercase();
 
@@ -560,9 +571,21 @@ impl Session {
         master_key.copy_from_slice(&master_key_bytes);
 
         // Create API client with session ID (with or without proxy)
-        let mut api = match proxy {
-            Some(p) => ApiClient::with_proxy(p)?,
-            None => ApiClient::new(),
+        // Create API client with session ID (with or without proxy)
+        let mut api = if let Some(p) = proxy {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ApiClient::with_proxy(p)?
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                return Err(MegaError::Custom(format!(
+                    "Proxy support not available in WASM (ignored proxy: {})",
+                    p
+                )));
+            }
+        } else {
+            ApiClient::new()
         };
         api.set_session_id(data.session_id.clone());
 

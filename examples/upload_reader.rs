@@ -3,9 +3,9 @@
 /// This demonstrates uploading from any source implementing AsyncRead + AsyncSeek.
 /// In this example we use a Cursor wrapping a Vec<u8>, but you could use any
 /// compatible reader, making this suitable for WASM environments.
+use futures::io::Cursor;
 use megalib::Session;
 use std::env;
-use std::io::Cursor;
 use std::process;
 
 #[tokio::main]

@@ -187,7 +187,7 @@ pub async fn download_public_file_data<W: Write>(info: &PublicFile, writer: &mut
 
     // Download and decrypt
     let client = reqwest::Client::new();
-    let mut response = client
+    let response = client
         .get(&info.download_url)
         .send()
         .await
@@ -201,7 +201,11 @@ pub async fn download_public_file_data<W: Write>(info: &PublicFile, writer: &mut
     }
 
     let mut offset = 0u64;
-    while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+    use futures::StreamExt;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(MegaError::RequestError)?;
         let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, offset);
         writer
             .write_all(&decrypted)
@@ -338,14 +342,18 @@ impl PublicFolder {
 
         // Download and decrypt
         let client = reqwest::Client::new();
-        let mut response = client
+        let response = client
             .get(url)
             .send()
             .await
             .map_err(MegaError::RequestError)?;
 
         let mut offset = 0u64;
-        while let Some(chunk) = response.chunk().await.map_err(MegaError::RequestError)? {
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(MegaError::RequestError)?;
             let decrypted = aes128_ctr_decrypt(&chunk, &aes_key, &nonce, offset);
             writer
                 .write_all(&decrypted)

@@ -3,9 +3,11 @@
 //! This module provides structures for saving and resuming interrupted uploads.
 
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::{MegaError, Result};
 
 /// Saved upload state for resuming interrupted uploads.
@@ -67,6 +69,9 @@ impl UploadState {
     }
 
     /// Get the state file path for a given source file.
+    ///
+    /// This method is only available on native targets (not WASM).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn state_file_path<P: AsRef<Path>>(source_path: P) -> std::path::PathBuf {
         let source = source_path.as_ref();
         let file_name = source
@@ -77,6 +82,9 @@ impl UploadState {
     }
 
     /// Save state to file.
+    ///
+    /// This method is only available on native targets (not WASM).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| MegaError::Custom(format!("Failed to serialize upload state: {}", e)))?;
@@ -86,6 +94,9 @@ impl UploadState {
     }
 
     /// Load state from file.
+    ///
+    /// This method is only available on native targets (not WASM).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Option<Self>> {
         let path = path.as_ref();
         if !path.exists() {
@@ -100,6 +111,9 @@ impl UploadState {
     }
 
     /// Delete state file.
+    ///
+    /// This method is only available on native targets (not WASM).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn delete<P: AsRef<Path>>(path: P) -> Result<()> {
         let path = path.as_ref();
         if path.exists() {
@@ -129,6 +143,9 @@ impl UploadState {
 }
 
 /// Calculate a simple hash of the first 1MB of a file for verification.
+///
+/// This function is only available on native targets (not WASM).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn calculate_file_hash<P: AsRef<Path>>(path: P) -> Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
