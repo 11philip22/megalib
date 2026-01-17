@@ -392,9 +392,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = Session::login("user@example.com", "password").await?;
     session.refresh().await?;
 
-    if let Some(node) = session.stat("/Root/Project/final.txt") {
+    if let Some(node) = session.stat("/Root/Project/final.txt").cloned() {
         let mut file = File::create("downloaded_final.txt")?;
-        session.download(node, &mut file).await?;
+        session.download(&node, &mut file).await?;
     }
     
     Ok(())
@@ -420,7 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.set_workers(4);
     
     // download_to_file automatically resumes partial downloads
-    if let Some(node) = session.stat("/Root/LargeVideo.mp4") {
+    if let Some(node) = session.stat("/Root/LargeVideo.mp4").cloned() {
         session.download_to_file(&node, "video.mp4").await?;
     }
     
