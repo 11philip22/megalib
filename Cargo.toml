@@ -1,6 +1,6 @@
 [package]
 name = "megalib"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "Rust client library for Mega.nz cloud storage"
 license = "GPL-2.0-or-later"

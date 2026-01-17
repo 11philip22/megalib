@@ -1318,6 +1318,140 @@ impl Session {
         self.upload_internal(path, state, Some(&state_path)).await
     }
 
+    /// Upload data from a byte slice to a directory.
+    ///
+    /// This method is useful for uploading in-memory data without writing to disk first.
+    /// It's particularly suitable for WASM environments where filesystem access is not available.
+    ///
+    /// Note: This method does NOT support resume (the data must be re-provided if interrupted).
+    /// For large uploads that need resume support, use `upload_resumable` with a file path.
+    ///
+    /// # Arguments
+    /// * `data` - The bytes to upload
+    /// * `file_name` - Name for the uploaded file on MEGA
+    /// * `remote_parent_path` - Path to the remote parent directory
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    ///
+    /// let data = b"Hello, MEGA!";
+    /// let node = session.upload_from_bytes(data, "hello.txt", "/Root").await?;
+    /// println!("Uploaded: {} ({} bytes)", node.name, node.size);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn upload_from_bytes(
+        &mut self,
+        data: &[u8],
+        file_name: &str,
+        remote_parent_path: &str,
+    ) -> Result<Node> {
+        use std::io::Cursor;
+        self.upload_from_reader(
+            Cursor::new(data.to_vec()),
+            file_name,
+            data.len() as u64,
+            remote_parent_path,
+        )
+        .await
+    }
+
+    /// Upload data from an async reader to a directory.
+    ///
+    /// This method accepts any type implementing `AsyncRead + AsyncSeek + Unpin + Send`,
+    /// enabling uploads from various sources like in-memory buffers, network streams,
+    /// or custom data sources. Particularly useful for WASM environments.
+    ///
+    /// Note: This method does NOT support resume. The reader is consumed during upload,
+    /// and if the upload is interrupted, you must provide a fresh reader to retry.
+    /// For large file uploads that need resume support, use `upload_resumable` instead.
+    ///
+    /// Note: Preview/thumbnail generation is not supported for stream uploads since
+    /// the data source may not be seekable after reading.
+    ///
+    /// # Arguments
+    /// * `reader` - Async reader providing the data
+    /// * `file_name` - Name for the uploaded file on MEGA
+    /// * `file_size` - Total size of the data in bytes
+    /// * `remote_parent_path` - Path to the remote parent directory
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::Session;
+    /// use std::io::Cursor;
+    /// # async fn example() -> megalib::error::Result<()> {
+    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    ///
+    /// let data = vec![0u8; 1024]; // 1KB of zeros
+    /// let cursor = Cursor::new(data);
+    /// let node = session.upload_from_reader(cursor, "zeros.bin", 1024, "/Root").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn upload_from_reader<R>(
+        &mut self,
+        reader: R,
+        file_name: &str,
+        file_size: u64,
+        remote_parent_path: &str,
+    ) -> Result<Node>
+    where
+        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send,
+    {
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent_handle = parent_node.handle.clone();
+
+        // Get upload URL
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "u",
+                "s": file_size,
+                "ssl": 0
+            }))
+            .await?;
+
+        let upload_url = response
+            .get("p")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| MegaError::Custom("Failed to get upload URL".to_string()))?
+            .to_string();
+
+        // Generate encryption keys
+        let (file_key, nonce) = {
+            let mut rng = rand::thread_rng();
+            let mut file_key = [0u8; 16];
+            let mut nonce = [0u8; 8];
+            use rand::RngCore;
+            rng.fill_bytes(&mut file_key);
+            rng.fill_bytes(&mut nonce);
+            (file_key, nonce)
+        };
+
+        // Create state (no file hash needed - not resumable)
+        let state = crate::fs::upload_state::UploadState::new(
+            upload_url,
+            file_key,
+            nonce,
+            file_size,
+            file_name.to_string(),
+            parent_handle,
+            String::new(),
+        );
+
+        self.upload_internal_stream(reader, state).await
+    }
+
     /// Internal method to upload with optional state tracking.
     async fn upload_internal(
         &mut self,
@@ -1588,6 +1722,167 @@ impl Session {
             // Delete state file on success
             if let Some(sp) = state_path {
                 UploadState::delete(sp)?;
+            }
+
+            return Ok(node);
+        }
+
+        Err(MegaError::Custom("Failed to complete upload".to_string()))
+    }
+
+    /// Internal method to upload from an async reader (sequential, no resume support).
+    async fn upload_internal_stream<R>(
+        &mut self,
+        mut reader: R,
+        state: crate::fs::upload_state::UploadState,
+    ) -> Result<Node>
+    where
+        R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send,
+    {
+        use tokio::io::AsyncReadExt;
+
+        let file_name = state.file_name.clone();
+        let file_key = state.file_key;
+        let nonce = state.nonce;
+        let file_size = state.file_size;
+        let parent_handle = state.parent_handle.clone();
+        let upload_url = state.upload_url.clone();
+
+        let mut chunk_macs: Vec<[u8; 16]> = Vec::new();
+        let mut offset: u64 = 0;
+        let mut chunk_index: usize = 0;
+        let mut upload_handle = String::new();
+
+        // Sequential upload - read chunks one at a time from the stream
+        while offset < file_size {
+            let chunk_size = get_chunk_size(chunk_index, offset, file_size);
+            let mut buffer = vec![0u8; chunk_size as usize];
+
+            reader
+                .read_exact(&mut buffer)
+                .await
+                .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
+
+            // Calculate chunk MAC
+            let mut mac_iv = [0u8; 16];
+            mac_iv[..8].copy_from_slice(&nonce);
+            mac_iv[8..].copy_from_slice(&nonce);
+            let chunk_mac = chunk_mac_calculate(&buffer, &file_key, &mac_iv);
+
+            // Encrypt chunk
+            let encrypted_chunk = aes128_ctr_encrypt(&buffer, &file_key, &nonce, offset);
+
+            // Upload chunk
+            let checksum = upload_checksum(&encrypted_chunk);
+            let chunk_url = format!("{}/{}?c={}", upload_url, offset, checksum);
+
+            let client = reqwest::Client::new();
+            let response = client
+                .post(&chunk_url)
+                .body(encrypted_chunk)
+                .send()
+                .await
+                .map_err(MegaError::RequestError)?;
+
+            if !response.status().is_success() {
+                return Err(MegaError::Custom(format!(
+                    "Chunk upload failed: {}",
+                    response.status()
+                )));
+            }
+
+            let response_text = response.text().await.map_err(MegaError::RequestError)?;
+            if !response_text.starts_with("-") && !response_text.is_empty() {
+                upload_handle = response_text;
+            }
+
+            chunk_macs.push(chunk_mac);
+            offset += chunk_size;
+            chunk_index += 1;
+
+            // Report progress
+            let progress = crate::progress::TransferProgress::new(offset, file_size, &file_name);
+            if !self.report_progress(&progress) {
+                return Err(MegaError::Custom("Upload cancelled by user".to_string()));
+            }
+        }
+
+        if upload_handle.is_empty() {
+            return Err(MegaError::Custom(
+                "Did not receive upload handle".to_string(),
+            ));
+        }
+
+        // Finalize upload
+        let meta_mac = meta_mac_calculate(&chunk_macs, &file_key);
+
+        // Encrypt attributes
+        let attrs = json!({ "n": file_name }).to_string();
+        let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
+        let pad_len = 16 - (attrs_bytes.len() % 16);
+        let mut padded_attrs = attrs_bytes;
+        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &file_key);
+        let attrs_b64 = base64url_encode(&encrypted_attrs);
+
+        // Pack and encrypt node key
+        let node_key = pack_node_key(&file_key, &nonce, &meta_mac);
+        let encrypted_node_key =
+            crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
+        let key_b64 = base64url_encode(&encrypted_node_key);
+
+        // Note: No preview generation for stream uploads (data not seekable)
+
+        // Create file node
+        let node_data = json!({
+            "h": upload_handle,
+            "t": 0,
+            "a": attrs_b64,
+            "k": key_b64
+        });
+
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "p",
+                "t": parent_handle,
+                "n": [node_data]
+            }))
+            .await?;
+
+        // Parse result
+        let nodes_array = response
+            .get("f")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                MegaError::Custom("Invalid API response for upload completion".to_string())
+            })?;
+
+        if let Some(node_obj) = nodes_array.get(0) {
+            let node = self
+                .parse_node(node_obj)
+                .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
+
+            // Find parent path
+            let parent_path_str = {
+                let parent_path = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.handle == parent_handle)
+                    .and_then(|n| n.path.as_ref())
+                    .map(|p| p.as_str())
+                    .unwrap_or("");
+
+                if !parent_path.is_empty() {
+                    format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
+                } else {
+                    format!("/{}", node.name)
+                }
+            };
+
+            self.nodes.push(node.clone());
+            if let Some(last_node) = self.nodes.last_mut() {
+                last_node.path = Some(parent_path_str);
             }
 
             return Ok(node);
