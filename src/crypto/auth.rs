@@ -1,18 +1,18 @@
 //! Authentication-related cryptographic operations.
 
-use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::{aes128_ecb_decrypt, aes128_ecb_encrypt, MegaRsaKey};
-// Import read_mpi from rsa module
-use crate::crypto::rsa::read_mpi;
-use crate::error::{MegaError, Result};
+use hmac::Hmac;
 use num_bigint::BigUint;
+use num_traits::One;
+use pbkdf2::pbkdf2;
+use sha2::Sha512;
+
+use crate::base64::{base64url_decode, base64url_encode};
+use crate::crypto::rsa::read_mpi;
+use crate::crypto::{aes128_ecb_decrypt, aes128_ecb_encrypt, MegaRsaKey};
+use crate::error::{MegaError, Result};
 
 /// Derive key using PBKDF2-SHA512 (login variant 2).
 pub fn derive_key_v2(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
-    use hmac::Hmac;
-    use pbkdf2::pbkdf2;
-    use sha2::Sha512;
-
     let mut key = [0u8; 32];
     pbkdf2::<Hmac<Sha512>>(password.as_bytes(), salt, 100_000, &mut key)
         .map_err(|_| MegaError::CryptoError("PBKDF2 failed".to_string()))?;
@@ -86,8 +86,6 @@ fn rsa_decrypt_crt(
     q: &num_bigint::BigUint,
     u: &num_bigint::BigUint, // p^-1 mod q
 ) -> num_bigint::BigUint {
-    use num_traits::One;
-
     // xp = m^(d mod (p-1)) mod p
     let p1 = p - BigUint::one();
     let dp1 = d % &p1;

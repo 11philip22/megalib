@@ -2,9 +2,9 @@
 //!
 //! MEGA uses RSA-2048 with a non-standard public exponent e=3.
 
-use num_bigint::BigUint;
+use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 use rand::Rng;
 
 use crate::base64::base64url_encode;
@@ -317,9 +317,6 @@ fn mod_pow(base: &BigUint, exp: &BigUint, modulus: &BigUint) -> BigUint {
 /// Extended Euclidean algorithm for modular inverse.
 /// Returns a^-1 mod m, or None if not invertible.
 fn mod_inverse(a: &BigUint, m: &BigUint) -> Option<BigUint> {
-    use num_bigint::BigInt;
-    use num_traits::Signed;
-
     let a = BigInt::from(a.clone());
     let m = BigInt::from(m.clone());
 

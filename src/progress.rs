@@ -15,6 +15,8 @@
 //! });
 //! ```
 
+use std::io::Write;
+
 /// Progress information for uploads and downloads.
 ///
 /// This struct is passed to the progress callback periodically during a transfer.
@@ -112,7 +114,6 @@ pub fn make_progress_bar() -> ProgressCallback {
             println!();
         }
 
-        use std::io::Write;
         let _ = std::io::stdout().flush();
 
         true // Continue transfer

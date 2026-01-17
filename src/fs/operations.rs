@@ -1,4 +1,19 @@
 //! Filesystem operations for Session.
+use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::{self, OpenOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{BufWriter, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+
+use futures::io::Cursor;
+use futures::stream::{self, StreamExt};
+use rand::RngCore;
+use serde_json::{json, Value};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::{
     aes128_cbc_decrypt, aes128_cbc_encrypt, aes128_ctr_decrypt, aes128_ctr_encrypt,
@@ -11,20 +26,6 @@ use crate::fs::node::{Node, NodeType, Quota};
 use crate::fs::upload_state::calculate_file_hash;
 use crate::fs::upload_state::UploadState;
 use crate::session::Session;
-use futures::io::Cursor;
-use futures::stream::{self, StreamExt};
-use rand::RngCore;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::{self, OpenOptions};
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::{BufWriter, Write};
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
-use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 impl Session {
     /// Refresh the filesystem tree from the server.

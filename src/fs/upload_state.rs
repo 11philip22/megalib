@@ -10,6 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::{MegaError, Result};
 
+#[cfg(not(target_arch = "wasm32"))]
+use sha2::{Digest, Sha256};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Read;
+
 /// Saved upload state for resuming interrupted uploads.
 ///
 /// This struct is serialized to a temporary file next to the source file
@@ -147,9 +152,6 @@ impl UploadState {
 /// This function is only available on native targets (not WASM).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn calculate_file_hash<P: AsRef<Path>>(path: P) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
     let mut file = std::fs::File::open(path.as_ref())
         .map_err(|e| MegaError::Custom(format!("Failed to open file for hashing: {}", e)))?;
 

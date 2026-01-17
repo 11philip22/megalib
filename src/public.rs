@@ -2,14 +2,17 @@
 //!
 //! Download files from mega.nz using public links without requiring login.
 
+use std::collections::HashMap;
 use std::io::Write;
 
+use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::aes::{aes128_cbc_decrypt, aes128_ctr_decrypt};
+use crate::crypto::aes::{aes128_cbc_decrypt, aes128_ctr_decrypt, aes128_ecb_decrypt};
 use crate::error::{MegaError, Result};
+use crate::fs::node::{Node, NodeType};
 
 /// Information about a public file from a MEGA link.
 #[derive(Debug, Clone)]
@@ -201,7 +204,6 @@ pub async fn download_public_file_data<W: Write>(info: &PublicFile, writer: &mut
     }
 
     let mut offset = 0u64;
-    use futures::StreamExt;
     let mut stream = response.bytes_stream();
 
     while let Some(chunk_result) = stream.next().await {
@@ -247,9 +249,6 @@ fn decrypt_public_attrs(attrs_b64: &str, key: &[u8; 32]) -> Result<String> {
 // ============================================================================
 // PUBLIC FOLDER BROWSING
 // ============================================================================
-
-use crate::fs::node::{Node, NodeType};
-use std::collections::HashMap;
 
 /// A public folder session for browsing shared folders without login.
 ///
@@ -349,7 +348,6 @@ impl PublicFolder {
             .map_err(MegaError::RequestError)?;
 
         let mut offset = 0u64;
-        use futures::StreamExt;
         let mut stream = response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
@@ -581,7 +579,6 @@ fn decrypt_public_node_key(
             };
 
             if let Ok(encrypted) = base64url_decode(encrypted_key) {
-                use crate::crypto::aes::aes128_ecb_decrypt;
                 return Some(aes128_ecb_decrypt(&encrypted, decrypt_key));
             }
         }
