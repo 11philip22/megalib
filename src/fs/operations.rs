@@ -1623,25 +1623,7 @@ impl Session {
             ));
         }
 
-        // Finalize upload (same as regular upload)
-        let meta_mac = meta_mac_calculate(&chunk_macs, &file_key);
-
-        // Encrypt attributes
-        let attrs = json!({ "n": file_name }).to_string();
-        let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
-        let pad_len = 16 - (attrs_bytes.len() % 16);
-        let mut padded_attrs = attrs_bytes;
-        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
-        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &file_key);
-        let attrs_b64 = base64url_encode(&encrypted_attrs);
-
-        // Pack and encrypt node key
-        let node_key = pack_node_key(&file_key, &nonce, &meta_mac);
-        let encrypted_node_key =
-            crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
-        let key_b64 = base64url_encode(&encrypted_node_key);
-
-        // Generate preview if enabled (same as regular upload)
+        // Generate preview if enabled
         let file_attr = if self.previews_enabled() {
             if let Some(thumbnail_result) = crate::preview::generate_thumbnail(&path) {
                 match thumbnail_result {
@@ -1663,71 +1645,25 @@ impl Session {
             None
         };
 
-        // Create file node
-        let mut node_data = json!({
-            "h": upload_handle,
-            "t": 0,
-            "a": attrs_b64,
-            "k": key_b64
-        });
-
-        if let Some(fa) = &file_attr {
-            node_data["fa"] = json!(fa);
-        }
-
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "p",
-                "t": parent_handle,
-                "n": [node_data]
-            }))
+        // Delegate to shared finalization logic
+        let node = self
+            .finalize_upload(
+                &upload_handle,
+                &chunk_macs,
+                &file_key,
+                &nonce,
+                &file_name,
+                &parent_handle,
+                file_attr,
+            )
             .await?;
 
-        // Parse result
-        let nodes_array = response
-            .get("f")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                MegaError::Custom("Invalid API response for upload completion".to_string())
-            })?;
-
-        if let Some(node_obj) = nodes_array.get(0) {
-            let node = self
-                .parse_node(node_obj)
-                .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
-
-            // Find parent path
-            let parent_path_str = {
-                let parent_path = self
-                    .nodes
-                    .iter()
-                    .find(|n| n.handle == parent_handle)
-                    .and_then(|n| n.path.as_ref())
-                    .map(|p| p.as_str())
-                    .unwrap_or("");
-
-                if !parent_path.is_empty() {
-                    format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
-                } else {
-                    format!("/{}", node.name)
-                }
-            };
-
-            self.nodes.push(node.clone());
-            if let Some(last_node) = self.nodes.last_mut() {
-                last_node.path = Some(parent_path_str);
-            }
-
-            // Delete state file on success
-            if let Some(sp) = state_path {
-                UploadState::delete(sp)?;
-            }
-
-            return Ok(node);
+        // Delete state file on success
+        if let Some(sp) = state_path {
+            UploadState::delete(sp)?;
         }
 
-        Err(MegaError::Custom("Failed to complete upload".to_string()))
+        Ok(node)
     }
 
     /// Internal method to upload from an async reader (sequential, no resume support).
@@ -1813,8 +1749,31 @@ impl Session {
             ));
         }
 
-        // Finalize upload
-        let meta_mac = meta_mac_calculate(&chunk_macs, &file_key);
+        // Delegate to shared finalization logic (no preview for stream uploads)
+        self.finalize_upload(
+            &upload_handle,
+            &chunk_macs,
+            &file_key,
+            &nonce,
+            &file_name,
+            &parent_handle,
+            None,
+        )
+        .await
+    }
+
+    /// Shared upload finalization: creates the file node on MEGA after all chunks are uploaded.
+    async fn finalize_upload(
+        &mut self,
+        upload_handle: &str,
+        chunk_macs: &[[u8; 16]],
+        file_key: &[u8; 16],
+        nonce: &[u8; 8],
+        file_name: &str,
+        parent_handle: &str,
+        file_attr: Option<String>,
+    ) -> Result<Node> {
+        let meta_mac = meta_mac_calculate(chunk_macs, file_key);
 
         // Encrypt attributes
         let attrs = json!({ "n": file_name }).to_string();
@@ -1822,24 +1781,26 @@ impl Session {
         let pad_len = 16 - (attrs_bytes.len() % 16);
         let mut padded_attrs = attrs_bytes;
         padded_attrs.extend(std::iter::repeat(0).take(pad_len));
-        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, &file_key);
+        let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, file_key);
         let attrs_b64 = base64url_encode(&encrypted_attrs);
 
         // Pack and encrypt node key
-        let node_key = pack_node_key(&file_key, &nonce, &meta_mac);
+        let node_key = pack_node_key(file_key, nonce, &meta_mac);
         let encrypted_node_key =
             crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
         let key_b64 = base64url_encode(&encrypted_node_key);
 
-        // Note: No preview generation for stream uploads (data not seekable)
-
         // Create file node
-        let node_data = json!({
+        let mut node_data = json!({
             "h": upload_handle,
             "t": 0,
             "a": attrs_b64,
             "k": key_b64
         });
+
+        if let Some(fa) = &file_attr {
+            node_data["fa"] = json!(fa);
+        }
 
         let response = self
             .api_mut()
