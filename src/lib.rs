@@ -40,8 +40,8 @@
 //! session.upload_resumable("local_file.txt", "/Root").await?;
 //!
 //! // Download a file to local disk
-//! if let Some(node) = session.stat("/Root/remote_file.txt") {
-//!     session.download_to_file(node, "downloaded_file.txt").await?;
+//! if let Some(node) = session.stat("/Root/remote_file.txt").cloned() {
+//!     session.download_to_file(&node, "downloaded_file.txt").await?;
 //! }
 //!
 //! # Ok(())
@@ -57,7 +57,7 @@
 //!
 //! # async fn example() -> megalib::Result<()> {
 //! // Step 1: Initiate registration (sends verification email)
-//! let state = register("user@example.com", "SecurePassword123", "John Doe").await?;
+//! let state = register("user@example.com", "SecurePassword123", "John Doe", None).await?;
 //! println!("Check your email! State to save: {}", state.serialize());
 //!
 //! // Step 2: After receiving email, complete registration

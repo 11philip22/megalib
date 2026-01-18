@@ -415,7 +415,7 @@ pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
 /// ```no_run
 /// use megalib::public::open_folder;
 ///
-/// # async fn example() -> megalib::Result<()> {
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let folder = open_folder("https://mega.nz/folder/ABC123#key").await?;
 ///
 /// // List all files
