@@ -782,22 +782,16 @@ impl Session {
 
         // Pack and encrypt node key
         let node_key = pack_node_key(file_key, nonce, &meta_mac);
-        let (encrypt_key, key_owner): (&[u8; 16], String) = if let Some(sk) = self.share_keys.get(parent_handle) {
-            (sk, parent_handle.to_string())
-        } else {
-            (&self.master_key, self.user_handle.clone())
-        };
         let encrypted_node_key =
-            crate::crypto::aes::aes128_ecb_encrypt(&node_key, encrypt_key);
+            crate::crypto::aes::aes128_ecb_encrypt(&node_key, &self.master_key);
         let key_b64 = base64url_encode(&encrypted_node_key);
-        let key_field = format!("{}:{}", key_owner, key_b64);
 
         // Create file node
         let mut node_data = json!({
             "h": upload_handle,
             "t": 0,
             "a": attrs_b64,
-            "k": key_field
+            "k": key_b64
         });
 
         if let Some(fa) = &file_attr {
