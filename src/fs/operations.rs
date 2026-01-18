@@ -1259,9 +1259,20 @@ impl Session {
 
             if existing_state.file_hash == current_hash && existing_state.is_likely_valid() {
                 // Resume from existing state
-                return self
+                match self
                     .upload_internal(path, existing_state, Some(&state_path))
-                    .await;
+                    .await
+                {
+                    Ok(node) => return Ok(node),
+                    Err(e) => {
+                        println!(
+                            "  ! Resume failed: {}. Restarting upload from scratch...",
+                            e
+                        );
+                        // Delete invalid state and fall through to fresh upload
+                        UploadState::delete(&state_path)?;
+                    }
+                }
             } else {
                 // State is invalid (different file or expired), delete and start fresh
                 UploadState::delete(&state_path)?;
@@ -1491,6 +1502,23 @@ impl Session {
         let chunk_index = state.chunk_macs.len();
         let mut offset = state.offset;
         let mut chunk_macs = state.chunk_macs.clone();
+
+        // If resume state indicates complete upload (offset == file_size),
+        // we might have missed the handle if the process crashed before finalization.
+        // Rewind by one chunk to force re-upload and get the handle again.
+        if offset == file_size && file_size > 0 {
+            if !chunk_macs.is_empty() {
+                println!("  * Resuming from 100% completion - rewinding last chunk to retrieve handle...");
+                chunk_macs.pop();
+
+                // Recalculate offset from remaining chunks
+                let mut new_offset = 0;
+                for i in 0..chunk_macs.len() {
+                    new_offset += get_chunk_size(i, new_offset, file_size);
+                }
+                offset = new_offset;
+            }
+        }
 
         // Seek to resume position
         if offset > 0 {
