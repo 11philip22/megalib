@@ -1508,7 +1508,6 @@ impl Session {
         // Rewind by one chunk to force re-upload and get the handle again.
         if offset == file_size && file_size > 0 {
             if !chunk_macs.is_empty() {
-                println!("  * Resuming from 100% completion - rewinding last chunk to retrieve handle...");
                 chunk_macs.pop();
 
                 // Recalculate offset from remaining chunks
