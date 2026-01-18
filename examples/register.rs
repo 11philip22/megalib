@@ -44,7 +44,7 @@ async fn main() {
     println!("Name: {}", name);
     println!();
 
-    match register(&email, &password, &name).await {
+    match register(&email, &password, &name, None).await {
         Ok(state) => {
             println!("✅ Registration initiated successfully!");
             println!();

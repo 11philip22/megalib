@@ -54,10 +54,14 @@ impl RegistrationState {
         let challenge_bytes = base64url_decode(parts[1])?;
 
         if password_key_bytes.len() != 16 {
-            return Err(MegaError::InvalidState("Password key must be 16 bytes".to_string()));
+            return Err(MegaError::InvalidState(
+                "Password key must be 16 bytes".to_string(),
+            ));
         }
         if challenge_bytes.len() != 16 {
-            return Err(MegaError::InvalidState("Challenge must be 16 bytes".to_string()));
+            return Err(MegaError::InvalidState(
+                "Challenge must be 16 bytes".to_string(),
+            ));
         }
 
         let mut password_key = [0u8; 16];
@@ -83,6 +87,8 @@ impl RegistrationState {
 /// * `password` - Password for the new account
 /// * `name` - Display name for the user
 ///
+/// * `proxy` - Optional proxy URL
+///
 /// # Returns
 /// `RegistrationState` that must be passed to `verify_registration()`
 ///
@@ -91,13 +97,25 @@ impl RegistrationState {
 /// use megalib::session::register;
 ///
 /// # async fn example() -> megalib::error::Result<()> {
-/// let state = register("user@example.com", "SecurePassword123", "John Doe").await?;
+/// let state = register("user@example.com", "SecurePassword123", "John Doe", None).await?;
 /// println!("Check your email and run verify_registration with the link");
 /// println!("State to save: {}", state.serialize());
 /// # Ok(())
 /// # }
 /// ```
-pub async fn register(email: &str, password: &str, name: &str) -> Result<RegistrationState> {
+pub async fn register(
+    email: &str,
+    password: &str,
+    name: &str,
+    proxy: Option<&str>,
+) -> Result<RegistrationState> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut api = match proxy {
+        Some(url) => ApiClient::with_proxy(url)?,
+        None => ApiClient::new(),
+    };
+
+    #[cfg(target_arch = "wasm32")]
     let mut api = ApiClient::new();
 
     // 1. Generate cryptographic keys
@@ -183,6 +201,7 @@ pub async fn register(email: &str, password: &str, name: &str) -> Result<Registr
 /// # Arguments
 /// * `state` - The `RegistrationState` from `register()`
 /// * `signup_key` - The signup key from the verification email link
+/// * `proxy` - Optional proxy URL
 ///
 /// # Example
 /// ```no_run
@@ -191,17 +210,28 @@ pub async fn register(email: &str, password: &str, name: &str) -> Result<Registr
 /// # async fn example() -> megalib::error::Result<()> {
 /// let state = RegistrationState::deserialize("...")?;
 /// let signup_key = "..."; // From email link
-/// verify_registration(&state, signup_key).await?;
+/// verify_registration(&state, signup_key, None).await?;
 /// println!("Account registered successfully!");
 /// # Ok(())
 /// # }
 /// ```
-pub async fn verify_registration(state: &RegistrationState, signup_key: &str) -> Result<()> {
+pub async fn verify_registration(
+    state: &RegistrationState,
+    signup_key: &str,
+    proxy: Option<&str>,
+) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut api = match proxy {
+        Some(url) => ApiClient::with_proxy(url)?,
+        None => ApiClient::new(),
+    };
+
+    #[cfg(target_arch = "wasm32")]
     let mut api = ApiClient::new();
 
     // 1. Generate RSA keypair
-    let rsa_key =
-        MegaRsaKey::generate().map_err(|e| MegaError::CryptoError(format!("RSA generation: {}", e)))?;
+    let rsa_key = MegaRsaKey::generate()
+        .map_err(|e| MegaError::CryptoError(format!("RSA generation: {}", e)))?;
 
     // 2. Login as anonymous user: us(user=user_handle)
     let response = api
@@ -238,8 +268,7 @@ pub async fn verify_registration(state: &RegistrationState, signup_key: &str) ->
 
     // 4. Decrypt and verify
     let email_bytes = base64url_decode(b64_email)?;
-    let email = String::from_utf8(email_bytes)
-        .map_err(|_| MegaError::InvalidResponse)?;
+    let email = String::from_utf8(email_bytes).map_err(|_| MegaError::InvalidResponse)?;
 
     let encrypted_master_key = base64url_decode(b64_master_key)?;
     let encrypted_challenge = base64url_decode(b64_challenge)?;

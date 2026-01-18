@@ -44,7 +44,7 @@ async fn main() {
     println!("User handle: {}", state.user_handle);
     println!();
 
-    match verify_registration(&state, &signup_key).await {
+    match verify_registration(&state, &signup_key, None).await {
         Ok(()) => {
             println!("✅ Account registered successfully!");
             println!();
