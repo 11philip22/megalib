@@ -41,6 +41,31 @@ impl Session {
             .and_then(|v| v.as_array())
             .ok_or(MegaError::InvalidResponse)?;
 
+        // Preload share keys for our own folders so children can decrypt when no ok entry is usable.
+        for node_json in nodes_array {
+            if let Some(1) = node_json.get("t").and_then(|v| v.as_i64()) {
+                if let (Some(handle), Some(kstr)) = (
+                    node_json.get("h").and_then(|v| v.as_str()),
+                    node_json.get("k").and_then(|v| v.as_str()),
+                ) {
+                    for part in kstr.split('/') {
+                        if let Some((key_handle, encrypted_key)) = part.split_once(':') {
+                            if key_handle == self.user_handle {
+                                if let Ok(enc) = base64url_decode(encrypted_key) {
+                                    let dec = aes128_ecb_decrypt(&enc, self.master_key());
+                                    if dec.len() >= 16 {
+                                        let mut key = [0u8; 16];
+                                        key.copy_from_slice(&dec[..16]);
+                                        self.share_keys.entry(handle.to_string()).or_insert(key);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut nodes = Vec::new();
         for node_json in nodes_array {
             if let Some(node) = self.parse_node(node_json) {
@@ -76,7 +101,7 @@ impl Session {
                             if decrypted.len() >= 16 {
                                 let mut key = [0u8; 16];
                                 key.copy_from_slice(&decrypted[..16]);
-                                self.share_keys.insert(h.to_string(), key);
+                                self.share_keys.entry(h.to_string()).or_insert(key);
                             }
                         }
                     }
@@ -87,7 +112,7 @@ impl Session {
                         if decrypted.len() >= 16 {
                             let mut key = [0u8; 16];
                             key.copy_from_slice(&decrypted[..16]);
-                            self.share_keys.insert(h.to_string(), key);
+                            self.share_keys.entry(h.to_string()).or_insert(key);
                         }
                     }
                 }

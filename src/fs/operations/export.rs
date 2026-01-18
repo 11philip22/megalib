@@ -1,15 +1,70 @@
 //! Export and public link operations.
 
 use serde_json::{json, Value};
+use rand::RngCore;
 
 use crate::base64::base64url_encode;
-use crate::crypto::aes::aes128_ecb_encrypt_block;
+use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::NodeType;
 use crate::session::Session;
 use super::utils::normalize_path;
 
 impl Session {
+    /// Best-effort refresh of ^!keys attribute to avoid server -3 on s2.
+    async fn refresh_keys_attribute(&mut self) -> Option<(String, String)> {
+        let user = self.user_handle.clone();
+        // Fetch current ^!keys user attribute
+        let resp = self
+            .api_mut()
+            .request(json!({
+                "a": "uga",
+                "u": user,
+                "ua": "^!keys"
+            }))
+            .await;
+
+        let Ok(resp) = resp else {
+            eprintln!("debug: uga (^!keys) failed: {:?}", resp.err());
+            return None;
+        };
+        // Response may be object or nested in an array; try both.
+        let (av, v) = if let Some(av) = resp.get("av").and_then(|v| v.as_str()) {
+            let ver = resp.get("v").and_then(|v| v.as_str()).unwrap_or("");
+            (av.to_string(), ver.to_string())
+        } else if let Some(arr) = resp.as_array() {
+            if let Some(obj) = arr.iter().find_map(|v| v.as_object()) {
+                let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
+                let ver = obj.get("v").and_then(|v| v.as_str()).unwrap_or("");
+                (av.to_string(), ver.to_string())
+            } else {
+                ("".to_string(), "".to_string())
+            }
+        } else {
+            ("".to_string(), "".to_string())
+        };
+
+        eprintln!("debug: uga (^!keys) av len={} v={}", av.len(), v);
+        if av.is_empty() {
+            return None;
+        }
+
+        // Post back via upv; ignore errors.
+        let upv_res = self
+            .api_mut()
+            .request(json!({
+                "a": "upv",
+                "^!keys": [av, v]
+            }))
+            .await;
+        if let Err(err) = upv_res {
+            eprintln!("debug: upv (^!keys) failed: {}", err);
+        } else {
+            eprintln!("debug: upv (^!keys) ok");
+        }
+        Some((av, v))
+    }
+
     /// Export a file to create a public download link.
     ///
     /// After calling this, use `node.get_link(true)` to get the full URL.
@@ -50,34 +105,53 @@ impl Session {
             // First set the share: {a: "s2", n: handle, s: [{u: "EXP", r: 0}]}
             // Then get the link handle: {a: "l", n: handle}
 
-            // Step 1: Create share with EXP (export) pseudo-user, include ok/ha
+            // Collect this folder and all descendants so we can include their keys in `cr`.
+            let mut share_nodes: Vec<(String, Vec<u8>)> = Vec::new();
+            share_nodes.push((handle.clone(), key.clone()));
+            let mut stack = vec![handle.clone()];
+            while let Some(parent) = stack.pop() {
+                for n in &self.nodes {
+                    if let Some(p) = &n.parent_handle {
+                        if p == &parent {
+                            stack.push(n.handle.clone());
+                            share_nodes.push((n.handle.clone(), n.key.clone()));
+                        }
+                    }
+                }
+            }
+            // Step 1: Create share with EXP (export) pseudo-user, include ok/ha and cr for all nodes
             if key.len() != 16 {
                 return Err(MegaError::Custom("Invalid folder key length".to_string()));
             }
-            let folder_key: [u8; 16] = key
-                .as_slice()
-                .try_into()
-                .map_err(|_| MegaError::Custom("Invalid folder key length".to_string()))?;
-            // Try to mimic webclient flow:
-            // 1) upv with ^!keys to avoid -3 on s2 (best-effort; ignore errors).
-            let _ = self
-                .api_mut()
-                .request(json!({
-                    "a": "upv",
-                    "^!keys": ["", ""]
-                }))
-                .await;
+            // Try to mimic webclient flow: refresh ^!keys then share.
+            let _ = self.refresh_keys_attribute().await;
 
-            // 2) Use zeroed ok/ha; cr carries folder key encrypted with share key.
-            let share_key = crate::crypto::make_random_key();
-            let ok = "AAAAAAAAAAAAAAAAAAAAAA";
-            let ha = "AAAAAAAAAAAAAAAAAAAAAA";
-            let enc_node_key = base64url_encode(&aes128_ecb_encrypt_block(&folder_key, &share_key));
-            let cr = json!([
-                [handle],
-                [handle],
-                [0, 0, enc_node_key] // privilege 0 (read-only), padding 0, node key encrypted with share key
-            ]);
+            // Build a minimal share: zero ok/ha, random share key, cr covering root + descendants.
+            let mut share_key = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut share_key);
+            let ok = "AAAAAAAAAAAAAAAAAAAAAA".to_string();
+            let ha = "AAAAAAAAAAAAAAAAAAAAAA".to_string();
+
+            // Build cr similar to webclient:
+            // cr[0] = [root handle]
+            // cr[1] = [root handle, child1, child2, ...]
+            // cr[2] = [0, idx, enc_key_for_handle] per entry (idx into cr[1])
+            let cr_nodes = vec![handle.clone()];
+            let mut cr_users: Vec<String> = Vec::new();
+            let mut cr_triplets: Vec<Value> = Vec::new();
+            for (idx, (h, kbytes)) in share_nodes.iter().enumerate() {
+                if kbytes.is_empty() || kbytes.len() % 16 != 0 {
+                    // skip malformed key
+                    continue;
+                }
+                let enc = aes128_ecb_encrypt(kbytes, &share_key);
+                let enc_b64 = base64url_encode(&enc);
+                cr_users.push(h.clone());
+                cr_triplets.push(json!(0));
+                cr_triplets.push(json!(idx as i64));
+                cr_triplets.push(json!(enc_b64));
+            }
+            let cr = json!([cr_nodes, cr_users, cr_triplets]);
 
             let share_resp = self
                 .api_mut()
@@ -87,13 +161,9 @@ impl Session {
                     "s": [{"u": "EXP", "r": 0}],
                     "ok": ok,
                     "ha": ha,
-                "cr": cr
-            }))
+                    "cr": cr
+                }))
                 .await?;
-            eprintln!(
-                "debug: export folder ok (enc share key) for {} -> {}",
-                path, enc_node_key
-            );
 
             if let Some(err) = share_resp.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
@@ -101,6 +171,12 @@ impl Session {
                     message: crate::api::client::ApiErrorCode::from(err).description().to_string(),
                 });
             }
+
+            eprintln!(
+                "debug: export folder ok for {} (share_key={})",
+                path,
+                base64url_encode(&share_key)
+            );
 
             // Step 2: Get the public link handle
             let response = self
