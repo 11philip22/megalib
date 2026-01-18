@@ -2,6 +2,7 @@
 
 use crate::error::{MegaError, Result};
 use reqwest::Client;
+use std::time::Duration;
 
 /// HTTP client for making requests to MEGA servers.
 #[derive(Debug)]
@@ -13,7 +14,11 @@ impl HttpClient {
     /// Create a new HTTP client.
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Failed to build reqwest client"),
         }
     }
 
@@ -27,6 +32,8 @@ impl HttpClient {
 
         let client = Client::builder()
             .proxy(proxy)
+            .timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| MegaError::CryptoError(format!("Failed to build client: {}", e)))?;
 
@@ -42,19 +49,44 @@ impl HttpClient {
     /// # Returns
     /// Response body as string
     pub async fn post(&self, url: &str, body: &str) -> Result<String> {
-        let response = self
-            .client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .body(body.to_string())
-            .send()
-            .await?;
+        let mut current = url.to_string();
+        for _ in 0..10 {
+            let response = self
+                .client
+                .post(&current)
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+                .send()
+                .await?;
 
-        if !response.status().is_success() {
-            return Err(MegaError::HttpError(response.status().as_u16()));
+            let status = response.status();
+            if status.is_redirection() {
+                if let Some(loc) = response.headers().get(reqwest::header::LOCATION) {
+                    if let Ok(loc_str) = loc.to_str() {
+                        let next = if loc_str.starts_with("http://") || loc_str.starts_with("https://") {
+                            loc_str.to_string()
+                        } else {
+                            let base = reqwest::Url::parse(&current)
+                                .map_err(|_| MegaError::HttpError(status.as_u16()))?;
+                            base.join(loc_str)
+                                .map_err(|_| MegaError::HttpError(status.as_u16()))?
+                                .to_string()
+                        };
+                        current = next;
+                        continue;
+                    }
+                }
+                return Err(MegaError::HttpError(status.as_u16()));
+            }
+
+            if !status.is_success() {
+                return Err(MegaError::HttpError(status.as_u16()));
+            }
+
+            return Ok(response.text().await?);
         }
 
-        Ok(response.text().await?)
+        Err(MegaError::Custom("Too many redirects".to_string()))
     }
 }
 

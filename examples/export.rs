@@ -14,6 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut email = None;
     let mut password = None;
     let mut path = None;
+    let mut proxy = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -30,6 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 path = args.get(i + 1).cloned();
                 i += 2;
             }
+            "--proxy" => {
+                proxy = args.get(i + 1).cloned();
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -39,9 +44,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email = email.expect("--email is required");
     let password = password.expect("--password is required");
     let path = path.expect("--path is required");
+    // Allow proxy from env if not provided via flag
+    if proxy.is_none() {
+        if let Ok(p) = env::var("MEGA_PROXY") {
+            proxy = Some(p);
+        }
+    }
 
     println!("Logging in...");
-    let mut session = Session::login(&email, &password).await?;
+    let mut session = if let Some(p) = proxy.as_deref() {
+        println!("Using proxy: {}", p);
+        Session::login_with_proxy(&email, &password, p).await?
+    } else {
+        Session::login(&email, &password).await?
+    };
     println!("Logged in as: {}", session.email);
 
     println!("Refreshing filesystem...");

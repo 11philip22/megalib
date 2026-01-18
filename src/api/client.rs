@@ -4,6 +4,7 @@ use crate::error::{MegaError, Result};
 use crate::http::HttpClient;
 use serde_json::Value;
 use std::time::Duration;
+use tokio::time::timeout;
 
 // Cross-platform sleep function
 #[cfg(not(target_arch = "wasm32"))]
@@ -183,34 +184,91 @@ impl ApiClient {
     pub async fn request(&mut self, request: Value) -> Result<Value> {
         self.request_id = self.request_id.wrapping_add(1);
 
-        let url = match &self.session_id {
+        let action_name = request.get("a").and_then(|v| v.as_str()).unwrap_or("");
+        let mut url = match &self.session_id {
             Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
             None => format!("{}?id={}", API_URL, self.request_id),
         };
+        // Browser adds bc=1 on share calls; include it for s2 to match behavior.
+        if action_name == "s2" {
+            url.push_str("&bc=1");
+        }
 
         // MEGA API expects array of commands
-        let body = serde_json::to_string(&vec![request])?;
+        let body = serde_json::to_string(&vec![request.clone()])?;
 
         // Retry logic with exponential backoff
         let mut delay_ms = 250u64;
         let max_delay_ms = 256_000u64; // ~4 minutes max
+        let mut attempts = 0;
+        let max_attempts = 8;
 
         loop {
             // Small delay to avoid rate limiting
             sleep(Duration::from_millis(20)).await;
 
-            let response_text = self.http.post(&url, &body).await?;
+            let action = request
+                .get("a")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            eprintln!("debug: api request a={} url={}", action, url);
+            let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
+                .await
+                .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
+            if action == "s2" || response_text.len() <= 64 {
+                eprintln!(
+                    "debug: api response a={} bytes={} body={}",
+                    action,
+                    response_text.len(),
+                    response_text
+                );
+            } else {
+                eprintln!(
+                    "debug: api response a={} bytes={}",
+                    action,
+                    response_text.len()
+                );
+            }
             let response: Value = serde_json::from_str(&response_text)?;
+            attempts += 1;
 
-            // Check for EAGAIN (-3) error - server asks us to retry
+            // Handle single-number array like [-3] as errors (including EAGAIN)
+            if let Some(arr) = response.as_array() {
+                if arr.len() == 1 {
+                    if let Some(code) = arr[0].as_i64() {
+                        // MEGA returns [0] for success on some calls (e.g. uc); treat >=0 as success.
+                        if code >= 0 {
+                            return Ok(Value::from(code));
+                        }
+                        let error_code = ApiErrorCode::from(code);
+                        if error_code == ApiErrorCode::Again {
+                            sleep(Duration::from_millis(delay_ms)).await;
+                            delay_ms *= 2;
+                            if attempts >= max_attempts || delay_ms > max_delay_ms {
+                                return Err(MegaError::ServerBusy);
+                            }
+                            if delay_ms > max_delay_ms {
+                                return Err(MegaError::ServerBusy);
+                            }
+                            continue;
+                        }
+                        return Err(MegaError::ApiError {
+                            code: code as i32,
+                            message: error_code.description().to_string(),
+                        });
+                    }
+                }
+                return arr.first().cloned().ok_or(MegaError::InvalidResponse);
+            }
+
+            // Check for scalar errors
             if let Some(code) = response.as_i64() {
                 let error_code = ApiErrorCode::from(code);
 
                 if error_code == ApiErrorCode::Again {
                     sleep(Duration::from_millis(delay_ms)).await;
                     delay_ms *= 2;
-
-                    if delay_ms > max_delay_ms {
+                    if attempts >= max_attempts || delay_ms > max_delay_ms {
                         return Err(MegaError::ServerBusy);
                     }
                     continue;
@@ -223,11 +281,8 @@ impl ApiClient {
                 });
             }
 
-            // Extract first response from array
-            return response
-                .as_array()
-                .and_then(|arr| arr.first().cloned())
-                .ok_or(MegaError::InvalidResponse);
+            // Unexpected shape
+            return Err(MegaError::InvalidResponse);
         }
     }
 
