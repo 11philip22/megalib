@@ -4,7 +4,7 @@
 //! state after each chunk, allowing interrupted uploads to be resumed.
 //!
 //! Usage:
-//!   cargo run --example upload_resume -- --email YOUR_EMAIL --password YOUR_PASSWORD <LOCAL_PATH> <REMOTE_PARENT>
+//!   cargo run --example upload_resume -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] <LOCAL_PATH> <REMOTE_PARENT>
 //!
 //! To test resume:
 //! 1. Start uploading a large file
@@ -13,49 +13,23 @@
 //!
 //! Note: A .megalib_upload file is created next to the source file to track progress.
 
+mod cli;
+
+use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
 use megalib::progress::TransferProgress;
 use megalib::Session;
-use std::env;
+
+const USAGE: &str = "Usage: cargo run --example upload_resume -- --email EMAIL --password PASSWORD [--proxy PROXY] <LOCAL_PATH> <REMOTE_PARENT>";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut password = None;
-    let mut local_path = None;
-    let mut remote_parent = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            arg => {
-                if local_path.is_none() {
-                    local_path = Some(arg.to_string());
-                } else if remote_parent.is_none() {
-                    remote_parent = Some(arg.to_string());
-                }
-                i += 1;
-            }
-        }
+    let creds = parse_credentials(USAGE);
+    if creds.positionals.len() != 2 {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("--email is required");
-    let password = password.expect("--password is required");
-    let local_path = local_path.expect(
-        "Usage: upload_resume --email <EMAIL> --password <PASSWORD> <LOCAL_PATH> <REMOTE_PARENT>",
-    );
-    let remote_parent = remote_parent.expect(
-        "Usage: upload_resume --email <EMAIL> --password <PASSWORD> <LOCAL_PATH> <REMOTE_PARENT>",
-    );
+    let local_path = creds.positionals[0].clone();
+    let remote_parent = creds.positionals[1].clone();
 
     // Check if local file exists
     let path = std::path::Path::new(&local_path);
@@ -67,7 +41,7 @@ async fn main() -> Result<()> {
     let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     println!("Logging in...");
-    let mut session = Session::login(&email, &password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in as: {}", session.email);
 
     println!("Refreshing filesystem...");

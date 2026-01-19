@@ -1,53 +1,29 @@
 //! Example: Download a file
 //!
 //! Usage:
-//!   cargo run --example download -- --email YOUR_EMAIL --password YOUR_PASSWORD <REMOTE_PATH> <LOCAL_PATH>
+//!   cargo run --example download -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>
 
+mod cli;
+
+use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
 use megalib::Session;
-use std::env;
 use std::fs::File;
 use std::io::BufWriter;
 
+const USAGE: &str = "Usage: cargo run --example download -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut password = None;
-    let mut remote_path = None;
-    let mut local_path = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            arg => {
-                if remote_path.is_none() {
-                    remote_path = Some(arg.to_string());
-                } else if local_path.is_none() {
-                    local_path = Some(arg.to_string());
-                }
-                i += 1;
-            }
-        }
+    let creds = parse_credentials(USAGE);
+    if creds.positionals.len() != 2 {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("--email is required");
-    let password = password.expect("--password is required");
-    let remote_path = remote_path
-        .expect("Usage: download --email <EMAIL> --password <PASSWORD> <REMOTE_PATH> <LOCAL_PATH>");
-    let local_path = local_path
-        .expect("Usage: download --email <EMAIL> --password <PASSWORD> <REMOTE_PATH> <LOCAL_PATH>");
+    let remote_path = creds.positionals[0].clone();
+    let local_path = creds.positionals[1].clone();
 
     println!("Logging in...");
-    let mut session = Session::login(&email, &password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in as: {}", session.email);
 
     println!("Refreshing filesystem...");

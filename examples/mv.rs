@@ -1,48 +1,27 @@
 //! Example: Move a file or folder
 //!
 //! Usage:
-//!   cargo run --example mv -- --email EMAIL --password PASSWORD <SOURCE> <DEST_FOLDER>
+//!   cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST_FOLDER>
 
+mod cli;
+
+use cli::{parse_credentials, usage_and_exit};
 use megalib::Session;
-use std::env;
+
+const USAGE: &str =
+    "Usage: cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST>";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut password = None;
-    let mut source = None;
-    let mut dest = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            arg => {
-                if source.is_none() {
-                    source = Some(arg.to_string());
-                } else if dest.is_none() {
-                    dest = Some(arg.to_string());
-                }
-                i += 1;
-            }
-        }
+    let creds = parse_credentials(USAGE);
+    if creds.positionals.len() != 2 {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("--email is required");
-    let password = password.expect("--password is required");
-    let source = source.expect("Usage: mv --email <EMAIL> --password <PASSWORD> <SOURCE> <DEST>");
-    let dest = dest.expect("Usage: mv --email <EMAIL> --password <PASSWORD> <SOURCE> <DEST>");
+    let source = creds.positionals[0].clone();
+    let dest = creds.positionals[1].clone();
 
     println!("Logging in...");
-    let mut session = Session::login(&email, &password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in as: {}", session.email);
 
     println!("Refreshing filesystem...");

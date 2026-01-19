@@ -1,45 +1,42 @@
 //! Example: Change account password (megapass equivalent)
 //!
 //! Usage:
-//!   cargo run --example passwd -- --email <EMAIL> --old <OLD_PASSWORD> --new <NEW_PASSWORD>
+//!   cargo run --example passwd -- --email <EMAIL> --password <CURRENT_PASSWORD> --new <NEW_PASSWORD> [--proxy PROXY]
 
+mod cli;
+
+use cli::{usage_and_exit, ArgParser, Credentials};
 use megalib::Session;
-use std::env;
+
+const USAGE: &str = "Usage: cargo run --example passwd -- --email EMAIL --password CURRENT --new NEW [--proxy PROXY]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut old_password = None;
-    let mut new_password = None;
+    let mut parser = ArgParser::new(USAGE);
+    let email = parser
+        .take_value(&["--email", "-e"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let current_password = parser
+        .take_value(&["--password", "-p", "--old"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let new_password = parser
+        .take_value(&["--new"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let proxy = parser.take_value(&["--proxy"]);
 
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--old" => {
-                old_password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--new" => {
-                new_password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
+    let remaining = parser.remaining();
+    if !remaining.is_empty() {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("Usage: passwd --email <EMAIL> --old <OLD> --new <NEW>");
-    let old_password = old_password.expect("Usage: passwd --email <EMAIL> --old <OLD> --new <NEW>");
-    let new_password = new_password.expect("Usage: passwd --email <EMAIL> --old <OLD> --new <NEW>");
+    let creds = Credentials {
+        email,
+        password: current_password.clone(),
+        proxy,
+        positionals: Vec::new(),
+    };
 
     println!("Logging in with old password...");
-    let mut session = Session::login(&email, &old_password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in successfully.");
 
     println!("Changing password...");
@@ -48,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Verifying new password...");
     // Try to login with new password
-    let session_new = Session::login(&email, &new_password).await;
+    let session_new = Session::login(&creds.email, &new_password).await;
     match session_new {
         Ok(_) => println!("Verification successful: Logged in with new password."),
         Err(e) => println!("Verification failed: {}", e),

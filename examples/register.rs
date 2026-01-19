@@ -3,42 +3,30 @@
 //! Usage:
 //!   cargo run --example register -- --email YOUR_EMAIL --password YOUR_PASSWORD --name "Your Name"
 
+mod cli;
+
+use cli::{usage_and_exit, ArgParser};
 use megalib::register;
-use std::env;
+
+const USAGE: &str =
+    "Usage: cargo run --example register -- --email EMAIL --password PASSWORD --name \"Your Name\"";
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let mut parser = ArgParser::new(USAGE);
+    let email = parser
+        .take_value(&["--email", "-e"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let password = parser
+        .take_value(&["--password", "-p"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let name = parser
+        .take_value(&["--name", "-n"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
 
-    // Parse arguments
-    let mut email = None;
-    let mut password = None;
-    let mut name = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" | "-e" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" | "-p" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--name" | "-n" => {
-                name = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
+    if !parser.remaining().is_empty() {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("--email is required");
-    let password = password.expect("--password is required");
-    let name = name.expect("--name is required");
 
     println!("Registering account for: {}", email);
     println!("Name: {}", name);

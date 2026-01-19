@@ -3,36 +3,23 @@
 //! This example demonstrates how to cache a session and reuse it.
 //!
 //! Usage:
-//!   cargo run --example cached_session -- --email EMAIL --password PASSWORD
+//!   cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]
 
+mod cli;
+
+use cli::{parse_credentials, usage_and_exit};
 use megalib::Session;
-use std::env;
 
 const SESSION_FILE: &str = "mega_session.json";
+const USAGE: &str =
+    "Usage: cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut password = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => i += 1,
-        }
+    let creds = parse_credentials(USAGE);
+    if !creds.positionals.is_empty() {
+        usage_and_exit(USAGE);
     }
-
-    let email = email.expect("--email is required");
-    let password = password.expect("--password is required");
 
     // Try to load cached session first
     println!("Checking for cached session...");
@@ -43,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => {
             println!("No cached session found, logging in...");
-            let s = Session::login(&email, &password).await?;
+            let s = creds.login().await?;
             println!("Logged in as: {}", s.email);
 
             // Save session for next time

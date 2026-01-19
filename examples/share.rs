@@ -1,66 +1,36 @@
 //! Example: Share a folder with another user (megashare equivalent)
 //!
 //! Usage:
-//!   cargo run --example share -- --email <EMAIL> --password <PASSWORD> --folder <FOLDER_HANDLE_OR_PATH> --recipient <RECIPIENT_EMAIL> --level <0|1|2>
+//!   cargo run --example share -- --email <EMAIL> --password <PASSWORD> [--proxy PROXY] --folder <FOLDER_HANDLE_OR_PATH> --recipient <RECIPIENT_EMAIL> --level <0|1|2>
 
+mod cli;
+
+use cli::{credentials_from_parser, usage_and_exit, ArgParser};
 use megalib::Session;
-use std::env;
+
+const USAGE: &str = "Usage: cargo run --example share -- --email EMAIL --password PASSWORD [--proxy PROXY] --folder PATH --recipient USER --level <0|1|2>";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let mut email = None;
-    let mut password = None;
-    let mut folder_path = None; // Can be handle or path? For simplicity, handle first, or path lookup
-    let mut recipient = None;
-    let mut level = 0; // Default Read-only
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--folder" => {
-                folder_path = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--recipient" => {
-                recipient = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--level" => {
-                if let Some(l) = args.get(i + 1) {
-                    level = l.parse().unwrap_or(0);
-                }
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
+    let mut parser = ArgParser::new(USAGE);
+    let mut creds = credentials_from_parser(&mut parser, USAGE);
+    let folder_path = parser
+        .take_value(&["--folder"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let recipient = parser
+        .take_value(&["--recipient"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let level = parser
+        .take_value(&["--level"])
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(0);
+    creds.positionals = parser.remaining();
+    if !creds.positionals.is_empty() {
+        usage_and_exit(USAGE);
     }
 
-    let email = email.expect(
-        "Usage: share --email <EMAIL> --password <PASS> --folder <PATH> --recipient <USER>",
-    );
-    let password = password.expect(
-        "Usage: share --email <EMAIL> --password <PASS> --folder <PATH> --recipient <USER>",
-    );
-    let folder_path = folder_path.expect(
-        "Usage: share --email <EMAIL> --password <PASS> --folder <PATH> --recipient <USER>",
-    );
-    let recipient = recipient.expect(
-        "Usage: share --email <EMAIL> --password <PASS> --folder <PATH> --recipient <USER>",
-    );
-
     println!("Logging in...");
-    let mut session = Session::login(&email, &password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in as {}", session.email);
 
     println!("Fetching file list...");

@@ -2,27 +2,24 @@
 ///
 /// This demonstrates uploading in-memory data without writing to disk first.
 /// Useful for WASM environments or when data is generated programmatically.
+mod cli;
+
+use cli::{parse_credentials, usage_and_exit};
 use megalib::Session;
-use std::env;
 use std::process;
+
+const USAGE: &str = "Usage: cargo run --example upload_bytes -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH>";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    if args.len() < 4 {
-        println!("Usage: upload_bytes <email> <password> <remote_path>");
-        println!();
-        println!("This example uploads a sample text string to the specified remote path.");
-        process::exit(1);
+    let creds = parse_credentials(USAGE);
+    if creds.positionals.len() != 1 {
+        usage_and_exit(USAGE);
     }
-
-    let email = &args[1];
-    let password = &args[2];
-    let remote_path = &args[3];
+    let remote_path = &creds.positionals[0];
 
     println!("Logging in...");
-    let mut session = Session::login(email, password).await?;
+    let mut session = creds.login().await?;
     println!("Logged in as: {}", session.email);
 
     println!("Refreshing filesystem...");

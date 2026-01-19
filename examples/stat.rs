@@ -1,57 +1,31 @@
 //! Example: Get information about a file or folder
 //!
 //! Usage:
-//!   cargo run --example stat -- --email YOUR_EMAIL --password YOUR_PASSWORD --path /path/to/node
+//!   cargo run --example stat -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] --path /path/to/node
 
+mod cli;
+
+use cli::{credentials_from_parser, usage_and_exit, ArgParser};
 use megalib::Session;
-use std::env;
 use std::process;
+
+const USAGE: &str =
+    "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD [--proxy PROXY] --path PATH";
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-
-    // Parse arguments
-    let mut email = None;
-    let mut password = None;
-    let mut path = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--email" | "-e" => {
-                email = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--password" | "-p" => {
-                password = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--path" => {
-                path = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
+    let mut parser = ArgParser::new(USAGE);
+    let mut creds = credentials_from_parser(&mut parser, USAGE);
+    let path = parser
+        .take_value(&["--path"])
+        .unwrap_or_else(|| usage_and_exit(USAGE));
+    creds.positionals = parser.remaining();
+    if !creds.positionals.is_empty() {
+        usage_and_exit(USAGE);
     }
-
-    if email.is_none() || password.is_none() || path.is_none() {
-        eprintln!(
-            "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD --path PATH"
-        );
-        process::exit(1);
-    }
-
-    let email = email.unwrap();
-    let password = password.unwrap();
-    let path = path.unwrap();
 
     println!("Logging in...");
-    let mut session = Session::login(&email, &password)
-        .await
-        .expect("Login failed");
+    let mut session = creds.login().await.expect("Login failed");
 
     println!("Refreshing filesystem...");
     session.refresh().await.expect("Refresh failed");
