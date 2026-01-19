@@ -1,7 +1,6 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
-use megalib::Session;
 use std::process;
 
 const USAGE: &str =

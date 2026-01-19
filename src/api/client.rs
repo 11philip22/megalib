@@ -207,28 +207,28 @@ impl ApiClient {
             // Small delay to avoid rate limiting
             sleep(Duration::from_millis(20)).await;
 
-            let action = request
+            let _action = request
                 .get("a")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            eprintln!("debug: api request a={} url={}", action, url);
+            // eprintln!("debug: api request a={} url={}", _action, url);
             let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
                 .await
                 .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
-            if action == "s2" || response_text.len() <= 64 {
-                eprintln!(
-                    "debug: api response a={} bytes={} body={}",
-                    action,
-                    response_text.len(),
-                    response_text
-                );
-            } else {
-                eprintln!(
-                    "debug: api response a={} bytes={}",
-                    action,
-                    response_text.len()
-                );
-            }
+            // if action == "s2" || response_text.len() <= 64 {
+            //     eprintln!(
+            //         "debug: api response a={} bytes={} body={}",
+            //         action,
+            //         response_text.len(),
+            //         response_text
+            //     );
+            // } else {
+            //     eprintln!(
+            //         "debug: api response a={} bytes={}",
+            //         action,
+            //         response_text.len()
+            //     );
+            // }
             let response: Value = serde_json::from_str(&response_text)?;
             attempts += 1;
 

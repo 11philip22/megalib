@@ -5,7 +5,6 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
-use megalib::Session;
 use std::process;
 
 const USAGE: &str = "Usage: cargo run --example upload_bytes -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH>";

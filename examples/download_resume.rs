@@ -16,7 +16,6 @@ mod cli;
 use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
 use megalib::progress::TransferProgress;
-use megalib::Session;
 
 const USAGE: &str = "Usage: cargo run --example download_resume -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
 

@@ -2,7 +2,6 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
-use megalib::Session;
 
 const USAGE: &str =
     "Usage: cargo run --example mkdir -- --email EMAIL --password PASSWORD [--proxy PROXY] <PATH>";

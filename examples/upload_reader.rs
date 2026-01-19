@@ -7,7 +7,6 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 use futures::io::Cursor;
-use megalib::Session;
 use std::process;
 
 const USAGE: &str = "Usage: cargo run --example upload_reader -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH>";

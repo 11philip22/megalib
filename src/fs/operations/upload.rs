@@ -225,11 +225,11 @@ impl Session {
                     .await
                 {
                     Ok(node) => return Ok(node),
-                    Err(e) => {
-                        println!(
-                            "  ! Resume failed: {}. Restarting upload from scratch...",
-                            e
-                        );
+                    Err(_e) => {
+                        // println!(
+                        //     "  ! Resume failed: {}. Restarting upload from scratch...",
+                        //     _e
+                        // );
                         // Delete invalid state and fall through to fresh upload
                         UploadState::delete(&state_path)?;
                     }

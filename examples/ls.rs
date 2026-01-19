@@ -6,7 +6,6 @@
 mod cli;
 
 use cli::{credentials_from_parser, usage_and_exit, ArgParser};
-use megalib::Session;
 
 const USAGE: &str = "Usage: cargo run --example ls -- --email EMAIL --password PASSWORD [--proxy PROXY] [--path PATH]";
 

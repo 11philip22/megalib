@@ -7,7 +7,6 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
-use megalib::Session;
 use std::fs::File;
 use std::io::BufWriter;
 

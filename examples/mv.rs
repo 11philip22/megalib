@@ -6,7 +6,6 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
-use megalib::Session;
 
 const USAGE: &str =
     "Usage: cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST>";

@@ -11,59 +11,59 @@ use crate::session::Session;
 use super::utils::normalize_path;
 
 impl Session {
-    /// Best-effort refresh of ^!keys attribute to avoid server -3 on s2.
-    async fn refresh_keys_attribute(&mut self) -> Option<(String, String)> {
-        let user = self.user_handle.clone();
-        // Fetch current ^!keys user attribute
-        let resp = self
-            .api_mut()
-            .request(json!({
-                "a": "uga",
-                "u": user,
-                "ua": "^!keys"
-            }))
-            .await;
-
-        let Ok(resp) = resp else {
-            eprintln!("debug: uga (^!keys) failed: {:?}", resp.err());
-            return None;
-        };
-        // Response may be object or nested in an array; try both.
-        let (av, v) = if let Some(av) = resp.get("av").and_then(|v| v.as_str()) {
-            let ver = resp.get("v").and_then(|v| v.as_str()).unwrap_or("");
-            (av.to_string(), ver.to_string())
-        } else if let Some(arr) = resp.as_array() {
-            if let Some(obj) = arr.iter().find_map(|v| v.as_object()) {
-                let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
-                let ver = obj.get("v").and_then(|v| v.as_str()).unwrap_or("");
-                (av.to_string(), ver.to_string())
-            } else {
-                ("".to_string(), "".to_string())
-            }
-        } else {
-            ("".to_string(), "".to_string())
-        };
-
-        eprintln!("debug: uga (^!keys) av len={} v={}", av.len(), v);
-        if av.is_empty() {
-            return None;
-        }
-
-        // Post back via upv; ignore errors.
-        let upv_res = self
-            .api_mut()
-            .request(json!({
-                "a": "upv",
-                "^!keys": [av, v]
-            }))
-            .await;
-        if let Err(err) = upv_res {
-            eprintln!("debug: upv (^!keys) failed: {}", err);
-        } else {
-            eprintln!("debug: upv (^!keys) ok");
-        }
-        Some((av, v))
-    }
+    // /// Best-effort refresh of ^!keys attribute to avoid server -3 on s2.
+    // async fn refresh_keys_attribute(&mut self) -> Option<(String, String)> {
+    //     let user = self.user_handle.clone();
+    //     // Fetch current ^!keys user attribute
+    //     let resp = self
+    //         .api_mut()
+    //         .request(json!({
+    //             "a": "uga",
+    //             "u": user,
+    //             "ua": "^!keys"
+    //         }))
+    //         .await;
+    //
+    //     let Ok(resp) = resp else {
+    //         eprintln!("debug: uga (^!keys) failed: {:?}", resp.err());
+    //         return None;
+    //     };
+    //     // Response may be object or nested in an array; try both.
+    //     let (av, v) = if let Some(av) = resp.get("av").and_then(|v| v.as_str()) {
+    //         let ver = resp.get("v").and_then(|v| v.as_str()).unwrap_or("");
+    //         (av.to_string(), ver.to_string())
+    //     } else if let Some(arr) = resp.as_array() {
+    //         if let Some(obj) = arr.iter().find_map(|v| v.as_object()) {
+    //             let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
+    //             let ver = obj.get("v").and_then(|v| v.as_str()).unwrap_or("");
+    //             (av.to_string(), ver.to_string())
+    //         } else {
+    //             ("".to_string(), "".to_string())
+    //         }
+    //     } else {
+    //         ("".to_string(), "".to_string())
+    //     };
+    //
+    //     eprintln!("debug: uga (^!keys) av len={} v={}", av.len(), v);
+    //     if av.is_empty() {
+    //         return None;
+    //     }
+    //
+    //     // Post back via upv; ignore errors.
+    //     let upv_res = self
+    //         .api_mut()
+    //         .request(json!({
+    //             "a": "upv",
+    //             "^!keys": [av, v]
+    //         }))
+    //         .await;
+    //     if let Err(err) = upv_res {
+    //         eprintln!("debug: upv (^!keys) failed: {}", err);
+    //     } else {
+    //         eprintln!("debug: upv (^!keys) ok");
+    //     }
+    //     Some((av, v))
+    // }
 
     /// Export a file to create a public download link.
     ///
@@ -123,8 +123,8 @@ impl Session {
             if key.len() != 16 {
                 return Err(MegaError::Custom("Invalid folder key length".to_string()));
             }
-            // Try to mimic webclient flow: refresh ^!keys then share.
-            let _ = self.refresh_keys_attribute().await;
+            // // Try to mimic webclient flow: refresh ^!keys then share.
+            // let _ = self.refresh_keys_attribute().await;
 
             // Build a minimal share: zero ok/ha, random share key, cr covering root + descendants.
             let mut share_key = [0u8; 16];
@@ -172,11 +172,11 @@ impl Session {
                 });
             }
 
-            eprintln!(
-                "debug: export folder ok for {} (share_key={})",
-                path,
-                base64url_encode(&share_key)
-            );
+            // eprintln!(
+            //     "debug: export folder ok for {} (share_key={})",
+            //     path,
+            //     base64url_encode(&share_key)
+            // );
 
             // Step 2: Get the public link handle
             let response = self

@@ -44,6 +44,7 @@ impl ArgParser {
     }
 }
 
+#[allow(dead_code)] // Some examples only need ArgParser/usage helpers.
 pub struct Credentials {
     pub email: String,
     pub password: String,
@@ -51,6 +52,7 @@ pub struct Credentials {
     pub positionals: Vec<String>,
 }
 
+#[allow(dead_code)]
 pub fn parse_credentials(usage: &'static str) -> Credentials {
     let mut parser = ArgParser::new(usage);
     let mut credentials = credentials_from_parser(&mut parser, usage);
@@ -58,6 +60,7 @@ pub fn parse_credentials(usage: &'static str) -> Credentials {
     credentials
 }
 
+#[allow(dead_code)]
 pub fn credentials_from_parser(parser: &mut ArgParser, usage: &'static str) -> Credentials {
     let email = parser
         .take_value(&["--email", "-e"])
@@ -76,6 +79,7 @@ pub fn credentials_from_parser(parser: &mut ArgParser, usage: &'static str) -> C
 }
 
 impl Credentials {
+    #[allow(dead_code)]
     pub async fn login(&self) -> megalib::error::Result<megalib::Session> {
         if let Some(proxy) = &self.proxy {
             megalib::Session::login_with_proxy(&self.email, &self.password, proxy).await
