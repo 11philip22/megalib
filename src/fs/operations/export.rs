@@ -87,6 +87,9 @@ impl Session {
     /// # }
     /// ```
     pub async fn export(&mut self, path: &str) -> Result<String> {
+        // Ensure upgraded keys are present before sharing/exporting.
+        self.ensure_keys_attribute().await?;
+
         // Find the node
         let normalized_path = normalize_path(path);
         let node_idx = self

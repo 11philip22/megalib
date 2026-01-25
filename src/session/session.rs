@@ -12,6 +12,8 @@ use crate::crypto::{
     decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
     make_password_key, make_random_key, make_username_hash, MegaRsaKey,
 };
+use crate::crypto::key_manager::KeyManager;
+use crate::crypto::keyring::Keyring;
 use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
@@ -38,6 +40,8 @@ pub struct Session {
     pub(crate) nodes: Vec<Node>,
     /// Share keys for shared folders
     pub(crate) share_keys: HashMap<String, [u8; 16]>,
+    /// Minimal key manager for upgraded accounts (^!keys)
+    pub(crate) key_manager: KeyManager,
     /// Whether resume is enabled for interrupted transfers
     resume_enabled: bool,
     /// Progress callback for transfer progress
@@ -193,6 +197,7 @@ impl Session {
             user_handle,
             nodes: Vec::new(),
             share_keys: HashMap::new(),
+            key_manager: KeyManager::default(),
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -206,8 +211,13 @@ impl Session {
     }
 
     /// Get the master key (for internal use).
-    pub(crate) fn master_key(&self) -> &[u8; 16] {
+pub(crate) fn master_key(&self) -> &[u8; 16] {
         &self.master_key
+    }
+
+    /// Get a share key from the cached KeyManager-minimal (if present).
+    pub(crate) fn share_key_from_manager(&self, handle: &str) -> Option<[u8; 16]> {
+        self.key_manager.get_share_key(handle)
     }
 
     /// Get the RSA private key (for decrypting share keys from other users).
@@ -428,6 +438,15 @@ impl Session {
         Ok(())
     }
 
+    /// Try to decode the keyring (*keyring) attribute and return Ed25519/Cu25519 privkeys.
+    pub(crate) async fn load_keyring(&mut self) -> Result<Keyring> {
+        let Some(enc_keyring) = self.get_user_attribute_raw("*keyring").await? else {
+            return Err(MegaError::Custom("Keyring not found".to_string()));
+        };
+
+        Keyring::from_encrypted(&enc_keyring, &self.master_key)
+    }
+
     /// Fetch a raw user attribute (e.g. "^!keys" or "*keyring"). Returns decoded bytes if present.
     /// If the attribute does not exist, returns Ok(None).
     pub async fn get_user_attribute_raw(&mut self, attr: &str) -> Result<Option<Vec<u8>>> {
@@ -477,6 +496,61 @@ impl Session {
             });
         }
 
+        Ok(())
+    }
+
+    /// Try to load ^!keys (minimal) into key_manager. Returns true if loaded and ready.
+    pub async fn load_keys_attribute(&mut self) -> Result<bool> {
+        let Some(enc_keys) = self.get_user_attribute_raw("^!keys").await? else {
+            return Ok(false);
+        };
+
+        if let Ok(km) = KeyManager::deserialize_minimal(&enc_keys) {
+            if km.is_ready() {
+                // populate share_keys map for quick lookup
+                for (h, k) in &km.share_keys {
+                    if k.len() == 16 {
+                        let mut arr: [u8; 16] = [0u8; 16];
+                        arr.copy_from_slice(k);
+                        self.share_keys.entry(h.clone()).or_insert(arr);
+                    }
+                }
+                self.key_manager = km;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Minimal upgrade: build ^!keys from keyring if ^!keys is missing.
+    pub async fn ensure_keys_attribute(&mut self) -> Result<()> {
+        if self.key_manager.is_ready() {
+            return Ok(());
+        }
+
+        if self.load_keys_attribute().await? {
+            return Ok(());
+        }
+
+        // No ^!keys yet: try to load keyring and create a minimal ^!keys blob.
+        let keyring = self.load_keyring().await?;
+        let mut km = KeyManager::default();
+        km.set_priv_keys(
+            keyring.ed25519.clone().unwrap_or_default(),
+            keyring.cu25519.clone().unwrap_or_default(),
+        );
+        km.generation = 1;
+
+        // include any cached share_keys (legacy) into ^!keys
+        for (h, k) in self.share_keys.iter() {
+            km.add_share_key(h.clone(), k.to_vec());
+        }
+
+        let blob = km.serialize_minimal(km.generation)?;
+        let blob_b64 = base64url_encode(&blob);
+        self.set_private_attribute("^!keys", &blob_b64, None).await?;
+
+        self.key_manager = km;
         Ok(())
     }
 
@@ -600,6 +674,9 @@ impl Session {
         while let Some(handle) = current {
             if let Some(key) = self.share_keys.get(&handle) {
                 return Some((handle, *key));
+            }
+            if let Some(k) = self.share_key_from_manager(&handle) {
+                return Some((handle, k));
             }
 
             current = self
@@ -765,6 +842,7 @@ impl Session {
             user_handle,
             nodes: Vec::new(),
             share_keys: HashMap::new(),
+            key_manager: KeyManager::default(),
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -800,6 +878,7 @@ mod tests {
             user_handle: "handle".to_string(),
             nodes: Vec::new(),
             share_keys: HashMap::new(),
+            key_manager: KeyManager::default(),
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,

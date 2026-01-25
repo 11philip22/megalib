@@ -140,6 +140,9 @@ impl Session {
 
         // 1. Get upload URL
         // [{a:u, s:<SIZE>, ssl:0}]
+        // Ensure upgraded keys are present before uploading (for shared parent handling).
+        self.ensure_keys_attribute().await?;
+
         let response = self
             .api_mut()
             .request(json!({

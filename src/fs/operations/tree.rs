@@ -57,6 +57,11 @@ impl Session {
                                         let mut key = [0u8; 16];
                                         key.copy_from_slice(&dec[..16]);
                                         self.share_keys.entry(handle.to_string()).or_insert(key);
+                                        // Also populate key_manager for upgraded flows.
+                                        if self.key_manager.is_ready() {
+                                            self.key_manager
+                                                .add_share_key(handle.to_string(), key.to_vec());
+                                        }
                                     }
                                 }
                             }
