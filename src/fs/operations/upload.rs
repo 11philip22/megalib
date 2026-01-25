@@ -814,6 +814,12 @@ impl Session {
             if let Some(cr_value) = self.build_cr_for_nodes(&share_handle, &share_key, &targets) {
                 request["cr"] = cr_value;
             }
+            // Also persist the parent share key into ^!keys if available (best effort).
+            if self.key_manager.is_ready() {
+                self.key_manager
+                    .add_share_key_from_str(&share_handle, &share_key);
+                let _ = self.persist_keys_attribute().await;
+            }
         }
 
         let response = self.api_mut().request(request).await?;

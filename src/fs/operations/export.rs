@@ -193,6 +193,12 @@ impl Session {
             self.nodes[node_idx].link = Some(link_handle.clone());
             // Exported link key is the share key.
             self.share_keys.insert(handle.clone(), share_key);
+            // Persist share key into ^!keys if available
+            if self.key_manager.is_ready() {
+                self.key_manager
+                    .add_share_key_from_str(&handle, &share_key);
+                let _ = self.persist_keys_attribute().await;
+            }
 
             // Build folder URL
             let key_b64 = base64url_encode(&share_key);

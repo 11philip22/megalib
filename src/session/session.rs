@@ -217,7 +217,7 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
 
     /// Get a share key from the cached KeyManager-minimal (if present).
     pub(crate) fn share_key_from_manager(&self, handle: &str) -> Option<[u8; 16]> {
-        self.key_manager.get_share_key(handle)
+        self.key_manager.get_share_key_from_str(handle)
     }
 
     /// Get the RSA private key (for decrypting share keys from other users).
@@ -450,7 +450,14 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
     /// Fetch a raw user attribute (e.g. "^!keys" or "*keyring"). Returns decoded bytes if present.
     /// If the attribute does not exist, returns Ok(None).
     pub async fn get_user_attribute_raw(&mut self, attr: &str) -> Result<Option<Vec<u8>>> {
-        let response = self.api_mut().get_user_attribute(attr).await?;
+        let response = match self.api_mut().get_user_attribute(attr).await {
+            Ok(v) => v,
+            Err(MegaError::ApiError { code, .. }) if code == -9 => {
+                // Attribute not set
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
 
         // Attribute responses can be either {"av": "...", "v": <version>} or an array of objects.
         if let Some(av) = response.get("av").and_then(|v| v.as_str()) {
@@ -505,19 +512,19 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             return Ok(false);
         };
 
-        if let Ok(km) = KeyManager::deserialize_minimal(&enc_keys) {
-            if km.is_ready() {
-                // populate share_keys map for quick lookup
-                for (h, k) in &km.share_keys {
-                    if k.len() == 16 {
-                        let mut arr: [u8; 16] = [0u8; 16];
-                        arr.copy_from_slice(k);
-                        self.share_keys.entry(h.clone()).or_insert(arr);
-                    }
-                }
-                self.key_manager = km;
-                return Ok(true);
+        let mut km = KeyManager::new();
+        km.decode_container(&enc_keys, &self.master_key)?;
+        if km.is_ready() {
+            // populate share_keys map for quick lookup
+            for sk in &km.share_keys {
+                let mut arr: [u8; 16] = [0u8; 16];
+                arr.copy_from_slice(&sk.key);
+                // encode handle back to base64url for map key
+                let handle_b64 = crate::base64::base64url_encode(&sk.handle);
+                self.share_keys.entry(handle_b64).or_insert(arr);
             }
+            self.key_manager = km;
+            return Ok(true);
         }
         Ok(false)
     }
@@ -532,21 +539,28 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             return Ok(());
         }
 
-        // No ^!keys yet: try to load keyring and create a minimal ^!keys blob.
-        let keyring = self.load_keyring().await?;
-        let mut km = KeyManager::default();
+        // No ^!keys yet: try to load keyring and create a ^!keys blob.
+        let keyring = match self.load_keyring().await {
+            Ok(kr) => kr,
+            Err(MegaError::Custom(msg)) if msg.contains("Keyring not found") => {
+                // Not upgraded yet; skip for now.
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let mut km = KeyManager::new();
         km.set_priv_keys(
-            keyring.ed25519.clone().unwrap_or_default(),
-            keyring.cu25519.clone().unwrap_or_default(),
+            keyring.ed25519.clone().unwrap_or_default().as_slice(),
+            keyring.cu25519.clone().unwrap_or_default().as_slice(),
         );
         km.generation = 1;
 
         // include any cached share_keys (legacy) into ^!keys
         for (h, k) in self.share_keys.iter() {
-            km.add_share_key(h.clone(), k.to_vec());
+            km.add_share_key_from_str(h, k);
         }
 
-        let blob = km.serialize_minimal(km.generation)?;
+        let blob = km.encode_container(&self.master_key)?;
         let blob_b64 = base64url_encode(&blob);
         self.set_private_attribute("^!keys", &blob_b64, None).await?;
 
@@ -663,6 +677,11 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
         self.share_keys
             .entry(node_handle.to_string())
             .or_insert(share_key);
+        if self.key_manager.is_ready() {
+            self.key_manager
+                .add_share_key_from_str(node_handle, &share_key);
+            let _ = self.persist_keys_attribute().await;
+        }
 
         Ok(())
     }
@@ -722,6 +741,19 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
         }
 
         Some(json!([cr_nodes, cr_items, cr_triplets]))
+    }
+
+    /// Persist the minimal ^!keys attribute from the in-memory KeyManager.
+    pub async fn persist_keys_attribute(&mut self) -> Result<()> {
+        if !self.key_manager.is_ready() {
+            return Err(MegaError::Custom(
+                "KeyManager not initialized; cannot persist ^!keys".to_string(),
+            ));
+        }
+
+        let blob = self.key_manager.encode_container(&self.master_key)?;
+        let blob_b64 = base64url_encode(&blob);
+        self.set_private_attribute("^!keys", &blob_b64, None).await
     }
 
     /// Load a previously saved session from a file.
