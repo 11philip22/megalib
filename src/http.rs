@@ -63,15 +63,16 @@ impl HttpClient {
             if status.is_redirection() {
                 if let Some(loc) = response.headers().get(reqwest::header::LOCATION) {
                     if let Ok(loc_str) = loc.to_str() {
-                        let next = if loc_str.starts_with("http://") || loc_str.starts_with("https://") {
-                            loc_str.to_string()
-                        } else {
-                            let base = reqwest::Url::parse(&current)
-                                .map_err(|_| MegaError::HttpError(status.as_u16()))?;
-                            base.join(loc_str)
-                                .map_err(|_| MegaError::HttpError(status.as_u16()))?
-                                .to_string()
-                        };
+                        let next =
+                            if loc_str.starts_with("http://") || loc_str.starts_with("https://") {
+                                loc_str.to_string()
+                            } else {
+                                let base = reqwest::Url::parse(&current)
+                                    .map_err(|_| MegaError::HttpError(status.as_u16()))?;
+                                base.join(loc_str)
+                                    .map_err(|_| MegaError::HttpError(status.as_u16()))?
+                                    .to_string()
+                            };
                         current = next;
                         continue;
                     }

@@ -174,9 +174,10 @@ mod tests {
     #[test]
     fn test_state_file_path() {
         let path = UploadState::state_file_path("/home/user/myfile.zip");
-        assert!(path
-            .to_string_lossy()
-            .ends_with("myfile.zip.megalib_upload"));
+        assert!(
+            path.to_string_lossy()
+                .ends_with("myfile.zip.megalib_upload")
+        );
     }
 
     #[test]

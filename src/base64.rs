@@ -5,7 +5,7 @@
 //! - Replaces `/` with `_`
 //! - Removes padding `=` characters
 
-use base64::{engine::general_purpose, Engine};
+use base64::{Engine, engine::general_purpose};
 
 /// Encode bytes to MEGA's URL-safe base64 (no padding).
 ///

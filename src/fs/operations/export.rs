@@ -1,70 +1,15 @@
 //! Export and public link operations.
 
-use serde_json::{json, Value};
 use rand::RngCore;
+use serde_json::{Value, json};
 
+use super::utils::normalize_path;
 use crate::base64::base64url_encode;
-use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::NodeType;
 use crate::session::Session;
-use super::utils::normalize_path;
 
 impl Session {
-    // /// Best-effort refresh of ^!keys attribute to avoid server -3 on s2.
-    // async fn refresh_keys_attribute(&mut self) -> Option<(String, String)> {
-    //     let user = self.user_handle.clone();
-    //     // Fetch current ^!keys user attribute
-    //     let resp = self
-    //         .api_mut()
-    //         .request(json!({
-    //             "a": "uga",
-    //             "u": user,
-    //             "ua": "^!keys"
-    //         }))
-    //         .await;
-    //
-    //     let Ok(resp) = resp else {
-    //         eprintln!("debug: uga (^!keys) failed: {:?}", resp.err());
-    //         return None;
-    //     };
-    //     // Response may be object or nested in an array; try both.
-    //     let (av, v) = if let Some(av) = resp.get("av").and_then(|v| v.as_str()) {
-    //         let ver = resp.get("v").and_then(|v| v.as_str()).unwrap_or("");
-    //         (av.to_string(), ver.to_string())
-    //     } else if let Some(arr) = resp.as_array() {
-    //         if let Some(obj) = arr.iter().find_map(|v| v.as_object()) {
-    //             let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
-    //             let ver = obj.get("v").and_then(|v| v.as_str()).unwrap_or("");
-    //             (av.to_string(), ver.to_string())
-    //         } else {
-    //             ("".to_string(), "".to_string())
-    //         }
-    //     } else {
-    //         ("".to_string(), "".to_string())
-    //     };
-    //
-    //     eprintln!("debug: uga (^!keys) av len={} v={}", av.len(), v);
-    //     if av.is_empty() {
-    //         return None;
-    //     }
-    //
-    //     // Post back via upv; ignore errors.
-    //     let upv_res = self
-    //         .api_mut()
-    //         .request(json!({
-    //             "a": "upv",
-    //             "^!keys": [av, v]
-    //         }))
-    //         .await;
-    //     if let Err(err) = upv_res {
-    //         eprintln!("debug: upv (^!keys) failed: {}", err);
-    //     } else {
-    //         eprintln!("debug: upv (^!keys) ok");
-    //     }
-    //     Some((av, v))
-    // }
-
     /// Export a file to create a public download link.
     ///
     /// After calling this, use `node.get_link(true)` to get the full URL.
@@ -159,7 +104,9 @@ impl Session {
             if let Some(err) = share_resp.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
                     code: err as i32,
-                    message: crate::api::client::ApiErrorCode::from(err).description().to_string(),
+                    message: crate::api::client::ApiErrorCode::from(err)
+                        .description()
+                        .to_string(),
                 });
             }
 
@@ -186,7 +133,9 @@ impl Session {
             if let Some(err) = response.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
                     code: err as i32,
-                    message: crate::api::client::ApiErrorCode::from(err).description().to_string(),
+                    message: crate::api::client::ApiErrorCode::from(err)
+                        .description()
+                        .to_string(),
                 });
             }
 
@@ -201,8 +150,7 @@ impl Session {
             self.share_keys.insert(handle.clone(), share_key);
             // Persist share key into ^!keys if available
             if self.key_manager.is_ready() {
-                self.key_manager
-                    .add_share_key_from_str(&handle, &share_key);
+                self.key_manager.add_share_key_from_str(&handle, &share_key);
                 let _ = self.persist_keys_attribute().await;
             }
 
@@ -300,5 +248,4 @@ impl Session {
 
         Ok(results)
     }
-
 }

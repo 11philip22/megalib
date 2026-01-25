@@ -11,8 +11,7 @@ use cli::{parse_credentials, usage_and_exit};
 use megalib::Session;
 
 const SESSION_FILE: &str = "mega_session.json";
-const USAGE: &str =
-    "Usage: cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]";
+const USAGE: &str = "Usage: cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::base64::base64url_decode;
 use crate::crypto::aes::{aes128_cbc_decrypt, aes128_ecb_decrypt};
@@ -59,9 +59,7 @@ impl Session {
                                         self.share_keys.entry(handle.to_string()).or_insert(key);
                                         // Also populate key_manager for upgraded flows.
                                         if self.key_manager.is_ready() {
-                                        self
-                                            .key_manager
-                                            .add_share_key_from_str(handle, &key);
+                                            self.key_manager.add_share_key_from_str(handle, &key);
                                         }
                                     }
                                 }
@@ -278,5 +276,4 @@ impl Session {
 
         format!("/{}", node.name)
     }
-
 }

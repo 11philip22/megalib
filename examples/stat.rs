@@ -5,11 +5,10 @@
 
 mod cli;
 
-use cli::{credentials_from_parser, usage_and_exit, ArgParser};
+use cli::{ArgParser, credentials_from_parser, usage_and_exit};
 use std::process;
 
-const USAGE: &str =
-    "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD [--proxy PROXY] --path PATH";
+const USAGE: &str = "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD [--proxy PROXY] --path PATH";
 
 #[tokio::main]
 async fn main() {

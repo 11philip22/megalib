@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};

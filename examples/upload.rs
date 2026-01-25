@@ -3,8 +3,7 @@ mod cli;
 use cli::{parse_credentials, usage_and_exit};
 use std::process;
 
-const USAGE: &str =
-    "Usage: cargo run --example upload -- --email EMAIL --password PASSWORD [--proxy PROXY] <LOCAL_FILE> <REMOTE_PATH>";
+const USAGE: &str = "Usage: cargo run --example upload -- --email EMAIL --password PASSWORD [--proxy PROXY] <LOCAL_FILE> <REMOTE_PATH>";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

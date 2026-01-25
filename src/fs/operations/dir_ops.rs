@@ -3,12 +3,12 @@
 use rand::RngCore;
 use serde_json::json;
 
+use super::utils::normalize_path;
 use crate::base64::base64url_encode;
 use crate::crypto::aes::aes128_cbc_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::session::Session;
-use super::utils::normalize_path;
 
 impl Session {
     /// Create a new directory.
@@ -249,5 +249,4 @@ impl Session {
 
         Ok(())
     }
-
 }

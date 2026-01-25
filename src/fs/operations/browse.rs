@@ -1,9 +1,9 @@
 //! Filesystem browsing helpers.
 
+use super::utils::normalize_path;
 use crate::error::Result;
 use crate::fs::node::Node;
 use crate::session::Session;
-use super::utils::normalize_path;
 
 impl Session {
     /// List files in a directory.
@@ -150,5 +150,4 @@ impl Session {
         }
         false
     }
-
 }

@@ -5,7 +5,7 @@
 
 mod cli;
 
-use cli::{usage_and_exit, ArgParser};
+use cli::{ArgParser, usage_and_exit};
 use megalib::register;
 
 const USAGE: &str =

@@ -3,7 +3,7 @@
 //! Usage:
 //!   cargo run --example verify -- --state "STATE_FROM_STEP_1" --link "SIGNUP_KEY_FROM_EMAIL"
 
-use megalib::{verify_registration, RegistrationState};
+use megalib::{RegistrationState, verify_registration};
 use std::env;
 
 #[tokio::main]

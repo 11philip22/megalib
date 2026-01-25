@@ -10,8 +10,8 @@ use serde_json::json;
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::{
-    aes128_ecb_decrypt, aes128_ecb_encrypt, aes128_ecb_encrypt_block, make_password_key,
-    make_random_key, make_username_hash, MegaRsaKey,
+    MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt, aes128_ecb_encrypt_block,
+    make_password_key, make_random_key, make_username_hash,
 };
 use crate::error::{MegaError, Result};
 

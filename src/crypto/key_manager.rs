@@ -330,9 +330,15 @@ impl KeyManager {
         out.extend_from_slice(&Self::tag_header(TAG_PRIV_RSA, self.priv_rsa.len()));
         out.extend_from_slice(&self.priv_rsa);
         // authrings
-        out.extend_from_slice(&Self::tag_header(TAG_AUTHRING_ED25519, self.auth_ed25519.len()));
+        out.extend_from_slice(&Self::tag_header(
+            TAG_AUTHRING_ED25519,
+            self.auth_ed25519.len(),
+        ));
         out.extend_from_slice(&self.auth_ed25519);
-        out.extend_from_slice(&Self::tag_header(TAG_AUTHRING_CU25519, self.auth_cu25519.len()));
+        out.extend_from_slice(&Self::tag_header(
+            TAG_AUTHRING_CU25519,
+            self.auth_cu25519.len(),
+        ));
         out.extend_from_slice(&self.auth_cu25519);
         // share keys
         let sk_blob = self.serialize_share_keys();
@@ -429,7 +435,11 @@ impl KeyManager {
             offset += 16;
             let flags = data[offset];
             offset += 1;
-            out.push(ShareKeyEntry { handle: h, key: k, flags });
+            out.push(ShareKeyEntry {
+                handle: h,
+                key: k,
+                flags,
+            });
         }
         Ok(out)
     }
@@ -622,11 +632,9 @@ impl KeyManager {
 
         // Merge pending out shares without duplicates.
         for entry in &other.pending_out {
-            if !self
-                .pending_out
-                .iter()
-                .any(|e| e.node_handle == entry.node_handle && matches_pending_uid(&e.uid, &entry.uid))
-            {
+            if !self.pending_out.iter().any(|e| {
+                e.node_handle == entry.node_handle && matches_pending_uid(&e.uid, &entry.uid)
+            }) {
                 self.pending_out.push(entry.clone());
             }
         }

@@ -19,5 +19,4 @@ impl Session {
 
         Ok(Quota { total, used })
     }
-
 }

@@ -7,8 +7,7 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 
-const USAGE: &str =
-    "Usage: cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST>";
+const USAGE: &str = "Usage: cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST>";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

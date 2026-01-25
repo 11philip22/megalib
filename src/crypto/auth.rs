@@ -8,7 +8,7 @@ use sha2::Sha512;
 
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::rsa::read_mpi;
-use crate::crypto::{aes128_ecb_decrypt, aes128_ecb_encrypt, MegaRsaKey};
+use crate::crypto::{MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt};
 use crate::error::{MegaError, Result};
 
 /// Derive key using PBKDF2-SHA512 (login variant 2).

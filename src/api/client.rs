@@ -207,10 +207,7 @@ impl ApiClient {
             // Small delay to avoid rate limiting
             sleep(Duration::from_millis(20)).await;
 
-            let _action = request
-                .get("a")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let _action = request.get("a").and_then(|v| v.as_str()).unwrap_or("?");
             eprintln!("debug: api request a={} url={}", _action, url);
             let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
                 .await

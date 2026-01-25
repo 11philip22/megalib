@@ -8,6 +8,7 @@ use serde_json::json;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
+use super::utils::{get_chunk_size, upload_checksum};
 use crate::base64::base64url_encode;
 use crate::crypto::aes::{
     aes128_cbc_encrypt, aes128_ctr_encrypt, chunk_mac_calculate, meta_mac_calculate,
@@ -15,11 +16,10 @@ use crate::crypto::aes::{
 use crate::crypto::keys::pack_node_key;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
+use crate::fs::upload_state::UploadState;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::fs::upload_state::calculate_file_hash;
-use crate::fs::upload_state::UploadState;
 use crate::session::Session;
-use super::utils::{get_chunk_size, upload_checksum};
 
 impl Session {
     /// Upload a node attribute (thumbnail, preview) to MEGA's attribute storage.
@@ -864,5 +864,4 @@ impl Session {
 
         Err(MegaError::Custom("Failed to complete upload".to_string()))
     }
-
 }

@@ -4,8 +4,8 @@
 //! - ECB: For key encryption and password key derivation
 //! - CTR: For file content encryption (not yet implemented)
 
-use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes128;
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 
 /// AES-128-ECB encrypt a single 16-byte block.
 ///

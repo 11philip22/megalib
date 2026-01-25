@@ -9,13 +9,13 @@ use serde_json::json;
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::{
-    decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
-    make_password_key, make_random_key, make_username_hash, MegaRsaKey,
-};
+use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::crypto::key_manager::KeyManager;
 use crate::crypto::keyring::Keyring;
-use crate::crypto::aes::aes128_ecb_encrypt;
+use crate::crypto::{
+    MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
+    make_password_key, make_random_key, make_username_hash,
+};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
 
@@ -212,7 +212,7 @@ impl Session {
     }
 
     /// Get the master key (for internal use).
-pub(crate) fn master_key(&self) -> &[u8; 16] {
+    pub(crate) fn master_key(&self) -> &[u8; 16] {
         &self.master_key
     }
 
@@ -573,7 +573,8 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
 
         let blob = km.encode_container(&self.master_key)?;
         let blob_b64 = base64url_encode(&blob);
-        self.set_private_attribute("^!keys", &blob_b64, None).await?;
+        self.set_private_attribute("^!keys", &blob_b64, None)
+            .await?;
 
         self.key_manager = km;
         Ok(())
@@ -657,8 +658,7 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
         if self.key_manager.is_ready() {
             self.key_manager
                 .add_share_key_with_flags(node_handle, &share_key, true, false);
-            self.key_manager
-                .add_pending_out_email(node_handle, email);
+            self.key_manager.add_pending_out_email(node_handle, email);
             self.persist_keys_attribute().await?;
         }
 
@@ -779,8 +779,7 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             let blob_b64 = base64url_encode(&blob);
             match self.set_private_attribute("^!keys", &blob_b64, None).await {
                 Ok(_) => {
-                    self.key_manager.generation =
-                        self.key_manager.generation.saturating_add(1);
+                    self.key_manager.generation = self.key_manager.generation.saturating_add(1);
                     return Ok(());
                 }
                 Err(MegaError::ApiError { code, .. })
@@ -809,21 +808,21 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
         }
     }
 
-    /// Compute handle auth (ha) like SDK: base64(handle)||base64(handle) then AES-ECB encrypt.
-    pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
-        let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
-        if decoded.len() != 6 {
-            return None;
-        }
-        let text = crate::base64::base64url_encode(&decoded);
-        let mut auth = [0u8; 16];
-        let bytes = text.as_bytes();
-        let len = bytes.len().min(8);
-        auth[..len].copy_from_slice(&bytes[..len]);
-        auth[8..8 + len].copy_from_slice(&bytes[..len]);
-        let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
-        Some(base64url_encode(&enc))
-    }
+    // /// Compute handle auth (ha) like SDK: base64(handle)||base64(handle) then AES-ECB encrypt.
+    // pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
+    //     let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
+    //     if decoded.len() != 6 {
+    //         return None;
+    //     }
+    //     let text = crate::base64::base64url_encode(&decoded);
+    //     let mut auth = [0u8; 16];
+    //     let bytes = text.as_bytes();
+    //     let len = bytes.len().min(8);
+    //     auth[..len].copy_from_slice(&bytes[..len]);
+    //     auth[8..8 + len].copy_from_slice(&bytes[..len]);
+    //     let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
+    //     Some(base64url_encode(&enc))
+    // }
 
     /// Load a previously saved session from a file.
     ///
