@@ -428,6 +428,58 @@ impl Session {
         Ok(())
     }
 
+    /// Fetch a raw user attribute (e.g. "^!keys" or "*keyring"). Returns decoded bytes if present.
+    /// If the attribute does not exist, returns Ok(None).
+    pub async fn get_user_attribute_raw(&mut self, attr: &str) -> Result<Option<Vec<u8>>> {
+        let response = self.api_mut().get_user_attribute(attr).await?;
+
+        // Attribute responses can be either {"av": "...", "v": <version>} or an array of objects.
+        if let Some(av) = response.get("av").and_then(|v| v.as_str()) {
+            if av.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(base64url_decode(av)?));
+        }
+
+        if let Some(arr) = response.as_array() {
+            if let Some(av) = arr
+                .iter()
+                .find_map(|o| o.get("av").and_then(|v| v.as_str()))
+            {
+                if av.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(base64url_decode(av)?));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Set a private user attribute (e.g. "^!keys") with a base64url-encoded value.
+    /// The server manages versioning; pass None to let it increment.
+    pub async fn set_private_attribute(
+        &mut self,
+        attr: &str,
+        value_b64: &str,
+        version: Option<i64>,
+    ) -> Result<()> {
+        let resp = self
+            .api_mut()
+            .set_private_attribute(attr, value_b64, version)
+            .await?;
+
+        if let Some(err) = resp.as_i64().filter(|v| *v < 0) {
+            let code = crate::api::client::ApiErrorCode::from(err);
+            return Err(MegaError::ApiError {
+                code: err as i32,
+                message: code.description().to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Get a user's public key (for sharing).
     pub async fn get_public_key(&mut self, email: &str) -> Result<MegaRsaKey> {
         let response = self

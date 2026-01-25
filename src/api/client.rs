@@ -211,7 +211,7 @@ impl ApiClient {
                 .get("a")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            // eprintln!("debug: api request a={} url={}", _action, url);
+            eprintln!("debug: api request a={} url={}", _action, url);
             let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
                 .await
                 .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
@@ -342,6 +342,35 @@ impl ApiClient {
             // Return the full response array
             return Ok(response);
         }
+    }
+
+    /// Fetch a user attribute (private or otherwise).
+    ///
+    /// Caller is responsible for decoding/decrypting the attribute contents.
+    /// `attr` should be the raw attribute name, e.g. "^!keys" or "*keyring".
+    pub async fn get_user_attribute(&mut self, attr: &str) -> Result<Value> {
+        self.request(serde_json::json!({
+            "a": "uga",
+            "ua": attr
+        }))
+        .await
+    }
+
+    /// Set a versioned private user attribute (upv), used for attributes like ^!keys.
+    ///
+    /// `attr` is the attribute name, `value` is already base64url-encoded, and
+    /// `version` is the incrementing version (pass 0 to let the server bump it).
+    pub async fn set_private_attribute(
+        &mut self,
+        attr: &str,
+        value: &str,
+        version: Option<i64>,
+    ) -> Result<Value> {
+        self.request(serde_json::json!({
+            "a": "upv",
+            attr: [value, version.unwrap_or(0)]
+        }))
+        .await
     }
 }
 
