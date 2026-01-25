@@ -267,7 +267,7 @@ fn is_probably_prime(n: &BigUint, rounds: usize) -> bool {
     'witness: for _ in 0..rounds {
         // Pick random a in [2, n-2]
         let a = loop {
-            let bytes: Vec<u8> = (0..n.to_bytes_be().len()).map(|_| rng.gen()).collect();
+            let bytes: Vec<u8> = (0..n.to_bytes_be().len()).map(|_| rng.r#gen()).collect();
             let candidate = BigUint::from_bytes_be(&bytes) % n;
             if candidate >= BigUint::from(2u32) && candidate <= &n_minus_1 - 1u32 {
                 break candidate;
