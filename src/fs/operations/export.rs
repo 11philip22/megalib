@@ -129,41 +129,28 @@ impl Session {
             // Build a minimal share: zero ok/ha, random share key, cr covering root + descendants.
             let mut share_key = [0u8; 16];
             rand::thread_rng().fill_bytes(&mut share_key);
-            let ok = "AAAAAAAAAAAAAAAAAAAAAA".to_string();
+            let ok_bytes = aes128_ecb_encrypt(&share_key, self.master_key());
+            let ok = base64url_encode(&ok_bytes);
             let ha = "AAAAAAAAAAAAAAAAAAAAAA".to_string();
 
             // Build cr similar to webclient:
             // cr[0] = [root handle]
             // cr[1] = [root handle, child1, child2, ...]
             // cr[2] = [0, idx, enc_key_for_handle] per entry (idx into cr[1])
-            let cr_nodes = vec![handle.clone()];
-            let mut cr_users: Vec<String> = Vec::new();
-            let mut cr_triplets: Vec<Value> = Vec::new();
-            for (idx, (h, kbytes)) in share_nodes.iter().enumerate() {
-                if kbytes.is_empty() || kbytes.len() % 16 != 0 {
-                    // skip malformed key
-                    continue;
-                }
-                let enc = aes128_ecb_encrypt(kbytes, &share_key);
-                let enc_b64 = base64url_encode(&enc);
-                cr_users.push(h.clone());
-                cr_triplets.push(json!(0));
-                cr_triplets.push(json!(idx as i64));
-                cr_triplets.push(json!(enc_b64));
-            }
-            let cr = json!([cr_nodes, cr_users, cr_triplets]);
+            let cr = self.build_cr_for_nodes(&handle, &share_key, &share_nodes);
 
-            let share_resp = self
-                .api_mut()
-                .request(json!({
-                    "a": "s2",
-                    "n": handle,
-                    "s": [{"u": "EXP", "r": 0}],
-                    "ok": ok,
-                    "ha": ha,
-                    "cr": cr
-                }))
-                .await?;
+            let mut request = json!({
+                "a": "s2",
+                "n": handle,
+                "s": [{"u": "EXP", "r": 0}],
+                "ok": ok,
+                "ha": ha
+            });
+            if let Some(cr_value) = cr {
+                request["cr"] = cr_value;
+            }
+
+            let share_resp = self.api_mut().request(request).await?;
 
             if let Some(err) = share_resp.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {

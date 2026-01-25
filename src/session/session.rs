@@ -12,6 +12,7 @@ use crate::crypto::{
     decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
     make_password_key, make_random_key, make_username_hash, MegaRsaKey,
 };
+use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
 
@@ -477,20 +478,48 @@ impl Session {
         let encrypted_key = pub_key.encrypt(&node_key);
         let key_b64 = base64url_encode(&encrypted_key);
 
+        // Build CR (share mapping) so descendants are decryptable by the recipient.
+        let mut share_nodes: Vec<(String, Vec<u8>)> = Vec::new();
+        share_nodes.push((node_handle.to_string(), node_key.clone()));
+        let mut stack = vec![node_handle.to_string()];
+        while let Some(parent) = stack.pop() {
+            for n in &self.nodes {
+                if let Some(p) = &n.parent_handle {
+                    if p == &parent {
+                        stack.push(n.handle.clone());
+                        share_nodes.push((n.handle.clone(), n.key.clone()));
+                    }
+                }
+            }
+        }
+
+        let share_key: [u8; 16] = if node_key.len() >= 16 {
+            let mut sk = [0u8; 16];
+            sk.copy_from_slice(&node_key[..16]);
+            sk
+        } else {
+            return Err(MegaError::Custom("Invalid folder key length".to_string()));
+        };
+
+        let cr = self.build_cr_for_nodes(node_handle, &share_key, &share_nodes);
+
         // 4. Send share command ('s2')
         // 'ok': Output Key (encrypted share key)
-        let response = self
-            .api
-            .request(json!({
-                "a": "s2",
-                "n": node_handle,
-                "s": [{
-                    "u": email,
-                    "l": level
-                }],
-                "ok": key_b64
-            }))
-            .await?;
+        let mut request = json!({
+            "a": "s2",
+            "n": node_handle,
+            "s": [{
+                "u": email,
+                "l": level
+            }],
+            "ok": key_b64
+        });
+
+        if let Some(cr_value) = cr {
+            request["cr"] = cr_value;
+        }
+
+        let response = self.api.request(request).await?;
 
         // Check for error code
         if let Some(err_code) = response.as_i64() {
@@ -504,7 +533,66 @@ impl Session {
             }
         }
 
+        // Remember the share key locally so children uploaded later can reuse it.
+        self.share_keys
+            .entry(node_handle.to_string())
+            .or_insert(share_key);
+
         Ok(())
+    }
+
+    /// Find the nearest share key for a node handle by walking ancestors.
+    pub(crate) fn find_share_for_handle(&self, start_handle: &str) -> Option<(String, [u8; 16])> {
+        let mut current = Some(start_handle.to_string());
+
+        while let Some(handle) = current {
+            if let Some(key) = self.share_keys.get(&handle) {
+                return Some((handle, *key));
+            }
+
+            current = self
+                .nodes
+                .iter()
+                .find(|n| n.handle == handle)
+                .and_then(|n| n.parent_handle.clone());
+        }
+
+        None
+    }
+
+    /// Build a CR payload mapping a share to node keys for new nodes.
+    pub(crate) fn build_cr_for_nodes(
+        &self,
+        share_handle: &str,
+        share_key: &[u8; 16],
+        targets: &[(String, Vec<u8>)],
+    ) -> Option<serde_json::Value> {
+        use serde_json::json;
+
+        let cr_nodes = vec![share_handle.to_string()];
+        let mut cr_items: Vec<String> = Vec::new();
+        let mut cr_triplets: Vec<serde_json::Value> = Vec::new();
+
+        for (idx, (node_handle, key_bytes)) in targets.iter().enumerate() {
+            if key_bytes.is_empty() || key_bytes.len() % 16 != 0 {
+                continue;
+            }
+
+            cr_items.push(node_handle.clone());
+
+            let enc = aes128_ecb_encrypt(key_bytes, share_key);
+            let enc_b64 = base64url_encode(&enc);
+
+            cr_triplets.push(json!(0));
+            cr_triplets.push(json!(idx as i64));
+            cr_triplets.push(json!(enc_b64));
+        }
+
+        if cr_items.is_empty() {
+            return None;
+        }
+
+        Some(json!([cr_nodes, cr_items, cr_triplets]))
     }
 
     /// Load a previously saved session from a file.

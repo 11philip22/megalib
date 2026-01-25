@@ -798,14 +798,22 @@ impl Session {
             node_data["fa"] = json!(fa);
         }
 
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "p",
-                "t": parent_handle,
-                "n": [node_data]
-            }))
-            .await?;
+        // If uploading into a shared/exported folder, include CR mapping so sharees can decrypt.
+        let mut request = json!({
+            "a": "p",
+            "t": parent_handle,
+            "n": [node_data]
+        });
+
+        if let Some((share_handle, share_key)) = self.find_share_for_handle(parent_handle) {
+            let targets: Vec<(String, Vec<u8>)> =
+                vec![(upload_handle.to_string(), node_key.to_vec())];
+            if let Some(cr_value) = self.build_cr_for_nodes(&share_handle, &share_key, &targets) {
+                request["cr"] = cr_value;
+            }
+        }
+
+        let response = self.api_mut().request(request).await?;
 
         // Parse result
         let nodes_array = response
