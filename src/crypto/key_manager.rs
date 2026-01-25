@@ -32,6 +32,8 @@ const TAG_WARNINGS: u8 = 96;
 const HEADER_BYTE0: u8 = 20;
 const HEADER_BYTE1: u8 = 0;
 const GCM_IV_LEN: usize = 12;
+const SHAREKEY_FLAG_TRUSTED: u8 = 1 << 0;
+const SHAREKEY_FLAG_IN_USE: u8 = 1 << 1;
 
 /// Share key flags are not used in this simplified implementation (set to 0).
 #[derive(Debug, Clone)]
@@ -112,27 +114,61 @@ impl KeyManager {
         self.priv_cu25519 = cu.to_vec();
     }
 
-    pub fn add_share_key_from_str(&mut self, handle_b64: &str, key: &[u8]) {
+    /// Insert or update a share key with explicit flag bits.
+    pub fn add_share_key_with_flags(
+        &mut self,
+        handle_b64: &str,
+        key: &[u8],
+        trusted: bool,
+        in_use: bool,
+    ) {
         if key.len() != 16 {
             return;
         }
-        if let Ok(decoded) = base64url_decode(handle_b64) {
-            if decoded.len() == 6 {
-                let mut h = [0u8; 6];
-                h.copy_from_slice(&decoded);
-                let mut k = [0u8; 16];
-                k.copy_from_slice(key);
-                self.share_keys.push(ShareKeyEntry {
-                    handle: h,
-                    key: k,
-                    flags: 0,
-                });
-            }
+        let Some(handle) = Self::decode_handle(handle_b64) else {
+            return;
+        };
+        let mut flags = 0u8;
+        if trusted {
+            flags |= SHAREKEY_FLAG_TRUSTED;
         }
+        if in_use {
+            flags |= SHAREKEY_FLAG_IN_USE;
+        }
+
+        if let Some(entry) = self
+            .share_keys
+            .iter_mut()
+            .find(|e| e.handle == handle.as_slice())
+        {
+            entry.key.copy_from_slice(key);
+            entry.flags |= flags;
+            return;
+        }
+
+        let mut k = [0u8; 16];
+        k.copy_from_slice(key);
+        self.share_keys.push(ShareKeyEntry {
+            handle,
+            key: k,
+            flags,
+        });
+    }
+
+    pub fn add_share_key_from_str(&mut self, handle_b64: &str, key: &[u8]) {
+        self.add_share_key_with_flags(handle_b64, key, false, false);
     }
 
     pub fn add_share_key(&mut self, handle_b64: String, key: Vec<u8>) {
-        self.add_share_key_from_str(&handle_b64, &key);
+        self.add_share_key_with_flags(&handle_b64, &key, false, false);
+    }
+
+    pub fn set_share_key_in_use(&mut self, handle_b64: &str, in_use: bool) -> bool {
+        self.set_share_key_flag(handle_b64, SHAREKEY_FLAG_IN_USE, in_use)
+    }
+
+    pub fn set_share_key_trusted(&mut self, handle_b64: &str, trusted: bool) -> bool {
+        self.set_share_key_flag(handle_b64, SHAREKEY_FLAG_TRUSTED, trusted)
     }
 
     pub fn get_share_key_from_str(&self, handle_b64: &str) -> Option<[u8; 16]> {
@@ -146,6 +182,74 @@ impl KeyManager {
             }
         }
         None
+    }
+
+    pub fn add_pending_out_email(&mut self, handle_b64: &str, email: &str) {
+        if email.is_empty() || email.len() >= 256 {
+            return;
+        }
+        let Some(handle) = Self::decode_handle(handle_b64) else {
+            return;
+        };
+        let uid = PendingUid::Email(email.to_string());
+        if self
+            .pending_out
+            .iter()
+            .any(|e| e.node_handle == handle && matches_pending_uid(&e.uid, &uid))
+        {
+            return;
+        }
+        self.pending_out.push(PendingOutEntry {
+            node_handle: handle,
+            uid,
+        });
+    }
+
+    pub fn add_pending_out_user_handle(&mut self, handle_b64: &str, user_handle: &[u8; 8]) {
+        let Some(handle) = Self::decode_handle(handle_b64) else {
+            return;
+        };
+        let uid = PendingUid::UserHandle(*user_handle);
+        if self
+            .pending_out
+            .iter()
+            .any(|e| e.node_handle == handle && matches_pending_uid(&e.uid, &uid))
+        {
+            return;
+        }
+        self.pending_out.push(PendingOutEntry {
+            node_handle: handle,
+            uid,
+        });
+    }
+
+    fn set_share_key_flag(&mut self, handle_b64: &str, flag: u8, enabled: bool) -> bool {
+        let Some(handle) = Self::decode_handle(handle_b64) else {
+            return false;
+        };
+        if let Some(entry) = self
+            .share_keys
+            .iter_mut()
+            .find(|e| e.handle == handle.as_slice())
+        {
+            if enabled {
+                entry.flags |= flag;
+            } else {
+                entry.flags &= !flag;
+            }
+            return true;
+        }
+        false
+    }
+
+    fn decode_handle(handle_b64: &str) -> Option<[u8; 6]> {
+        let decoded = base64url_decode(handle_b64).ok()?;
+        if decoded.len() != 6 {
+            return None;
+        }
+        let mut h = [0u8; 6];
+        h.copy_from_slice(&decoded);
+        Some(h)
     }
     /// Encode to LTLV then AES-GCM encrypt with master key. Returns final ^!keys blob.
     pub fn encode_container(&self, master_key: &[u8; 16]) -> Result<Vec<u8>> {
@@ -281,8 +385,7 @@ impl KeyManager {
                 }
                 TAG_GENERATION => {
                     if slice.len() == 4 {
-                        let v = u32::from_be_bytes(slice.try_into().unwrap());
-                        self.generation = v.saturating_sub(1);
+                        self.generation = u32::from_be_bytes(slice.try_into().unwrap());
                     }
                 }
                 TAG_ATTR => self.attr = slice.to_vec(),
@@ -499,5 +602,83 @@ impl KeyManager {
             out.push((tag, value));
         }
         Ok(out)
+    }
+
+    /// Merge another KeyManager into this one, preserving existing keys and unioning new entries.
+    pub fn merge_from(&mut self, other: &KeyManager) {
+        // Merge share keys (overwrite key+flags if handle matches, OR together flags).
+        for entry in &other.share_keys {
+            if let Some(existing) = self
+                .share_keys
+                .iter_mut()
+                .find(|e| e.handle == entry.handle)
+            {
+                existing.key = entry.key;
+                existing.flags |= entry.flags;
+            } else {
+                self.share_keys.push(entry.clone());
+            }
+        }
+
+        // Merge pending out shares without duplicates.
+        for entry in &other.pending_out {
+            if !self
+                .pending_out
+                .iter()
+                .any(|e| e.node_handle == entry.node_handle && matches_pending_uid(&e.uid, &entry.uid))
+            {
+                self.pending_out.push(entry.clone());
+            }
+        }
+
+        // Merge pending in shares without duplicates.
+        for entry in &other.pending_in {
+            if !self.pending_in.iter().any(|e| {
+                e.node_handle_b64 == entry.node_handle_b64 && e.user_handle == entry.user_handle
+            }) {
+                self.pending_in.push(entry.clone());
+            }
+        }
+
+        if self.creation_time == 0 {
+            self.creation_time = other.creation_time;
+        }
+        if self.identity == 0 {
+            self.identity = other.identity;
+        }
+        if self.attr.is_empty() {
+            self.attr = other.attr.clone();
+        }
+        if self.priv_ed25519.is_empty() {
+            self.priv_ed25519 = other.priv_ed25519.clone();
+        }
+        if self.priv_cu25519.is_empty() {
+            self.priv_cu25519 = other.priv_cu25519.clone();
+        }
+        if self.priv_rsa.is_empty() {
+            self.priv_rsa = other.priv_rsa.clone();
+        }
+        if self.auth_ed25519.is_empty() {
+            self.auth_ed25519 = other.auth_ed25519.clone();
+        }
+        if self.auth_cu25519.is_empty() {
+            self.auth_cu25519 = other.auth_cu25519.clone();
+        }
+        if self.backups.is_empty() {
+            self.backups = other.backups.clone();
+        }
+        if self.warnings.0.is_empty() {
+            self.warnings = other.warnings.clone();
+        }
+
+        self.generation = self.generation.max(other.generation);
+    }
+}
+
+fn matches_pending_uid(a: &PendingUid, b: &PendingUid) -> bool {
+    match (a, b) {
+        (PendingUid::Email(ae), PendingUid::Email(be)) => ae == be,
+        (PendingUid::UserHandle(ah), PendingUid::UserHandle(bh)) => ah == bh,
+        _ => false,
     }
 }

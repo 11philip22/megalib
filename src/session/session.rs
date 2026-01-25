@@ -3,6 +3,7 @@
 //! This module handles user login, session state, and logout.
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
@@ -553,7 +554,17 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             keyring.ed25519.clone().unwrap_or_default().as_slice(),
             keyring.cu25519.clone().unwrap_or_default().as_slice(),
         );
-        km.generation = 1;
+        km.generation = 0;
+        km.creation_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        if let Ok(decoded_handle) = base64url_decode(&self.user_handle) {
+            let mut ident = [0u8; 8];
+            let copy_len = decoded_handle.len().min(8);
+            ident[..copy_len].copy_from_slice(&decoded_handle[..copy_len]);
+            km.identity = u64::from_le_bytes(ident);
+        }
 
         // include any cached share_keys (legacy) into ^!keys
         for (h, k) in self.share_keys.iter() {
@@ -593,6 +604,8 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
     /// * `email` - Email of the user to share with
     /// * `level` - Access level (0=Read-only, 1=Read/Write, 2=Full Access)
     pub async fn share_folder(&mut self, node_handle: &str, email: &str, level: i32) -> Result<()> {
+        self.ensure_keys_attribute().await?;
+
         // 1. Find the node to get its key - clone it to release borrow
         let node_key = {
             let node = self
@@ -641,6 +654,14 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             return Err(MegaError::Custom("Invalid folder key length".to_string()));
         };
 
+        if self.key_manager.is_ready() {
+            self.key_manager
+                .add_share_key_with_flags(node_handle, &share_key, true, false);
+            self.key_manager
+                .add_pending_out_email(node_handle, email);
+            self.persist_keys_attribute().await?;
+        }
+
         let cr = self.build_cr_for_nodes(node_handle, &share_key, &share_nodes);
 
         // 4. Send share command ('s2')
@@ -678,8 +699,7 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             .entry(node_handle.to_string())
             .or_insert(share_key);
         if self.key_manager.is_ready() {
-            self.key_manager
-                .add_share_key_from_str(node_handle, &share_key);
+            let _ = self.key_manager.set_share_key_in_use(node_handle, true);
             let _ = self.persist_keys_attribute().await;
         }
 
@@ -751,9 +771,58 @@ pub(crate) fn master_key(&self) -> &[u8; 16] {
             ));
         }
 
-        let blob = self.key_manager.encode_container(&self.master_key)?;
-        let blob_b64 = base64url_encode(&blob);
-        self.set_private_attribute("^!keys", &blob_b64, None).await
+        let desired = self.key_manager.clone();
+        let mut attempts = 0;
+
+        loop {
+            let blob = self.key_manager.encode_container(&self.master_key)?;
+            let blob_b64 = base64url_encode(&blob);
+            match self.set_private_attribute("^!keys", &blob_b64, None).await {
+                Ok(_) => {
+                    self.key_manager.generation =
+                        self.key_manager.generation.saturating_add(1);
+                    return Ok(());
+                }
+                Err(MegaError::ApiError { code, .. })
+                    if attempts == 0 && (code == -3 || code == -11) =>
+                {
+                    // Version clash or busy server; reload remote copy and merge, then retry once.
+                    attempts += 1;
+                    if self.load_keys_attribute().await? {
+                        let mut merged = self.key_manager.clone();
+                        merged.merge_from(&desired);
+                        self.key_manager = merged;
+                        self.share_keys.clear();
+                        for sk in &self.key_manager.share_keys {
+                            let mut arr: [u8; 16] = [0u8; 16];
+                            arr.copy_from_slice(&sk.key);
+                            let handle_b64 = base64url_encode(&sk.handle);
+                            self.share_keys.entry(handle_b64).or_insert(arr);
+                        }
+                    } else {
+                        self.key_manager = desired.clone();
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Compute handle auth (ha) like SDK: base64(handle)||base64(handle) then AES-ECB encrypt.
+    pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
+        let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
+        if decoded.len() != 6 {
+            return None;
+        }
+        let text = crate::base64::base64url_encode(&decoded);
+        let mut auth = [0u8; 16];
+        let bytes = text.as_bytes();
+        let len = bytes.len().min(8);
+        auth[..len].copy_from_slice(&bytes[..len]);
+        auth[8..8 + len].copy_from_slice(&bytes[..len]);
+        let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
+        Some(base64url_encode(&enc))
     }
 
     /// Load a previously saved session from a file.

@@ -201,7 +201,7 @@ impl ApiClient {
         let mut delay_ms = 250u64;
         let max_delay_ms = 256_000u64; // ~4 minutes max
         let mut attempts = 0;
-        let max_attempts = 8;
+        let max_attempts = if action_name == "s2" { 6 } else { 8 };
 
         loop {
             // Small delay to avoid rate limiting
@@ -230,6 +230,9 @@ impl ApiClient {
             //     );
             // }
             let response: Value = serde_json::from_str(&response_text)?;
+            if action_name == "s2" {
+                eprintln!("debug: s2 response raw: {}", response_text);
+            }
             attempts += 1;
 
             // Handle single-number array like [-3] as errors (including EAGAIN)

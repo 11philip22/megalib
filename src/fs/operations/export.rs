@@ -122,19 +122,20 @@ impl Session {
                     }
                 }
             }
-            // Step 1: Create share with EXP (export) pseudo-user, include ok/ha and cr for all nodes
-            if key.len() != 16 {
-                return Err(MegaError::Custom("Invalid folder key length".to_string()));
-            }
-            // // Try to mimic webclient flow: refresh ^!keys then share.
-            // let _ = self.refresh_keys_attribute().await;
-
             // Build a minimal share: zero ok/ha, random share key, cr covering root + descendants.
             let mut share_key = [0u8; 16];
             rand::thread_rng().fill_bytes(&mut share_key);
-            let ok_bytes = aes128_ecb_encrypt(&share_key, self.master_key());
-            let ok = base64url_encode(&ok_bytes);
-            let ha = "AAAAAAAAAAAAAAAAAAAAAA".to_string();
+            // SDK sends dummy ok/ha for exports; keep zeros to match.
+            let zero_block = [0u8; 16];
+            let ok = base64url_encode(&zero_block);
+            let ha = base64url_encode(&zero_block);
+
+            // Persist share key into ^!keys before calling s2 (required for upgraded accounts).
+            if self.key_manager.is_ready() {
+                self.key_manager
+                    .add_share_key_with_flags(&handle, &share_key, true, false);
+                self.persist_keys_attribute().await?;
+            }
 
             // Build cr similar to webclient:
             // cr[0] = [root handle]
@@ -160,6 +161,11 @@ impl Session {
                     code: err as i32,
                     message: crate::api::client::ApiErrorCode::from(err).description().to_string(),
                 });
+            }
+
+            if self.key_manager.is_ready() {
+                let _ = self.key_manager.set_share_key_in_use(&handle, true);
+                let _ = self.persist_keys_attribute().await;
             }
 
             // eprintln!(
