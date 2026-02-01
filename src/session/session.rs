@@ -14,7 +14,7 @@ use crate::crypto::key_manager::KeyManager;
 use crate::crypto::keyring::Keyring;
 use crate::crypto::{
     MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
-    make_password_key, make_random_key, make_username_hash,
+    make_password_key, make_random_key, make_username_hash, parse_raw_private_key,
 };
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
@@ -546,6 +546,12 @@ impl Session {
                 self.share_keys.entry(handle_b64).or_insert(arr);
             }
             self.key_manager = km;
+            // If priv RSA is present, propagate into session crypto layer.
+            if !self.key_manager.priv_rsa.is_empty() {
+                if let Ok(rsa) = parse_raw_private_key(&self.key_manager.priv_rsa) {
+                    self.rsa_key = rsa;
+                }
+            }
             return Ok(true);
         }
         Ok(false)

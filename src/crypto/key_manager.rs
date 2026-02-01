@@ -87,6 +87,9 @@ pub struct KeyManager {
     pub pending_in: Vec<PendingInEntry>,
     pub backups: Vec<u8>,
     pub warnings: Warnings,
+
+    /// When true, the user must manually verify contacts before share-key exchange (mirrors SDK flag).
+    pub manual_verification: bool,
 }
 
 impl Default for ShareKeyEntry {
@@ -123,6 +126,7 @@ impl KeyManager {
         let mut km = KeyManager::default();
         km.version = 1;
         km.generation = 0;
+        km.manual_verification = false;
         km
     }
 
@@ -190,6 +194,60 @@ impl KeyManager {
 
     pub fn set_share_key_trusted(&mut self, handle_b64: &str, trusted: bool) -> bool {
         self.set_share_key_flag(handle_b64, SHAREKEY_FLAG_TRUSTED, trusted)
+    }
+
+    /// Contact verification gating (manual verification feature flag)
+    pub fn set_manual_verification(&mut self, enabled: bool) {
+        self.manual_verification = enabled;
+    }
+
+    pub fn manual_verification(&self) -> bool {
+        self.manual_verification
+    }
+
+    /// Warning flag "cv" (contact verification required) mirrors SDK behavior.
+    pub fn set_contact_verification_warning(&mut self, enabled: bool) {
+        let val = if enabled { b"1".to_vec() } else { b"0".to_vec() };
+        if let Some(entry) = self
+            .warnings
+            .0
+            .iter_mut()
+            .find(|(k, _)| k == "cv")
+        {
+            entry.1 = val;
+        } else {
+            self.warnings.0.push(("cv".to_string(), val));
+        }
+    }
+
+    pub fn contact_verification_warning(&self) -> bool {
+        self.warnings
+            .0
+            .iter()
+            .find(|(k, _)| k == "cv")
+            .map(|(_, v)| v != b"0")
+            .unwrap_or(false)
+    }
+
+    /// Set raw backups blob.
+    pub fn set_backups(&mut self, blob: Vec<u8>) {
+        self.backups = blob;
+    }
+
+    pub fn set_authring_ed25519(&mut self, blob: Vec<u8>) {
+        self.auth_ed25519 = blob;
+    }
+
+    pub fn set_authring_cu25519(&mut self, blob: Vec<u8>) {
+        self.auth_cu25519 = blob;
+    }
+
+    pub fn warnings(&self) -> &Warnings {
+        &self.warnings
+    }
+
+    pub fn set_warnings(&mut self, warnings: Warnings) {
+        self.warnings = warnings;
     }
 
     pub fn get_share_key_from_str(&self, handle_b64: &str) -> Option<[u8; 16]> {
@@ -274,6 +332,11 @@ impl KeyManager {
     }
     /// Encode to LTLV then AES-GCM encrypt with master key. Returns final ^!keys blob.
     pub fn encode_container(&self, master_key: &[u8; 16]) -> Result<Vec<u8>> {
+        if !self.priv_rsa.is_empty() && self.priv_rsa.len() < 512 {
+            return Err(MegaError::Custom(
+                "Invalid RSA key length in ^!keys (expected empty or >=512 bytes)".into(),
+            ));
+        }
         let plain = self.serialize_ltlv()?;
         // GCM encrypt
         let derived = derive_keys_cipher(master_key);
@@ -311,7 +374,17 @@ impl KeyManager {
         let plain = cipher
             .decrypt(nonce, ct)
             .map_err(|e| MegaError::CryptoError(format!("GCM decrypt: {}", e)))?;
-        self.deserialize_ltlv(&plain)
+        // Parse payload
+        let mut tmp = self.clone();
+        tmp.deserialize_ltlv(&plain)?;
+
+        // Downgrade protection: reject if received generation lower than current
+        if tmp.generation < self.generation {
+            return Err(MegaError::Custom("Downgrade detected for ^!keys".into()));
+        }
+
+        *self = tmp;
+        Ok(())
     }
 
     fn tag_header(tag: u8, len: usize) -> [u8; 4] {
@@ -336,8 +409,8 @@ impl KeyManager {
         let id_bytes = self.identity.to_le_bytes(); // SDK stores as little? It appends raw u64.
         out.extend_from_slice(&Self::tag_header(TAG_IDENTITY, id_bytes.len()));
         out.extend_from_slice(&id_bytes);
-        // generation (store exact generation)
-        let gen_be = self.generation.to_be_bytes();
+        // generation stored on wire as (gen + 1) like SDK
+        let gen_be = (self.generation + 1).to_be_bytes();
         out.extend_from_slice(&Self::tag_header(TAG_GENERATION, gen_be.len()));
         out.extend_from_slice(&gen_be);
         // attr
@@ -414,13 +487,21 @@ impl KeyManager {
                 }
                 TAG_GENERATION => {
                     if slice.len() == 4 {
-                        self.generation = u32::from_be_bytes(slice.try_into().unwrap());
+                        let gen_wire = u32::from_be_bytes(slice.try_into().unwrap());
+                        // SDK stores generation+1 on wire; avoid underflow on legacy zero
+                        self.generation = gen_wire.saturating_sub(1);
                     }
                 }
                 TAG_ATTR => self.attr = slice.to_vec(),
                 TAG_PRIV_ED25519 => self.priv_ed25519 = slice.to_vec(),
                 TAG_PRIV_CU25519 => self.priv_cu25519 = slice.to_vec(),
-                TAG_PRIV_RSA => self.priv_rsa = slice.to_vec(),
+                TAG_PRIV_RSA => {
+                    // SDK expects empty or >=512 bytes (short format); otherwise invalid.
+                    if !slice.is_empty() && slice.len() < 512 {
+                        return Err(MegaError::InvalidResponse);
+                    }
+                    self.priv_rsa = slice.to_vec();
+                }
                 TAG_AUTHRING_ED25519 => self.auth_ed25519 = slice.to_vec(),
                 TAG_AUTHRING_CU25519 => self.auth_cu25519 = slice.to_vec(),
                 TAG_SHAREKEYS => self.share_keys = Self::parse_share_keys(slice)?,
@@ -701,6 +782,7 @@ impl KeyManager {
         if self.warnings.0.is_empty() {
             self.warnings = other.warnings.clone();
         }
+        self.manual_verification |= other.manual_verification;
 
         self.generation = self.generation.max(other.generation);
     }

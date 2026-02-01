@@ -58,6 +58,18 @@ pub fn decrypt_private_key(b64: &str, master_key: &[u8; 16]) -> Result<MegaRsaKe
     Ok(MegaRsaKey { p, q, d, u, m, e })
 }
 
+/// Parse an unencrypted RSA private key blob stored inside ^!keys (MPI p||q||d||u).
+pub fn parse_raw_private_key(blob: &[u8]) -> Result<MegaRsaKey> {
+    let mut pos = 0;
+    let p = read_mpi(blob, &mut pos).map_err(MegaError::CryptoError)?;
+    let q = read_mpi(blob, &mut pos).map_err(MegaError::CryptoError)?;
+    let d = read_mpi(blob, &mut pos).map_err(MegaError::CryptoError)?;
+    let u = read_mpi(blob, &mut pos).map_err(MegaError::CryptoError)?;
+    let m = &p * &q;
+    let e = num_bigint::BigUint::from(3u32);
+    Ok(MegaRsaKey { p, q, d, u, m, e })
+}
+
 /// Decrypt session ID using RSA.
 pub fn decrypt_session_id(csid_b64: &str, rsa_key: &MegaRsaKey) -> Result<String> {
     let data = base64url_decode(csid_b64)?;

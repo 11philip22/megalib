@@ -64,13 +64,15 @@ pub fn make_password_key(password: &str) -> [u8; 16] {
         return pkey;
     }
 
+    let total_len = password_bytes.len();
+
     // 65536 iterations
     for _ in 0..65536 {
         let mut i = 0;
-        while i < len_units {
+        while i < total_len {
             // Create a 16-byte key from the password chunk (zero-padded)
             let mut key = [0u8; 16];
-            let chunk_len = std::cmp::min(16, len_units - i);
+            let chunk_len = std::cmp::min(16, total_len - i);
             key[..chunk_len].copy_from_slice(&password_bytes[i..i + chunk_len]);
 
             // Encrypt pkey with this chunk as the key
