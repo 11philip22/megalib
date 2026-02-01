@@ -658,13 +658,20 @@ cargo run --example download_public -- "https://mega.nz/file/..."
 cargo run --example folder -- "https://mega.nz/folder/..."
 ```
 
-## Acknowledgements
+## Contributing
 
-This project is based on the work of [megatools](https://xff.cz/megatools/) by Ondřej Jirman, which provided the foundational understanding of the MEGA API protocol and served as a reference implementation.
+PRs are welcome!  
+Please run `cargo fmt` and `cargo clippy` before submitting.
+
+## Support
+
+If this crate saves you time or helps your work, support is appreciated:
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/11philip22)
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0 (GPLv2) - see the [license](license) file for details.
+This project is licensed under the MIT License; see [license](license) for details.
 
 ## Disclaimer
 

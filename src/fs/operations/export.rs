@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
+use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::NodeType;
 use crate::session::Session;
@@ -67,19 +68,33 @@ impl Session {
                     }
                 }
             }
-            // Build a minimal share: zero ok/ha, random share key, cr covering root + descendants.
-            let mut share_key = [0u8; 16];
-            rand::thread_rng().fill_bytes(&mut share_key);
-            // SDK sends dummy ok/ha for exports; keep zeros to match.
-            let zero_block = [0u8; 16];
-            let ok = base64url_encode(&zero_block);
-            let ha = base64url_encode(&zero_block);
+            // Reuse existing share key if we already have one; otherwise generate new.
+            let share_key = if let Some((_, k)) = self.find_share_for_handle(&handle) {
+                k
+            } else {
+                let mut sk = [0u8; 16];
+                rand::thread_rng().fill_bytes(&mut sk);
+                sk
+            };
 
-            // Persist share key into ^!keys before calling s2 (required for upgraded accounts).
+            // Build a minimal share: ok/ha, cr covering root + descendants.
+            // If upgraded (^!keys ready), send real ok/ha. Otherwise send zeros (legacy).
+            let (ok, ha) = if self.key_manager.is_ready() {
+                (
+                    base64url_encode(&aes128_ecb_encrypt(&share_key, self.master_key())),
+                    self.compute_handle_auth(&handle)
+                        .unwrap_or_else(|| base64url_encode(&[0u8; 16])),
+                )
+            } else {
+                let zero = base64url_encode(&[0u8; 16]);
+                (zero.clone(), zero)
+            };
+
+            // Persist share key into ^!keys only for upgraded accounts.
             if self.key_manager.is_ready() {
                 self.key_manager
-                    .add_share_key_with_flags(&handle, &share_key, true, false);
-                self.persist_keys_attribute().await?;
+                    .add_share_key_with_flags(&handle, &share_key, true, true); // trusted + in_use
+                let _ = self.persist_keys_attribute().await;
             }
 
             // Build cr similar to webclient:
@@ -99,7 +114,19 @@ impl Session {
                 request["cr"] = cr_value;
             }
 
-            let share_resp = self.api_mut().request(request).await?;
+            // s2 can return -3 transiently or -8 if share already exists.
+            let mut share_resp = self.api_mut().request(request.clone()).await;
+            if matches!(share_resp, Err(MegaError::ApiError { code: -3, .. })) {
+                // Backoff once and retry after refresh.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                let _ = self.refresh().await;
+                share_resp = self.api_mut().request(request.clone()).await;
+            }
+            let share_resp = match share_resp {
+                Err(MegaError::ApiError { code: -8, .. }) => json!(0),
+                Err(e) => return Err(e),
+                Ok(v) => v,
+            };
 
             if let Some(err) = share_resp.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
@@ -112,6 +139,7 @@ impl Session {
 
             if self.key_manager.is_ready() {
                 let _ = self.key_manager.set_share_key_in_use(&handle, true);
+                let _ = self.key_manager.set_share_key_trusted(&handle, true);
                 let _ = self.persist_keys_attribute().await;
             }
 
@@ -146,7 +174,7 @@ impl Session {
 
             // Update the node with the link and remember share key for children
             self.nodes[node_idx].link = Some(link_handle.clone());
-            // Exported link key is the share key.
+            // Exported link key is the share key (persist or reuse existing).
             self.share_keys.insert(handle.clone(), share_key);
             // Persist share key into ^!keys if available
             if self.key_manager.is_ready() {

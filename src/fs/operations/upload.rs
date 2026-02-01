@@ -805,7 +805,9 @@ impl Session {
         let mut request = json!({
             "a": "p",
             "t": parent_handle,
-            "n": [node_data]
+            "n": [node_data],
+            "v": 4,   // request file IDs/handles (matches SDK)
+            "sm": 1   // secure mode flag like SDK/webclient
         });
 
         if let Some((share_handle, share_key)) = self.find_share_for_handle(parent_handle) {
@@ -824,44 +826,76 @@ impl Session {
 
         let response = self.api_mut().request(request).await?;
 
-        // Parse result
-        let nodes_array = response
-            .get("f")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                MegaError::Custom("Invalid API response for upload completion".to_string())
-            })?;
+        // Parse result; accept either "f" array or "fh" handles as success.
+        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
+            if let Some(node_obj) = nodes_array.get(0) {
+                let node = self
+                    .parse_node(node_obj)
+                    .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
 
-        if let Some(node_obj) = nodes_array.get(0) {
-            let node = self
-                .parse_node(node_obj)
-                .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
+                // Find parent path
+                let parent_path_str = {
+                    let parent_path = self
+                        .nodes
+                        .iter()
+                        .find(|n| n.handle == parent_handle)
+                        .and_then(|n| n.path.as_ref())
+                        .map(|p| p.as_str())
+                        .unwrap_or("");
 
-            // Find parent path
-            let parent_path_str = {
+                    if !parent_path.is_empty() {
+                        format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
+                    } else {
+                        format!("/{}", node.name)
+                    }
+                };
+
+                self.nodes.push(node.clone());
+                if let Some(last_node) = self.nodes.last_mut() {
+                    last_node.path = Some(parent_path_str);
+                }
+
+                return Ok(node);
+            }
+        }
+
+        if response.get("fh").is_some() {
+            // Refresh to get the new node and return it.
+            self.refresh().await?;
+            let parent_path = self
+                .nodes
+                .iter()
+                .find(|n| n.handle == parent_handle)
+                .and_then(|n| n.path.clone())
+                .unwrap_or_else(|| "/".to_string());
+            let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
+            if let Some(existing) = self.stat(&target_path) {
+                return Ok(existing.clone());
+            }
+        }
+
+        if let Some(code) = response.as_i64() {
+            if code == -8 {
+                let _ = self.refresh().await;
                 let parent_path = self
                     .nodes
                     .iter()
                     .find(|n| n.handle == parent_handle)
-                    .and_then(|n| n.path.as_ref())
-                    .map(|p| p.as_str())
-                    .unwrap_or("");
-
-                if !parent_path.is_empty() {
-                    format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
-                } else {
-                    format!("/{}", node.name)
+                    .and_then(|n| n.path.clone())
+                    .unwrap_or_else(|| "/".to_string());
+                let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
+                if let Some(existing) = self.stat(&target_path) {
+                    return Ok(existing.clone());
                 }
-            };
-
-            self.nodes.push(node.clone());
-            if let Some(last_node) = self.nodes.last_mut() {
-                last_node.path = Some(parent_path_str);
+                return Err(MegaError::ApiError {
+                    code: -8,
+                    message: "Resource already exists".to_string(),
+                });
             }
-
-            return Ok(node);
         }
 
-        Err(MegaError::Custom("Failed to complete upload".to_string()))
+        return Err(MegaError::Custom(
+            "Invalid API response for upload completion".to_string(),
+        ));
     }
 }

@@ -7,7 +7,9 @@
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes128Gcm, Nonce};
+use hmac::{Hmac, Mac};
 use rand::RngCore;
+use sha2::Sha256;
 
 use crate::base64::base64url_decode;
 use crate::error::{MegaError, Result};
@@ -95,6 +97,25 @@ impl Default for ShareKeyEntry {
             flags: 0,
         }
     }
+}
+
+/// Derive the ^!keys AES-128-GCM key from the master key using HKDF-SHA256 (info byte = 1).
+fn derive_keys_cipher(master_key: &[u8; 16]) -> [u8; 16] {
+    // HKDF-Extract with salt = zeros(hashlen)
+    let mut prk_mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(&[0u8; 32]).expect("HMAC key len");
+    prk_mac.update(master_key);
+    let prk = prk_mac.finalize().into_bytes();
+
+    // HKDF-Expand with info = {1}, single block needed for 16 bytes
+    let mut okm_mac = <Hmac<Sha256> as Mac>::new_from_slice(&prk).expect("HMAC key len");
+    okm_mac.update(&[1u8]); // info
+    okm_mac.update(&[1u8]); // counter
+    let t1 = okm_mac.finalize().into_bytes();
+
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&t1[..16]);
+    out
 }
 
 impl KeyManager {
@@ -255,7 +276,8 @@ impl KeyManager {
     pub fn encode_container(&self, master_key: &[u8; 16]) -> Result<Vec<u8>> {
         let plain = self.serialize_ltlv()?;
         // GCM encrypt
-        let cipher = Aes128Gcm::new_from_slice(master_key)
+        let derived = derive_keys_cipher(master_key);
+        let cipher = Aes128Gcm::new_from_slice(&derived)
             .map_err(|e| MegaError::CryptoError(format!("GCM init: {}", e)))?;
         let mut iv = [0u8; GCM_IV_LEN];
         OsRng.fill_bytes(&mut iv);
@@ -282,7 +304,8 @@ impl KeyManager {
         }
         let iv = &data[2..2 + GCM_IV_LEN];
         let ct = &data[2 + GCM_IV_LEN..];
-        let cipher = Aes128Gcm::new_from_slice(master_key)
+        let derived = derive_keys_cipher(master_key);
+        let cipher = Aes128Gcm::new_from_slice(&derived)
             .map_err(|e| MegaError::CryptoError(format!("GCM init: {}", e)))?;
         let nonce = Nonce::from_slice(iv);
         let plain = cipher
@@ -313,8 +336,8 @@ impl KeyManager {
         let id_bytes = self.identity.to_le_bytes(); // SDK stores as little? It appends raw u64.
         out.extend_from_slice(&Self::tag_header(TAG_IDENTITY, id_bytes.len()));
         out.extend_from_slice(&id_bytes);
-        // generation (stored as gen+1, BE)
-        let gen_be = (self.generation + 1).to_be_bytes();
+        // generation (store exact generation)
+        let gen_be = self.generation.to_be_bytes();
         out.extend_from_slice(&Self::tag_header(TAG_GENERATION, gen_be.len()));
         out.extend_from_slice(&gen_be);
         // attr
@@ -688,5 +711,44 @@ fn matches_pending_uid(a: &PendingUid, b: &PendingUid) -> bool {
         (PendingUid::Email(ae), PendingUid::Email(be)) => ae == be,
         (PendingUid::UserHandle(ah), PendingUid::UserHandle(bh)) => ah == bh,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_keys_container_uses_hkdf() {
+        let master = [3u8; 16];
+        let mut km = KeyManager::new();
+        km.creation_time = 1234;
+        km.identity = 0x1122334455667788;
+        km.generation = 1;
+        km.priv_ed25519 = vec![9u8; 32];
+        km.priv_cu25519 = vec![8u8; 32];
+        km.priv_rsa = Vec::new();
+        km.auth_ed25519 = vec![1, 2, 3];
+        km.auth_cu25519 = vec![4, 5, 6];
+        km.share_keys.push(ShareKeyEntry {
+            handle: [1u8; 6],
+            key: [7u8; 16],
+            flags: 0b11,
+        });
+
+        let blob = km.encode_container(&master).expect("encode");
+        assert_eq!(blob[0], 20);
+        assert_eq!(blob[1], 0);
+
+        let mut decoded = KeyManager::new();
+        decoded
+            .decode_container(&blob, &master)
+            .expect("decode with derived key");
+
+        assert_eq!(decoded.priv_ed25519, km.priv_ed25519);
+        assert_eq!(decoded.priv_cu25519, km.priv_cu25519);
+        assert_eq!(decoded.share_keys.len(), 1);
+        assert_eq!(decoded.share_keys[0].key, [7u8; 16]);
+        assert_eq!(decoded.generation, km.generation);
     }
 }

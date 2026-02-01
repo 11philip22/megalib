@@ -15,26 +15,21 @@ fn password_to_a32_bytes(password: &str) -> (Vec<u8>, usize) {
     let code_units: Vec<u16> = password.encode_utf16().collect();
     let len_units = code_units.len();
 
-    let mut words: Vec<u32> = Vec::with_capacity((len_units + 3) / 4);
-    let mut word = 0u32;
-
-    for (i, cu) in code_units.iter().enumerate() {
-        let shift = 24 - (i % 4) * 8;
-        word |= (u32::from(*cu) << shift) as u32;
-
-        if i % 4 == 3 {
-            words.push(word);
-            word = 0;
+    // The webclient packs UTF-16 code units into bytes, dropping leading zero
+    // bytes for BMP ASCII (so "test" becomes 0x74 0x65 0x73 0x74) but keeping
+    // both bytes for non-ASCII (so 😀 -> D8 3D DE 00). Pad to 4-byte boundary.
+    let mut bytes = Vec::with_capacity(len_units * 2);
+    for cu in &code_units {
+        if *cu <= 0x00FF {
+            bytes.push(*cu as u8);
+        } else {
+            let be = cu.to_be_bytes();
+            bytes.extend_from_slice(&be);
         }
     }
 
-    if len_units % 4 != 0 {
-        words.push(word);
-    }
-
-    let mut bytes = Vec::with_capacity(words.len() * 4);
-    for w in words {
-        bytes.extend_from_slice(&w.to_be_bytes());
+    while bytes.len() % 4 != 0 {
+        bytes.push(0);
     }
 
     (bytes, len_units)

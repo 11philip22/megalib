@@ -182,17 +182,16 @@ impl ApiClient {
     /// # Returns
     /// JSON response from the API
     pub async fn request(&mut self, request: Value) -> Result<Value> {
-        self.request_id = self.request_id.wrapping_add(1);
+        self.request_with_allowed(request, &[]).await
+    }
 
+    /// Same as `request` but treat specific negative codes as non-fatal and return them.
+    pub async fn request_with_allowed(
+        &mut self,
+        request: Value,
+        allowed_errors: &[i64],
+    ) -> Result<Value> {
         let action_name = request.get("a").and_then(|v| v.as_str()).unwrap_or("");
-        let mut url = match &self.session_id {
-            Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
-            None => format!("{}?id={}", API_URL, self.request_id),
-        };
-        // Browser adds bc=1 on share calls; include it for s2 to match behavior.
-        if action_name == "s2" {
-            url.push_str("&bc=1");
-        }
 
         // MEGA API expects array of commands
         let body = serde_json::to_string(&vec![request.clone()])?;
@@ -207,25 +206,48 @@ impl ApiClient {
             // Small delay to avoid rate limiting
             sleep(Duration::from_millis(20)).await;
 
-            let _action = request.get("a").and_then(|v| v.as_str()).unwrap_or("?");
-            eprintln!("debug: api request a={} url={}", _action, url);
+            // Recompute request id and URL on every attempt to avoid server-side dedup
+            self.request_id = self.request_id.wrapping_add(1);
+            let mut url = match &self.session_id {
+                Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
+                None => format!("{}?id={}", API_URL, self.request_id),
+            };
+            // Browser adds bc=1 on share calls; include it for s2 to match behavior.
+            if action_name == "s2" {
+                url.push_str("&bc=1");
+            }
+
+            let action = action_name;
+            // Log request body for key actions to debug server responses.
+            if action == "u" || action == "p" || action == "s2" || action == "l" || action == "upv" || action == "uga" {
+                eprintln!("debug: api request a={} body={}", action, body);
+            }
+            eprintln!("debug: api request a={} url={}", action, url);
             let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
                 .await
                 .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
-            // if action == "s2" || response_text.len() <= 64 {
-            //     eprintln!(
-            //         "debug: api response a={} bytes={} body={}",
-            //         action,
-            //         response_text.len(),
-            //         response_text
-            //     );
-            // } else {
-            //     eprintln!(
-            //         "debug: api response a={} bytes={}",
-            //         action,
-            //         response_text.len()
-            //     );
-            // }
+
+            if action == "u" || action == "p" || action == "s2" || action == "l" || action == "upv" || action == "uga" {
+                eprintln!(
+                    "debug: api response a={} bytes={} body={}",
+                    action,
+                    response_text.len(),
+                    response_text
+                );
+            } else if action == "s2" || response_text.len() <= 64 {
+                eprintln!(
+                    "debug: api response a={} bytes={} body={}",
+                    action,
+                    response_text.len(),
+                    response_text
+                );
+            } else {
+                eprintln!(
+                    "debug: api response a={} bytes={}",
+                    action,
+                    response_text.len()
+                );
+            }
             let response: Value = serde_json::from_str(&response_text)?;
             if action_name == "s2" {
                 eprintln!("debug: s2 response raw: {}", response_text);
@@ -241,6 +263,9 @@ impl ApiClient {
                             return Ok(Value::from(code));
                         }
                         let error_code = ApiErrorCode::from(code);
+                        if allowed_errors.contains(&code) {
+                            return Ok(Value::from(code));
+                        }
                         if error_code == ApiErrorCode::Again {
                             sleep(Duration::from_millis(delay_ms)).await;
                             delay_ms *= 2;
@@ -358,19 +383,20 @@ impl ApiClient {
 
     /// Set a versioned private user attribute (upv), used for attributes like ^!keys.
     ///
-    /// `attr` is the attribute name, `value` is already base64url-encoded, and
-    /// `version` is the incrementing version (pass 0 to let the server bump it).
+    /// `attr` is the attribute name, `value` is already base64url-encoded.
+    /// `version` is the version number; SDK sends 0 on first set.
     pub async fn set_private_attribute(
         &mut self,
         attr: &str,
         value: &str,
         version: Option<i64>,
     ) -> Result<Value> {
-        self.request(serde_json::json!({
-            "a": "upv",
-            attr: [value, version.unwrap_or(0)]
-        }))
-        .await
+        let ver = version.unwrap_or(0);
+        // One attribute per upv, matching SDK
+        let mut obj = serde_json::Map::new();
+        obj.insert("a".into(), serde_json::Value::from("upv"));
+        obj.insert(attr.into(), serde_json::json!([value, ver]));
+        self.request(serde_json::Value::Object(obj)).await
     }
 }
 

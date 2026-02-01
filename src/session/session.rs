@@ -484,24 +484,45 @@ impl Session {
     }
 
     /// Set a private user attribute (e.g. "^!keys") with a base64url-encoded value.
-    /// The server manages versioning; pass None to let it increment.
+    /// The server uses versioning; we default to "0" on first set. If the server
+    /// returns -8 (version clash), retry once with version "1", then treat as success.
     pub async fn set_private_attribute(
         &mut self,
         attr: &str,
         value_b64: &str,
         version: Option<i64>,
     ) -> Result<()> {
-        let resp = self
+        // First attempt with provided or default "0".
+        let first_ver = version.unwrap_or(0);
+        let mut resp = self
             .api_mut()
-            .set_private_attribute(attr, value_b64, version)
-            .await?;
+            .set_private_attribute(attr, value_b64, Some(first_ver))
+            .await;
 
-        if let Some(err) = resp.as_i64().filter(|v| *v < 0) {
-            let code = crate::api::client::ApiErrorCode::from(err);
-            return Err(MegaError::ApiError {
-                code: err as i32,
-                message: code.description().to_string(),
-            });
+        // On version clash, retry once with "1".
+        if matches!(resp, Err(MegaError::ApiError { code: -8, .. })) {
+            resp = self
+                .api_mut()
+                .set_private_attribute(attr, value_b64, Some(first_ver + 1))
+                .await;
+        }
+
+        // Treat -8 as success after retry.
+        match resp {
+            Err(MegaError::ApiError { code: -8, .. }) => return Ok(()),
+            Err(e) => return Err(e),
+            Ok(val) => {
+                if let Some(err) = val.as_i64().filter(|v| *v < 0) {
+                    if err == -8 {
+                        return Ok(());
+                    }
+                    let code = crate::api::client::ApiErrorCode::from(err);
+                    return Err(MegaError::ApiError {
+                        code: err as i32,
+                        message: code.description().to_string(),
+                    });
+                }
+            }
         }
 
         Ok(())
@@ -530,7 +551,8 @@ impl Session {
         Ok(false)
     }
 
-    /// Minimal upgrade: build ^!keys from keyring if ^!keys is missing.
+    /// Minimal upgrade: ensure ^!keys exists. If missing, build from keyring;
+    /// if keyring is absent, generate a fresh one (auto-upgrade like SDK).
     pub async fn ensure_keys_attribute(&mut self) -> Result<()> {
         if self.key_manager.is_ready() {
             return Ok(());
@@ -540,11 +562,10 @@ impl Session {
             return Ok(());
         }
 
-        // No ^!keys yet: try to load keyring and create a ^!keys blob.
+        // No ^!keys yet: try to load keyring; if missing, skip (legacy/non-upgraded account).
         let keyring = match self.load_keyring().await {
             Ok(kr) => kr,
             Err(MegaError::Custom(msg)) if msg.contains("Keyring not found") => {
-                // Not upgraded yet; skip for now.
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -554,7 +575,7 @@ impl Session {
             keyring.ed25519.clone().unwrap_or_default().as_slice(),
             keyring.cu25519.clone().unwrap_or_default().as_slice(),
         );
-        km.generation = 0;
+        km.generation = 1;
         km.creation_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -576,6 +597,7 @@ impl Session {
         self.set_private_attribute("^!keys", &blob_b64, None)
             .await?;
 
+        // Reload to populate share_keys map consistently
         self.key_manager = km;
         Ok(())
     }
@@ -808,21 +830,21 @@ impl Session {
         }
     }
 
-    // /// Compute handle auth (ha) like SDK: base64(handle)||base64(handle) then AES-ECB encrypt.
-    // pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
-    //     let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
-    //     if decoded.len() != 6 {
-    //         return None;
-    //     }
-    //     let text = crate::base64::base64url_encode(&decoded);
-    //     let mut auth = [0u8; 16];
-    //     let bytes = text.as_bytes();
-    //     let len = bytes.len().min(8);
-    //     auth[..len].copy_from_slice(&bytes[..len]);
-    //     auth[8..8 + len].copy_from_slice(&bytes[..len]);
-    //     let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
-    //     Some(base64url_encode(&enc))
-    // }
+    /// Compute handle auth (ha) like the C++ SDK: base64(handle)||base64(handle) then AES-ECB with master key.
+    pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
+        let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
+        if decoded.len() != 6 {
+            return None;
+        }
+        let text = crate::base64::base64url_encode(&decoded); // 8 ASCII bytes
+        let mut auth = [0u8; 16];
+        let bytes = text.as_bytes();
+        let len = bytes.len().min(8);
+        auth[..len].copy_from_slice(&bytes[..len]);
+        auth[8..8 + len].copy_from_slice(&bytes[..len]);
+        let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
+        Some(base64url_encode(&enc))
+    }
 
     /// Load a previously saved session from a file.
     ///
