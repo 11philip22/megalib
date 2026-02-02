@@ -323,6 +323,32 @@ impl ApiClient {
         }
     }
 
+    /// Poll the SC (action packet) channel.
+    ///
+    /// Returns the list of action packets and the next sequence number.
+    pub async fn poll_sc(&mut self, sn: Option<&str>) -> Result<(Vec<Value>, String)> {
+        let mut payload = serde_json::json!({ "a": "sc" });
+        if let Some(s) = sn {
+            payload["sn"] = Value::String(s.to_string());
+        }
+
+        let resp = self.request(payload).await?;
+        let arr = resp.as_array().ok_or(MegaError::InvalidResponse)?;
+
+        let mut events = Vec::new();
+        let mut next_sn: Option<String> = None;
+        for item in arr {
+            if let Some(sn_value) = item.get("sn").and_then(|v| v.as_str()) {
+                next_sn = Some(sn_value.to_string());
+                continue;
+            }
+            events.push(item.clone());
+        }
+
+        let sn_out = next_sn.ok_or(MegaError::InvalidResponse)?;
+        Ok((events, sn_out))
+    }
+
     /// Make a batch API request to MEGA.
     ///
     /// Sends multiple commands in a single request.

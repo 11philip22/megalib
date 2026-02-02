@@ -3,9 +3,9 @@
 //! This module handles user login, session state, and logout.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
@@ -19,6 +19,7 @@ use crate::crypto::{
 };
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
+use tokio::time::sleep;
 
 /// MEGA user session.
 ///
@@ -58,6 +59,8 @@ pub struct Session {
     pub(crate) pending_keys_token: Option<String>,
     /// Flag set when a ^!keys downgrade is detected
     pub(crate) keys_downgrade_detected: bool,
+    /// Last seen action-packet sequence number (scsn) for SC polling.
+    pub(crate) scsn: Option<String>,
     /// Whether resume is enabled for interrupted transfers
     resume_enabled: bool,
     /// Progress callback for transfer progress
@@ -202,6 +205,10 @@ impl Session {
             .unwrap_or(&email_lower)
             .to_string();
         let user_name = user_info["name"].as_str().map(|s| s.to_string());
+        let scsn = user_info
+            .get("sn")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let mut session = Session {
             api,
@@ -221,6 +228,7 @@ impl Session {
             manual_verification: false,
             pending_keys_token: None,
             keys_downgrade_detected: false,
+            scsn,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -376,6 +384,121 @@ impl Session {
         self.workers
     }
 
+    /// Poll the SC channel once and dispatch action packets.
+    ///
+    /// Returns true if any local state changed (e.g., ^!keys or authrings updated).
+    pub async fn poll_action_packets_once(&mut self) -> Result<bool> {
+        let (packets, sn) = self.api.poll_sc(self.scsn.as_deref()).await?;
+        self.scsn = Some(sn);
+        self.dispatch_action_packets(&packets).await
+    }
+
+    /// Run a lightweight action-packet loop with exponential backoff.
+    ///
+    /// The `should_stop` predicate is evaluated after each poll to allow
+    /// embedding applications to terminate the loop.
+    pub async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
+    where
+        F: FnMut() -> bool,
+    {
+        let mut delay_ms = 1_000u64;
+        let max_delay = 60_000u64;
+
+        while !should_stop() {
+            match self.poll_action_packets_once().await {
+                Ok(_) => {
+                    delay_ms = 1_000;
+                }
+                Err(MegaError::ServerBusy) | Err(MegaError::InvalidResponse) => {
+                    delay_ms = (delay_ms * 2).min(max_delay);
+                }
+                Err(e) => return Err(e),
+            }
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+        Ok(())
+    }
+
+    async fn dispatch_action_packets(&mut self, packets: &[Value]) -> Result<bool> {
+        let mut changed_handles = Vec::new();
+        let mut contact_updates = Vec::new();
+
+        for pkt in packets {
+            if let Some(obj) = pkt.as_object() {
+                Self::extract_handles_from_action(obj, &mut changed_handles);
+                if let Some(update) = Self::extract_contact_update(obj)? {
+                    contact_updates.push(update);
+                }
+            }
+        }
+
+        let mut changed = false;
+        if !contact_updates.is_empty() {
+            if self.handle_contact_updates(&contact_updates).await? {
+                changed = true;
+            }
+            self.maybe_clear_cv_warning();
+        }
+
+        if self.handle_actionpacket_keys(&changed_handles).await? {
+            changed = true;
+        }
+
+        Ok(changed)
+    }
+
+    fn extract_handles_from_action(
+        obj: &serde_json::Map<String, Value>,
+        out: &mut Vec<String>,
+    ) {
+        for key in ["n", "p", "h", "t", "k"] {
+            if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+                out.push(v.to_string());
+            }
+        }
+        if let Some(arr) = obj.get("c").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(h) = item.get("h").and_then(|v| v.as_str()) {
+                    out.push(h.to_string());
+                }
+            }
+        }
+    }
+
+    fn extract_contact_update(
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<Option<(String, Option<Vec<u8>>, Option<Vec<u8>>, bool)>> {
+        let user = match obj.get("u").and_then(|v| v.as_str()) {
+            Some(u) => u.to_string(),
+            None => return Ok(None),
+        };
+
+        let cu_b64 = obj
+            .get("prCu255")
+            .or_else(|| obj.get("cu25519"))
+            .or_else(|| obj.get("k"))
+            .and_then(|v| v.as_str());
+        let ed_b64 = obj
+            .get("prEd255")
+            .or_else(|| obj.get("ed25519"))
+            .and_then(|v| v.as_str());
+
+        let cu = cu_b64
+            .map(base64url_decode)
+            .transpose()?
+            .filter(|v| !v.is_empty());
+        let ed = ed_b64
+            .map(base64url_decode)
+            .transpose()?
+            .filter(|v| !v.is_empty());
+        if cu.is_none() && ed.is_none() {
+            return Ok(None);
+        }
+        let verified = obj.get("c").and_then(|v| v.as_i64()).unwrap_or(0) > 0;
+
+        Ok(Some((user, ed, cu, verified)))
+    }
+
     /// Get all nodes in the session cache.
     pub fn nodes(&self) -> &[crate::fs::Node] {
         &self.nodes
@@ -462,6 +585,7 @@ impl Session {
             user_handle: self.user_handle.clone(),
             pending_keys_token: self.pending_keys_token.clone(),
             keys_downgrade_detected: self.keys_downgrade_detected,
+            scsn: self.scsn.clone(),
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -1022,6 +1146,9 @@ impl Session {
             .as_str()
             .unwrap_or(&data.user_handle)
             .to_string();
+        let scsn = data
+            .scsn
+            .or_else(|| user_info.get("sn").and_then(|v| v.as_str()).map(|s| s.to_string()));
 
         Ok(Some(Session {
             api,
@@ -1041,6 +1168,7 @@ impl Session {
             manual_verification: false,
             pending_keys_token: data.pending_keys_token,
             keys_downgrade_detected: data.keys_downgrade_detected,
+            scsn,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -1061,6 +1189,8 @@ impl Session {
     pending_keys_token: Option<String>,
     #[serde(default)]
     keys_downgrade_detected: bool,
+    #[serde(default)]
+    scsn: Option<String>,
     }
 
 #[cfg(test)]
@@ -1088,6 +1218,7 @@ mod tests {
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
             pending_keys_token: None,
+            scsn: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
