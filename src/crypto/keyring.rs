@@ -12,9 +12,9 @@ use aes::Aes128;
 use aes_gcm::aead::consts::U8;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes128Gcm, AesGcm};
-use ccm::aead::{generic_array::GenericArray, Aead as CcmAead, AeadCore as CcmAeadCore};
-use ccm::consts::{U10 as CU10, U12 as CU12, U16 as CU16, U8 as CU8};
 use ccm::Ccm;
+use ccm::aead::{Aead as CcmAead, AeadCore as CcmAeadCore, generic_array::GenericArray};
+use ccm::consts::{U8 as CU8, U10 as CU10, U12 as CU12, U16 as CU16};
 use rand::RngCore;
 
 use crate::error::{MegaError, Result};

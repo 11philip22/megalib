@@ -41,6 +41,10 @@ pub enum MegaError {
     #[error("Base64 decode error: {0}")]
     Base64Error(#[from] base64::DecodeError),
 
+    /// Keys attribute appears to be downgraded (potential attack).
+    #[error("Potential downgrade detected for ^!keys")]
+    DowngradeDetected,
+
     /// Invalid state format.
     #[error("Invalid state format: {0}")]
     InvalidState(String),

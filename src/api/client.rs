@@ -219,7 +219,13 @@ impl ApiClient {
 
             let action = action_name;
             // Log request body for key actions to debug server responses.
-            if action == "u" || action == "p" || action == "s2" || action == "l" || action == "upv" || action == "uga" {
+            if action == "u"
+                || action == "p"
+                || action == "s2"
+                || action == "l"
+                || action == "upv"
+                || action == "uga"
+            {
                 eprintln!("debug: api request a={} body={}", action, body);
             }
             eprintln!("debug: api request a={} url={}", action, url);
@@ -227,7 +233,13 @@ impl ApiClient {
                 .await
                 .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
 
-            if action == "u" || action == "p" || action == "s2" || action == "l" || action == "upv" || action == "uga" {
+            if action == "u"
+                || action == "p"
+                || action == "s2"
+                || action == "l"
+                || action == "upv"
+                || action == "uga"
+            {
                 eprintln!(
                     "debug: api response a={} bytes={} body={}",
                     action,

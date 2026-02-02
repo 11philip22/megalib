@@ -83,6 +83,11 @@ impl Session {
         // Store nodes
         self.nodes = nodes;
 
+        // Clear in-use flags for share keys no longer present, persist if changed.
+        if self.clear_inuse_flags_for_missing_shares() {
+            let _ = self.persist_keys_with_retry().await;
+        }
+
         Ok(())
     }
 

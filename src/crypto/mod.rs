@@ -2,6 +2,7 @@
 
 pub mod aes;
 pub mod auth;
+pub mod authring;
 pub mod key_manager;
 pub mod keyring;
 pub mod keys;
@@ -10,6 +11,7 @@ pub mod rsa;
 
 pub use aes::*;
 pub use auth::*;
+pub use authring::*;
 pub use key_manager::*;
 pub use keyring::*;
 pub use keys::*;

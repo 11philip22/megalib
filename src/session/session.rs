@@ -13,8 +13,9 @@ use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::crypto::key_manager::KeyManager;
 use crate::crypto::keyring::Keyring;
 use crate::crypto::{
-    MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
-    make_password_key, make_random_key, make_username_hash, parse_raw_private_key,
+    AuthRing, AuthState, MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id,
+    derive_key_v2, encrypt_key, make_password_key, make_random_key, make_username_hash,
+    parse_raw_private_key,
 };
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
@@ -43,6 +44,20 @@ pub struct Session {
     pub(crate) share_keys: HashMap<String, [u8; 16]>,
     /// Minimal key manager for upgraded accounts (^!keys)
     pub(crate) key_manager: KeyManager,
+    /// Parsed authring Ed25519
+    pub(crate) authring_ed: AuthRing,
+    /// Parsed authring Cu25519
+    pub(crate) authring_cu: AuthRing,
+    /// Cached backups blob (opaque)
+    pub(crate) backups: Vec<u8>,
+    /// Cached warnings (LTLV map)
+    pub(crate) warnings: crate::crypto::Warnings,
+    /// Manual verification flag
+    pub(crate) manual_verification: bool,
+    /// Last completed token for pending keys feed (pk command)
+    pub(crate) pending_keys_token: Option<String>,
+    /// Flag set when a ^!keys downgrade is detected
+    pub(crate) keys_downgrade_detected: bool,
     /// Whether resume is enabled for interrupted transfers
     resume_enabled: bool,
     /// Progress callback for transfer progress
@@ -188,7 +203,7 @@ impl Session {
             .to_string();
         let user_name = user_info["name"].as_str().map(|s| s.to_string());
 
-        Ok(Session {
+        let mut session = Session {
             api,
             session_id,
             master_key,
@@ -199,11 +214,27 @@ impl Session {
             nodes: Vec::new(),
             share_keys: HashMap::new(),
             key_manager: KeyManager::default(),
+            authring_ed: AuthRing::default(),
+            authring_cu: AuthRing::default(),
+            backups: Vec::new(),
+            warnings: crate::crypto::Warnings::default(),
+            manual_verification: false,
+            pending_keys_token: None,
+            keys_downgrade_detected: false,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
             workers: 1,
-        })
+        };
+
+        // On login, attempt to load ^!keys and process pending promotions.
+        let _ = session.load_keys_attribute().await;
+        let _ = session.promote_pending_shares().await;
+        if session.clear_inuse_flags_for_missing_shares() {
+            let _ = session.persist_keys_with_retry().await;
+        }
+
+        Ok(session)
     }
 
     /// Get the current session ID.
@@ -429,6 +460,8 @@ impl Session {
             email: self.email.clone(),
             name: self.name.clone(),
             user_handle: self.user_handle.clone(),
+            pending_keys_token: self.pending_keys_token.clone(),
+            keys_downgrade_detected: self.keys_downgrade_detected,
         };
 
         let json = serde_json::to_string_pretty(&data)
@@ -528,6 +561,60 @@ impl Session {
         Ok(())
     }
 
+    /// Replace authring Ed25519 blob (LTLV) and persist into ^!keys.
+    pub async fn set_authring_ed25519(&mut self, blob: Vec<u8>) -> Result<()> {
+        self.authring_ed = AuthRing::deserialize_ltlv(&blob);
+        self.persist_keys_attribute().await
+    }
+
+    /// Replace authring Cu25519 blob (LTLV) and persist into ^!keys.
+    pub async fn set_authring_cu25519(&mut self, blob: Vec<u8>) -> Result<()> {
+        self.authring_cu = AuthRing::deserialize_ltlv(&blob);
+        self.persist_keys_attribute().await
+    }
+
+    /// Check if a ^!keys downgrade has been detected.
+    pub fn keys_downgrade_detected(&self) -> bool {
+        self.keys_downgrade_detected
+    }
+
+    /// Replace backups blob (opaque) and persist into ^!keys.
+    pub async fn set_backups_blob(&mut self, blob: Vec<u8>) -> Result<()> {
+        self.backups = blob;
+        self.persist_keys_attribute().await
+    }
+
+    /// Update warnings (LTLV map) and persist.
+    pub async fn set_warnings(&mut self, warnings: crate::crypto::Warnings) -> Result<()> {
+        self.warnings = warnings;
+        self.persist_keys_attribute().await
+    }
+
+    /// Enable/disable contact verification warning flag (cv) and persist.
+    pub async fn set_contact_verification_warning(&mut self, enabled: bool) -> Result<()> {
+        self.warnings.set_cv(enabled);
+        self.persist_keys_attribute().await
+    }
+
+    /// Set manual verification flag (gates share-key exchange) and persist.
+    pub async fn set_manual_verification(&mut self, enabled: bool) -> Result<()> {
+        self.manual_verification = enabled;
+        self.persist_keys_attribute().await
+    }
+
+    /// Check if contact verification warning flag is set.
+    pub fn contact_verification_warning(&self) -> bool {
+        self.warnings.cv_enabled()
+    }
+
+    /// Get authring state for a contact (Ed25519 / Cu25519)
+    pub fn authring_state(&self, handle_b64: &str) -> (Option<AuthState>, Option<AuthState>) {
+        (
+            self.authring_ed.get_state(handle_b64),
+            self.authring_cu.get_state(handle_b64),
+        )
+    }
+
     /// Try to load ^!keys (minimal) into key_manager. Returns true if loaded and ready.
     pub async fn load_keys_attribute(&mut self) -> Result<bool> {
         let Some(enc_keys) = self.get_user_attribute_raw("^!keys").await? else {
@@ -552,6 +639,21 @@ impl Session {
                     self.rsa_key = rsa;
                 }
             }
+            // Cache authrings/backups/warnings/manual verification in session for quick access.
+            self.authring_ed =
+                AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
+            self.authring_cu =
+                AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
+            self.backups = self.key_manager.backups.clone();
+            self.warnings = self.key_manager.warnings.clone();
+            self.manual_verification = self.key_manager.manual_verification;
+
+            // Process any pending promotions and in-use cleanup after loading.
+            self.promote_pending_shares().await?;
+            if self.clear_inuse_flags_for_missing_shares() {
+                self.persist_keys_with_retry().await?;
+            }
+
             return Ok(true);
         }
         Ok(false)
@@ -727,6 +829,7 @@ impl Session {
             .entry(node_handle.to_string())
             .or_insert(share_key);
         if self.key_manager.is_ready() {
+            let _ = self.key_manager.set_share_key_trusted(node_handle, true);
             let _ = self.key_manager.set_share_key_in_use(node_handle, true);
             let _ = self.persist_keys_attribute().await;
         }
@@ -793,47 +896,7 @@ impl Session {
 
     /// Persist the minimal ^!keys attribute from the in-memory KeyManager.
     pub async fn persist_keys_attribute(&mut self) -> Result<()> {
-        if !self.key_manager.is_ready() {
-            return Err(MegaError::Custom(
-                "KeyManager not initialized; cannot persist ^!keys".to_string(),
-            ));
-        }
-
-        let desired = self.key_manager.clone();
-        let mut attempts = 0;
-
-        loop {
-            let blob = self.key_manager.encode_container(&self.master_key)?;
-            let blob_b64 = base64url_encode(&blob);
-            match self.set_private_attribute("^!keys", &blob_b64, None).await {
-                Ok(_) => {
-                    self.key_manager.generation = self.key_manager.generation.saturating_add(1);
-                    return Ok(());
-                }
-                Err(MegaError::ApiError { code, .. })
-                    if attempts == 0 && (code == -3 || code == -11) =>
-                {
-                    // Version clash or busy server; reload remote copy and merge, then retry once.
-                    attempts += 1;
-                    if self.load_keys_attribute().await? {
-                        let mut merged = self.key_manager.clone();
-                        merged.merge_from(&desired);
-                        self.key_manager = merged;
-                        self.share_keys.clear();
-                        for sk in &self.key_manager.share_keys {
-                            let mut arr: [u8; 16] = [0u8; 16];
-                            arr.copy_from_slice(&sk.key);
-                            let handle_b64 = base64url_encode(&sk.handle);
-                            self.share_keys.entry(handle_b64).or_insert(arr);
-                        }
-                    } else {
-                        self.key_manager = desired.clone();
-                    }
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        self.persist_keys_with_retry().await
     }
 
     /// Compute handle auth (ha) like the C++ SDK: base64(handle)||base64(handle) then AES-ECB with master key.
@@ -971,6 +1034,13 @@ impl Session {
             nodes: Vec::new(),
             share_keys: HashMap::new(),
             key_manager: KeyManager::default(),
+            authring_ed: AuthRing::default(),
+            authring_cu: AuthRing::default(),
+            backups: Vec::new(),
+            warnings: crate::crypto::Warnings::default(),
+            manual_verification: false,
+            pending_keys_token: data.pending_keys_token,
+            keys_downgrade_detected: data.keys_downgrade_detected,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -979,15 +1049,19 @@ impl Session {
     }
 }
 
-/// Serializable session cache data.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SessionCache {
-    session_id: String,
-    master_key: String,
-    email: String,
-    name: Option<String>,
-    user_handle: String,
-}
+    /// Serializable session cache data.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct SessionCache {
+        session_id: String,
+        master_key: String,
+        email: String,
+        name: Option<String>,
+        user_handle: String,
+    #[serde(default)]
+    pending_keys_token: Option<String>,
+    #[serde(default)]
+    keys_downgrade_detected: bool,
+    }
 
 #[cfg(test)]
 mod tests {
@@ -1005,8 +1079,15 @@ mod tests {
             name: None,
             user_handle: "handle".to_string(),
             nodes: Vec::new(),
+            keys_downgrade_detected: false,
             share_keys: HashMap::new(),
             key_manager: KeyManager::default(),
+            authring_ed: AuthRing::default(),
+            authring_cu: AuthRing::default(),
+            backups: Vec::new(),
+            warnings: crate::crypto::Warnings::default(),
+            manual_verification: false,
+            pending_keys_token: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
