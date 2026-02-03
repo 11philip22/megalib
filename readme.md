@@ -663,6 +663,8 @@ cargo run --example folder -- "https://mega.nz/folder/..."
 PRs are welcome!  
 Please run `cargo fmt` and `cargo clippy` before submitting.
 
+If you’re changing behavior, please document it in the PR.
+
 ## Support
 
 If this crate saves you time or helps your work, support is appreciated:
