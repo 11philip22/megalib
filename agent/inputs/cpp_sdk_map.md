@@ -107,12 +107,14 @@ Files:
 - Share-key encryption/decryption is gated by `verificationRequired` (authring SEEN or manual verification).
 - Share promotion: pending outshares encrypt share keys to recipients and send `CommandPendingKeys`; pending inshares decrypt keys (legacy base64 fix if size > 16), add share key as trusted, and enqueue `NewShare`.
 - Authring validation: `trackKey` computes fingerprints and rejects mismatches for Ed25519 authring; `trackSignature` verifies Cu25519 signatures with Ed25519 signing key; updates are buffered in `mAuthRingsTemp` during initial scan and persisted via ^!keys commit when migrated.
+- After login, `fetchnodes()` triggers `getuserdata` (`ug`), which feeds `^!keys` into `KeyManager::fromKeysContainer`; `updateShareKeys` then `loadShareKeys` applies share/export keys to nodes (via `mergenewshare`), so exported-folder keys are available before normal operations.
 
 Files:
 - `sdk/include/mega/megaclient.h` (KeyManager definition)
 - `sdk/src/megaclient.cpp`
 - `sdk/src/tlv.cpp`
 - `sdk/include/mega/user.h` (AuthRing)
+- `sdk/src/commands.cpp`
 
 ## HTTP / Network
 - `HttpReq`/`HttpIO` and TLS pinning constants.
