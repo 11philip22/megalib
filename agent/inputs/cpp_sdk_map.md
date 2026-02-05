@@ -86,6 +86,7 @@ Files:
 - `MegaApi::getPublicNode` parses a file link and opens it; if the key is missing, it opens without key for existence check (`API_EINCOMPLETE` treated as OK in the request path).
 - `MegaApi::loginToFolder` uses a folder link (+ optional auth key) to create a public-folder session.
 - `MegaClient::setshare` updates ^!keys (pending outshares / share key) before issuing `CommandSetShare` when needed; in-use flags are set/cleared in KeyManager when shares are created/removed.
+- Adding nodes under an exported folder: `CommandPutNodes` generates a `cr` payload via `ShareNodeKeys` that encrypts each new node key with the share key of any share in the parent chain (including the exported folder), so the existing public link continues to decrypt new files without link regeneration.
 
 Files:
 - `sdk/include/mega/share.h`
@@ -95,6 +96,7 @@ Files:
 - `sdk/include/megaapi.h`
 - `sdk/src/megaapi_impl.cpp`
 - `sdk/src/megaclient.cpp`
+- `sdk/src/commands.cpp`
 
 ## Key Management / Authrings
 - `KeyManager` manages the ^!keys container, share keys, pending in/out shares, authrings, warnings.
