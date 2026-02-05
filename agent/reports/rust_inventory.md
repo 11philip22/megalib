@@ -1,0 +1,66 @@
+# Rust Inventory (MEGA SDK Port)
+
+## Inventory Table
+
+| Subsystem | Rust modules/files | Key types | Key functions | Invariants / assumptions |
+| --- | --- | --- | --- | --- |
+| Public surface + re-exports | `src/lib.rs`, `src/api/mod.rs`, `src/fs/mod.rs`, `src/session/mod.rs` | `Session`, `ApiClient`, `HttpClient`, `Node`, `NodeType`, `Quota`, `PublicFile`, `PublicFolder`, `RegistrationState`, `UploadState`, `TransferProgress`, `MegaError` | `Session::login`, `public::get_public_file_info`, `api::ApiClient::new` | Public API is re-export driven; preview module is `cfg(not(wasm32))`. |
+| API client / command layer | `src/api/client.rs` | `ApiClient`, `ApiErrorCode` | `request`, `request_with_allowed`, `request_batch`, `poll_sc`, `get_user_attribute`, `set_private_attribute` | Requests are JSON arrays; `id` increments per attempt; `sid` query param added if set; `s2` adds `bc=1`; retries on `EAGAIN` with exponential backoff (6 attempts for `s2`, 8 otherwise); 20s timeout wraps `HttpClient::post`. |
+| HTTP client | `src/http.rs` | `HttpClient` | `new`, `with_proxy`, `post` | 60s reqwest timeout; no auto-redirects, manual redirect loop up to 10; non-2xx => `MegaError::HttpError`; `new` panics on client build failure. |
+| Session/auth lifecycle | `src/session/session.rs` | `Session` | `login`, `login_with_proxy`, `load`, `save`, `change_password`, `poll_action_packets_once`, `run_action_packet_loop` | Login uses pre-login `us0` to choose v1/v2 KDF; decrypts master key, RSA key, session id; `set_workers` clamps 1..16; action packet loop backs off on `ServerBusy`/`InvalidResponse`. |
+| Registration | `src/session/registration.rs` | `RegistrationState` | `register`, `verify_registration`, `RegistrationState::{serialize,deserialize}` | Two-step flow; state format `pk:challenge:handle`; challenge must match during verification or `InvalidChallenge`. |
+| FS node model | `src/fs/node.rs` | `Node`, `NodeType`, `Quota` | `NodeType::from_i64`, `Node::{path,get_key,get_link}` | Root/Inbox/Trash/Network are containers; file keys for links are base64url; `is_writable` assumes all cached nodes are writable. |
+| FS cache + tree parsing | `src/fs/operations/tree.rs` | internal `parse_node` | `Session::refresh`, `parse_node`, `decrypt_node_key`, `decrypt_node_attrs`, `build_node_paths` | `refresh` requires API `f` and decrypts attributes with node key; key lookup uses master key if `key_handle == user_handle` else share keys; paths computed with recursion depth cap 100. |
+| FS browse | `src/fs/operations/browse.rs` | — | `list`, `stat`, `get_node_by_handle`, `list_contacts`, `node_has_ancestor` | Uses cached `nodes` and normalized paths; `node_has_ancestor` caps depth at 100 to avoid cycles. |
+| FS mutations | `src/fs/operations/dir_ops.rs` | — | `mkdir`, `mv`, `rename`, `rm` | `mkdir` encrypts attrs with new random key and uses API `p`; `rename` requires node key and AES-CBC attr encryption; `mv` requires destination container. |
+| Transfers: download | `src/fs/operations/download.rs` | — | `download`, `download_with_offset`, `download_to_file` | Requires `NodeType::File` and 32-byte node key; AES-CTR key/nonce derived by XOR and key slice; parallel path uses 1MB chunks and ordered `.buffered(workers)`; resume uses temp `.megatmp.<handle>` file. |
+| Transfers: upload | `src/fs/operations/upload.rs`, `src/fs/upload_state.rs`, `src/fs/operations/utils.rs` | `UploadState` | `upload`, `upload_resumable`, `upload_from_bytes`, `upload_from_reader`, `upload_node_attribute`, `finalize_upload` | Upload URL from `a: u`; chunk sizes follow MEGA formula; AES-CTR encrypt per chunk + MACs; resumable state stored as `.megalib_upload`, file hash is SHA-256 of first 1MB; finalization uses `a: p` with packed node key; share uploads include CR mapping when share key present. |
+| Public links (file + folder) | `src/public.rs` | `PublicFile`, `PublicFolder` | `parse_mega_link`, `parse_folder_link`, `get_public_file_info`, `download_public_file_data`, `open_folder` | File links require 32-byte key, folder links 16-byte key; unauthenticated API `g` for file download URL; folder uses direct POST to `cs?id=<rand>&n=<handle>`; decrypt attrs with AES-CBC and `MEGA` prefix check. |
+| Key management (^!keys) | `src/session/keys.rs`, `src/crypto/key_manager.rs` | `KeyManager`, `ShareKeyEntry`, `PendingOutEntry`, `PendingInEntry`, `Warnings` | `load_keys_attribute`, `ensure_keys_attribute`, `sync_keys_attribute`, `persist_keys_with_retry`, `promote_pending_shares` | ^!keys AES-GCM container; downgrade detection when generation decreases; `persist_keys_with_retry` retries on -8/-3/-11; manual verification gates share-key promotion and sets warning flag. |
+| Authring | `src/crypto/authring.rs` | `AuthRing`, `AuthEntry`, `AuthState` | `update`, `serialize_ltlv`, `deserialize_ltlv` | Fingerprints are SHA-256 of pubkey; state transitions to `Changed` when fingerprint differs. |
+| Keyring (*keyring) | `src/crypto/keyring.rs` | `Keyring` | `from_encrypted`, `to_encrypted`, `generate` | Supports AES-GCM/AES-CCM variants by encSetting; requires 32-byte Ed25519 + Cu25519 keys. |
+| Auth/KDF | `src/crypto/auth.rs`, `src/crypto/keys.rs` | — | `derive_key_v2`, `make_password_key`, `make_username_hash`, `decrypt_session_id` | V2 uses PBKDF2-SHA512 (100k iterations); legacy KDF loops 65,536 AES rounds; session id is first 43 bytes of RSA-decrypted MPI. |
+| RSA | `src/crypto/rsa.rs` | `MegaRsaKey` | `generate`, `encode_public_key`, `encode_private_key`, `encrypt`, `decrypt` | RSA-2048 with exponent e=3; private key encoding uses AES-ECB over MPI blocks. |
+| AES + MACs | `src/crypto/aes.rs` | — | `aes128_ecb_encrypt`, `aes128_cbc_encrypt`, `aes128_ctr_decrypt`, `chunk_mac_calculate`, `meta_mac_calculate` | ECB/CBC require input length multiple of 16 (assert); CTR counter uses nonce + big-endian block counter from offset. |
+| Base64 | `src/base64.rs` | — | `base64url_encode`, `base64url_decode` | URL-safe variant with `-`/`_` and no padding; decode restores padding as needed. |
+| Progress reporting | `src/progress.rs` | `TransferProgress`, `ProgressCallback` | `TransferProgress::percent`, `make_progress_bar` | Callback returns `false` to cancel; progress uses total to compute percent. |
+| Preview / thumbnails | `src/preview.rs` | — | `generate_thumbnail`, `generate_image_thumbnail`, `generate_video_thumbnail` | Non-WASM only; image formats handled by `image`; video thumbnails require `ffmpegthumbnailer` in PATH. |
+| MEGA command usage (internal) | `src/session/session.rs`, `src/session/registration.rs`, `src/session/keys.rs`, `src/fs/operations/*`, `src/public.rs` | — | — | Commands observed in code: `us0`, `us`, `ug`, `f`, `g`, `u`, `p`, `a`, `m`, `d`, `l`, `s2`, `up`, `uc`, `ud`, `uk`, `pk`, `uga`, `upv`, `uq`, `sc`, `ufa`. |
+
+## Key State Machines / Async Flows
+
+- Login flow: `Session::login_internal` pre-login (`us0`) -> login (`us`) -> decrypt master key, RSA key, session id -> fetch user info (`ug`) -> load ^!keys / promote pending shares. (`src/session/session.rs`)
+- Registration flow: `register` (anonymous `up` + `us` + `ug` + `uc`) -> `verify_registration` (`ud` verify + `up` save creds + `us` relogin + `up` RSA keys). (`src/session/registration.rs`)
+- API retry flow: `ApiClient::request_with_allowed` retries `EAGAIN` with exponential backoff, 20ms jitter sleep, 20s request timeout; treats single-element arrays and scalars as codes. (`src/api/client.rs`)
+- Action packet polling: `poll_sc` -> `dispatch_action_packets` -> contact updates + key sync/promotion -> `run_action_packet_loop` backoff. (`src/session/session.rs`, `src/session/keys.rs`)
+- Node refresh/parsing: `Session::refresh` fetches `f`, parses share keys, decrypts nodes, rebuilds paths, reconciles share key flags. (`src/fs/operations/tree.rs`)
+- Upload (resumable): `upload_resumable` loads `UploadState` -> `upload_internal` reads chunks, encrypts + MACs + uploads, saves state, finalizes with `p` + packed node key. (`src/fs/operations/upload.rs`, `src/fs/upload_state.rs`)
+- Upload (stream): `upload_from_reader` -> sequential chunk upload -> `finalize_upload` (no resume). (`src/fs/operations/upload.rs`)
+- Download: `download_with_offset` derives AES-CTR key/nonce from node key -> stream (workers=1) or parallel chunk GETs -> progress callbacks -> optional resume via `download_to_file`. (`src/fs/operations/download.rs`)
+- Public links: `get_public_file_info`/`download_public_file_data` for files; `open_folder` for folder tree + per-node decrypt. (`src/public.rs`)
+- ^!keys lifecycle: `load_keys_attribute` -> `sync_keys_attribute` -> `promote_pending_shares` -> `persist_keys_with_retry` on merge/version errors. (`src/session/keys.rs`, `src/crypto/key_manager.rs`)
+
+## Error Types And Production Sites
+
+- `MegaError::HttpError`: `HttpClient::post` on non-2xx or bad redirect. (`src/http.rs`)
+- `MegaError::RequestError`: propagated from reqwest in HTTP, public download, upload/download, preview, etc. (`src/http.rs`, `src/public.rs`, `src/fs/operations/*`)
+- `MegaError::JsonError`: from `serde_json` parsing/serialization in `ApiClient` and public folder API. (`src/api/client.rs`, `src/public.rs`)
+- `MegaError::ServerBusy`: `ApiClient::request*` retry exhaustion on `EAGAIN`. (`src/api/client.rs`)
+- `MegaError::InvalidResponse`: malformed API responses, key containers, attribute shapes, etc. (`src/api/client.rs`, `src/fs/operations/tree.rs`, `src/public.rs`, `src/crypto/key_manager.rs`, `src/crypto/keyring.rs`)
+- `MegaError::ApiError`: negative API codes mapped in `ApiClient::request*` and checked manually in Session and export flows. (`src/api/client.rs`, `src/session/session.rs`, `src/fs/operations/export.rs`, `src/session/keys.rs`)
+- `MegaError::CryptoError`: crypto failures (PBKDF2, AES-GCM/CCM, RSA key parsing) and proxy config errors. (`src/crypto/*`, `src/http.rs`)
+- `MegaError::InvalidChallenge`: registration challenge mismatch. (`src/session/registration.rs`)
+- `MegaError::Base64Error`: base64 decode failures used across auth, public links, node parsing. (`src/base64.rs`)
+- `MegaError::DowngradeDetected`: ^!keys generation decreases on decode/sync. (`src/crypto/key_manager.rs`, `src/session/keys.rs`)
+- `MegaError::InvalidState`: bad `RegistrationState` serialization. (`src/session/registration.rs`)
+- `MegaError::Custom`: generic failures throughout (path errors, key length, missing fields, cancellation, etc.). (`src/session/session.rs`, `src/fs/operations/*`, `src/public.rs`)
+
+## Behavior-Critical Code Paths
+
+- Auth/login and session bootstrap: `Session::login_internal` (prelogin `us0`, v1/v2 KDF, decrypt master key/RSA/session id, set `sid`). (`src/session/session.rs`)
+- Request signing / share metadata: `compute_handle_auth` + `build_cr_for_nodes` used for `s2` share/export and node creation in shared folders. (`src/session/session.rs`, `src/fs/operations/export.rs`, `src/fs/operations/upload.rs`)
+- Node parsing + key resolution: `Session::parse_node`, `decrypt_node_key`, `decrypt_node_attrs`, share key parsing in `refresh`. (`src/fs/operations/tree.rs`)
+- Transfer encryption: AES-CTR key/nonce derivation and chunk MACs for upload/download. (`src/fs/operations/upload.rs`, `src/fs/operations/download.rs`, `src/crypto/aes.rs`)
+- Upload finalize (node creation): `finalize_upload` builds packed node key, encrypts attrs, handles CR mapping and `p` API response shapes. (`src/fs/operations/upload.rs`)
+- Retry/backoff logic: `ApiClient::request_with_allowed` handles `EAGAIN`, max attempts, and timeouts. (`src/api/client.rs`)
+- Timeouts: reqwest client timeout 60s; API request timeout wrapper 20s; download/upload use reqwest defaults (UNKNOWN if overridden elsewhere). (`src/http.rs`, `src/api/client.rs`, `src/fs/operations/*`)
