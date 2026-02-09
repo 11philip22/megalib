@@ -15,8 +15,6 @@ impl HttpClient {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                // .danger_accept_invalid_certs(true)
-                // .danger_accept_invalid_hostnames(true)
                 .build()
                 .expect("Failed to build reqwest client"),
         }
