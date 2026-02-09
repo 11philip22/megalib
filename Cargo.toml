@@ -39,6 +39,7 @@ base64 = "0.22"
 thiserror = "1"
 hex = "0.4.3"
 futures = "0.3"
+tracing = "0.1"
 
 # Ensure getrandom works in WASM (uses browser crypto)
 getrandom = { version = "0.2", features = ["js"] }
@@ -57,3 +58,4 @@ web-sys = { version = "0.3", features = ["console"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

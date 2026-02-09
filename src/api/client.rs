@@ -3,8 +3,9 @@
 use crate::error::{MegaError, Result};
 use crate::http::HttpClient;
 use serde_json::Value;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::timeout;
+use tracing::{info_span, trace};
 
 // Cross-platform sleep function
 #[cfg(not(target_arch = "wasm32"))]
@@ -192,6 +193,13 @@ impl ApiClient {
         allowed_errors: &[i64],
     ) -> Result<Value> {
         let action_name = request.get("a").and_then(|v| v.as_str()).unwrap_or("");
+        let span = info_span!(
+            "mega.api.request",
+            action = action_name,
+            sid_present = self.session_id.is_some(),
+            allowed_errors = ?allowed_errors
+        );
+        let _guard = span.enter();
 
         // MEGA API expects array of commands
         let body = serde_json::to_string(&vec![request.clone()])?;
@@ -216,54 +224,63 @@ impl ApiClient {
             if action_name == "s2" {
                 url.push_str("&bc=1");
             }
+            let attempt = attempts + 1;
+            let request_id = self.request_id;
+            let start = Instant::now();
+            let response_text =
+                match timeout(Duration::from_secs(20), self.http.post(&url, &body)).await {
+                    Ok(Ok(text)) => text,
+                    Ok(Err(err)) => {
+                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                        trace!(
+                            request_id,
+                            attempt,
+                            url = %url,
+                            body_bytes = body.len(),
+                            body = %body,
+                            elapsed_ms,
+                            error = %err,
+                            "api request"
+                        );
+                        return Err(err);
+                    }
+                    Err(_) => {
+                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                        trace!(
+                            request_id,
+                            attempt,
+                            url = %url,
+                            body_bytes = body.len(),
+                            body = %body,
+                            elapsed_ms,
+                            error = "timeout",
+                            "api request"
+                        );
+                        return Err(MegaError::Custom("HTTP request timed out".to_string()));
+                    }
+                };
 
-            let action = action_name;
-            // Log request body for key actions to debug server responses.
-            if action == "u"
-                || action == "p"
-                || action == "s2"
-                || action == "l"
-                || action == "upv"
-                || action == "uga"
-            {
-                eprintln!("debug: api request a={} body={}", action, body);
-            }
-            eprintln!("debug: api request a={} url={}", action, url);
-            let response_text = timeout(Duration::from_secs(20), self.http.post(&url, &body))
-                .await
-                .map_err(|_| MegaError::Custom("HTTP request timed out".to_string()))??;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let response_bytes = response_text.len();
 
-            if action == "u"
-                || action == "p"
-                || action == "s2"
-                || action == "l"
-                || action == "upv"
-                || action == "uga"
-            {
-                eprintln!(
-                    "debug: api response a={} bytes={} body={}",
-                    action,
-                    response_text.len(),
-                    response_text
-                );
-            } else if action == "s2" || response_text.len() <= 64 {
-                eprintln!(
-                    "debug: api response a={} bytes={} body={}",
-                    action,
-                    response_text.len(),
-                    response_text
-                );
-            } else {
-                eprintln!(
-                    "debug: api response a={} bytes={}",
-                    action,
-                    response_text.len()
-                );
-            }
-            let response: Value = serde_json::from_str(&response_text)?;
-            if action_name == "s2" {
-                eprintln!("debug: s2 response raw: {}", response_text);
-            }
+            let response: Value = match serde_json::from_str(&response_text) {
+                Ok(value) => value,
+                Err(err) => {
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        error = %err,
+                        "api request"
+                    );
+                    return Err(err.into());
+                }
+            };
             attempts += 1;
 
             // Handle single-number array like [-3] as errors (including EAGAIN)
@@ -272,30 +289,111 @@ impl ApiClient {
                     if let Some(code) = arr[0].as_i64() {
                         // MEGA returns [0] for success on some calls (e.g. uc); treat >=0 as success.
                         if code >= 0 {
+                            trace!(
+                                request_id,
+                                attempt,
+                                url = %url,
+                                body_bytes = body.len(),
+                                body = %body,
+                                response_bytes,
+                                response_body = %response_text,
+                                elapsed_ms,
+                                result = "ok",
+                                api_code = code,
+                                "api request"
+                            );
                             return Ok(Value::from(code));
                         }
                         let error_code = ApiErrorCode::from(code);
                         if allowed_errors.contains(&code) {
+                            trace!(
+                                request_id,
+                                attempt,
+                                url = %url,
+                                body_bytes = body.len(),
+                                body = %body,
+                                response_bytes,
+                                response_body = %response_text,
+                                elapsed_ms,
+                                result = "allowed_error",
+                                api_error = code,
+                                "api request"
+                            );
                             return Ok(Value::from(code));
                         }
                         if error_code == ApiErrorCode::Again {
                             sleep(Duration::from_millis(delay_ms)).await;
-                            delay_ms *= 2;
-                            if attempts >= max_attempts || delay_ms > max_delay_ms {
+                            let next_delay = delay_ms.saturating_mul(2);
+                            let retry_limit = attempts >= max_attempts || next_delay > max_delay_ms;
+                            trace!(
+                                request_id,
+                                attempt,
+                                url = %url,
+                                body_bytes = body.len(),
+                                body = %body,
+                                response_bytes,
+                                response_body = %response_text,
+                                elapsed_ms,
+                                result = if retry_limit { "server_busy" } else { "retry" },
+                                api_error = code,
+                                delay_ms,
+                                next_delay,
+                                max_attempts,
+                                "api request"
+                            );
+                            if retry_limit {
                                 return Err(MegaError::ServerBusy);
                             }
-                            if delay_ms > max_delay_ms {
-                                return Err(MegaError::ServerBusy);
-                            }
+                            delay_ms = next_delay;
                             continue;
                         }
+                        trace!(
+                            request_id,
+                            attempt,
+                            url = %url,
+                            body_bytes = body.len(),
+                            body = %body,
+                            response_bytes,
+                            response_body = %response_text,
+                            elapsed_ms,
+                            result = "api_error",
+                            api_error = code,
+                            "api request"
+                        );
                         return Err(MegaError::ApiError {
                             code: code as i32,
                             message: error_code.description().to_string(),
                         });
                     }
                 }
-                return arr.first().cloned().ok_or(MegaError::InvalidResponse);
+                if let Some(first) = arr.first() {
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        result = "ok",
+                        "api request"
+                    );
+                    return Ok(first.clone());
+                }
+                trace!(
+                    request_id,
+                    attempt,
+                    url = %url,
+                    body_bytes = body.len(),
+                    body = %body,
+                    response_bytes,
+                    response_body = %response_text,
+                    elapsed_ms,
+                    result = "invalid_response",
+                    "api request"
+                );
+                return Err(MegaError::InvalidResponse);
             }
 
             // Check for scalar errors
@@ -304,14 +402,45 @@ impl ApiClient {
 
                 if error_code == ApiErrorCode::Again {
                     sleep(Duration::from_millis(delay_ms)).await;
-                    delay_ms *= 2;
-                    if attempts >= max_attempts || delay_ms > max_delay_ms {
+                    let next_delay = delay_ms.saturating_mul(2);
+                    let retry_limit = attempts >= max_attempts || next_delay > max_delay_ms;
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        result = if retry_limit { "server_busy" } else { "retry" },
+                        api_error = code,
+                        delay_ms,
+                        next_delay,
+                        max_attempts,
+                        "api request"
+                    );
+                    if retry_limit {
                         return Err(MegaError::ServerBusy);
                     }
+                    delay_ms = next_delay;
                     continue;
                 }
 
                 // Other error codes
+                trace!(
+                    request_id,
+                    attempt,
+                    url = %url,
+                    body_bytes = body.len(),
+                    body = %body,
+                    response_bytes,
+                    response_body = %response_text,
+                    elapsed_ms,
+                    result = "api_error",
+                    api_error = code,
+                    "api request"
+                );
                 return Err(MegaError::ApiError {
                     code: code as i32,
                     message: error_code.description().to_string(),
@@ -319,6 +448,18 @@ impl ApiClient {
             }
 
             // Unexpected shape
+            trace!(
+                request_id,
+                attempt,
+                url = %url,
+                body_bytes = body.len(),
+                body = %body,
+                response_bytes,
+                response_body = %response_text,
+                elapsed_ms,
+                result = "invalid_response",
+                "api request"
+            );
             return Err(MegaError::InvalidResponse);
         }
     }
@@ -363,7 +504,15 @@ impl ApiClient {
             return Ok(Value::Array(vec![]));
         }
 
+        let span = info_span!(
+            "mega.api.request_batch",
+            sid_present = self.session_id.is_some(),
+            batch_len = requests.len()
+        );
+        let _guard = span.enter();
+
         self.request_id = self.request_id.wrapping_add(1);
+        let request_id = self.request_id;
 
         let url = match &self.session_id {
             Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
@@ -379,8 +528,43 @@ impl ApiClient {
         loop {
             sleep(Duration::from_millis(20)).await;
 
-            let response_text = self.http.post(&url, &body).await?;
-            let response: Value = serde_json::from_str(&response_text)?;
+            let start = Instant::now();
+            let response_text = match self.http.post(&url, &body).await {
+                Ok(text) => text,
+                Err(err) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    trace!(
+                        request_id,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        elapsed_ms,
+                        error = %err,
+                        "api batch request"
+                    );
+                    return Err(err);
+                }
+            };
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            let response_bytes = response_text.len();
+
+            let response: Value = match serde_json::from_str(&response_text) {
+                Ok(value) => value,
+                Err(err) => {
+                    trace!(
+                        request_id,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        error = %err,
+                        "api batch request"
+                    );
+                    return Err(err.into());
+                }
+            };
 
             // Check for EAGAIN error
             if let Some(code) = response.as_i64() {
@@ -388,14 +572,41 @@ impl ApiClient {
 
                 if error_code == ApiErrorCode::Again {
                     sleep(Duration::from_millis(delay_ms)).await;
-                    delay_ms *= 2;
-
-                    if delay_ms > max_delay_ms {
+                    let next_delay = delay_ms.saturating_mul(2);
+                    let retry_limit = next_delay > max_delay_ms;
+                    trace!(
+                        request_id,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        result = if retry_limit { "server_busy" } else { "retry" },
+                        api_error = code,
+                        delay_ms,
+                        next_delay,
+                        "api batch request"
+                    );
+                    if retry_limit {
                         return Err(MegaError::ServerBusy);
                     }
+                    delay_ms = next_delay;
                     continue;
                 }
 
+                trace!(
+                    request_id,
+                    url = %url,
+                    body_bytes = body.len(),
+                    body = %body,
+                    response_bytes,
+                    response_body = %response_text,
+                    elapsed_ms,
+                    result = "api_error",
+                    api_error = code,
+                    "api batch request"
+                );
                 return Err(MegaError::ApiError {
                     code: code as i32,
                     message: error_code.description().to_string(),
@@ -403,6 +614,17 @@ impl ApiClient {
             }
 
             // Return the full response array
+            trace!(
+                request_id,
+                url = %url,
+                body_bytes = body.len(),
+                body = %body,
+                response_bytes,
+                response_body = %response_text,
+                elapsed_ms,
+                result = "ok",
+                "api batch request"
+            );
             return Ok(response);
         }
     }
