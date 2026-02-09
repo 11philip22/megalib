@@ -1,6 +1,7 @@
 mod cli;
 
 use cli::parse_credentials;
+use tracing_subscriber::{fmt, EnvFilter};
 use megalib::api::client::ApiErrorCode;
 use megalib::error::{MegaError, Result};
 use megalib::Session;
@@ -18,8 +19,15 @@ const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --pass
 
 Defaults: FOLDER1=/Root/lol1 FOLDER2=/Root/lol2 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
     let creds = parse_credentials(USAGE);
     let folder1 = creds
         .positionals

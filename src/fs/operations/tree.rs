@@ -13,7 +13,8 @@ use crate::session::Session;
 impl Session {
     /// Refresh the filesystem tree from the server.
     ///
-    /// This fetches all nodes and decrypts their attributes.
+    /// This fetches all nodes (SDK-style `f`), share keys, and public links, then decrypts
+    /// attributes and rebuilds cached paths.
     /// Must be called before using `list()`, `stat()`, etc.
     ///
     /// # Example
@@ -28,12 +29,22 @@ impl Session {
     /// ```
     pub async fn refresh(&mut self) -> Result<()> {
         // Fetch filesystem data
-        let response = self.api_mut().request(json!({"a": "f", "c": 1})).await?;
+        let response = self
+            .api_mut()
+            .request(json!({"a": "f", "c": 1, "r": 1, "ca": 1}))
+            .await?;
 
         // Parse share keys from "ok" array
         if let Some(ok_array) = response.get("ok").and_then(|v| v.as_array()) {
             self.parse_share_keys(ok_array);
         }
+
+        // Parse public links from "ph" array (if present)
+        let public_links = response
+            .get("ph")
+            .and_then(|v| v.as_array())
+            .map(|arr| Self::parse_public_links(arr))
+            .unwrap_or_default();
 
         // Parse nodes from "f" array
         let nodes_array = response
@@ -72,7 +83,10 @@ impl Session {
 
         let mut nodes = Vec::new();
         for node_json in nodes_array {
-            if let Some(node) = self.parse_node(node_json) {
+            if let Some(mut node) = self.parse_node(node_json) {
+                if let Some(link) = public_links.get(&node.handle) {
+                    node.link = Some(link.clone());
+                }
                 nodes.push(node);
             }
         }
@@ -127,6 +141,22 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Parse public link handles from the "ph" array response.
+    ///
+    /// Returns a map of node handle -> public link handle.
+    fn parse_public_links(ph_array: &[Value]) -> HashMap<String, String> {
+        let mut links = HashMap::new();
+        for ph in ph_array {
+            if let (Some(h), Some(ph_handle)) = (
+                ph.get("h").and_then(|v| v.as_str()),
+                ph.get("ph").and_then(|v| v.as_str()),
+            ) {
+                links.insert(h.to_string(), ph_handle.to_string());
+            }
+        }
+        links
     }
 
     /// Parse a single node from JSON.

@@ -453,6 +453,7 @@ impl Session {
 
         // On login, attempt to load ^!keys and process pending promotions.
         let _ = session.load_keys_attribute().await;
+        let _ = session.ensure_keys_attribute().await;
         let _ = session.promote_pending_shares().await;
         if session.clear_inuse_flags_for_missing_shares() {
             let _ = session.persist_keys_with_retry().await;
@@ -638,10 +639,14 @@ impl Session {
     async fn dispatch_action_packets(&mut self, packets: &[Value]) -> Result<bool> {
         let mut changed_handles = Vec::new();
         let mut contact_updates = Vec::new();
+        let mut node_updates = false;
 
         for pkt in packets {
             if let Some(obj) = pkt.as_object() {
                 Self::extract_handles_from_action(obj, &mut changed_handles);
+                if Self::action_packet_touches_nodes(obj) {
+                    node_updates = true;
+                }
                 if let Some(update) = Self::extract_contact_update(obj)? {
                     contact_updates.push(update);
                 }
@@ -657,6 +662,11 @@ impl Session {
         }
 
         if self.handle_actionpacket_keys(&changed_handles).await? {
+            changed = true;
+        }
+
+        if node_updates {
+            self.refresh().await?;
             changed = true;
         }
 
@@ -679,6 +689,24 @@ impl Session {
                 }
             }
         }
+    }
+
+    fn action_packet_touches_nodes(obj: &serde_json::Map<String, Value>) -> bool {
+        for key in ["n", "p", "h", "t", "ph", "f"] {
+            if obj.contains_key(key) {
+                return true;
+            }
+        }
+
+        if let Some(arr) = obj.get("c").and_then(|v| v.as_array()) {
+            for item in arr {
+                if item.get("h").is_some() || item.get("n").is_some() || item.get("p").is_some() {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn extract_contact_update(
