@@ -220,6 +220,7 @@ impl ApiClient {
                 Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
                 None => format!("{}?id={}", API_URL, self.request_id),
             };
+            url.push_str("&v=3");
             // Browser adds bc=1 on share calls; include it for s2 to match behavior.
             if action_name == "s2" {
                 url.push_str("&bc=1");
@@ -518,6 +519,7 @@ impl ApiClient {
             Some(sid) => format!("{}?id={}&sid={}", API_URL, self.request_id, sid),
             None => format!("{}?id={}", API_URL, self.request_id),
         };
+        let url = format!("{}&v=3", url);
 
         let body = serde_json::to_string(&requests)?;
 
