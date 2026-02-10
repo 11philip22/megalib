@@ -6,6 +6,7 @@ use serde_json::json;
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
 use crate::crypto::aes::aes128_cbc_encrypt;
+use crate::api::client::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::session::Session;
@@ -68,42 +69,65 @@ impl Session {
                     "t": 1, // Folder
                     "a": attrs_b64,
                     "k": key_b64
-                }]
+                }],
+                "v": 4,
+                "sm": 1
             }))
             .await?;
 
         // 5. Parse response
-        // Response format: {"f":[{"h":"...","t":1,...}]}
-        // The API returns the response object which contains "f" array
-        let nodes_array = response
-            .get("f") // "f" field
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                crate::error::MegaError::Custom("Invalid API response for mkdir".to_string())
-            })?;
+        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
+            if let Some(node_obj) = nodes_array.get(0) {
+                let mut node = self.parse_node(node_obj).ok_or_else(|| {
+                    crate::error::MegaError::Custom("Failed to parse node".to_string())
+                })?;
+                node.name = name.to_string(); // Name isn't returned in 'f', set it manually
 
-        if let Some(node_obj) = nodes_array.get(0) {
-            let mut node = self.parse_node(node_obj).ok_or_else(|| {
-                crate::error::MegaError::Custom("Failed to parse node".to_string())
-            })?;
-            node.name = name.to_string(); // Name isn't returned in 'f', set it manually
+                // Add to local cache manually
+                self.nodes.push(node.clone());
+                let parent_path_str = if parent_path == "/" {
+                    format!("/{}", name)
+                } else {
+                    format!("{}/{}", parent_path.trim_end_matches('/'), name)
+                };
+                if let Some(last_node) = self.nodes.last_mut() {
+                    last_node.path = Some(parent_path_str);
+                }
 
-            // Add to local cache manually
-            self.nodes.push(node.clone());
-            let parent_path_str = if parent_path == "/" {
-                format!("/{}", name)
-            } else {
-                format!("{}/{}", parent_path.trim_end_matches('/'), name)
-            };
-            if let Some(last_node) = self.nodes.last_mut() {
-                last_node.path = Some(parent_path_str);
+                return Ok(node);
             }
-
-            return Ok(node);
         }
 
-        Err(crate::error::MegaError::Custom(
-            "Failed to create directory".to_string(),
+        // Handle seqtag array response with error list (SDK-style).
+        if let Some(arr) = response.as_array() {
+            if let Some(errors) = arr.get(1) {
+                if let Some(code) = first_error_code(errors) {
+                    let api = ApiErrorCode::from(code);
+                    return Err(MegaError::ApiError {
+                        code: code as i32,
+                        message: api.description().to_string(),
+                    });
+                }
+            }
+        }
+
+        // Wait for action packets to add the node, like SDK does.
+        if self.scsn.is_none() {
+            return Err(MegaError::Custom(
+                "SC not initialized; call refresh() before mkdir".to_string(),
+            ));
+        }
+
+        for _ in 0..10 {
+            if let Some(node) = self.stat(path) {
+                return Ok(node.clone());
+            }
+            self.poll_action_packets_once().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        Err(MegaError::Custom(
+            "Folder creation pending action packets".to_string(),
         ))
     }
 
@@ -249,4 +273,33 @@ impl Session {
 
         Ok(())
     }
+}
+
+fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
+    if let Some(code) = errors.as_i64() {
+        return if code != 0 { Some(code) } else { None };
+    }
+
+    if let Some(arr) = errors.as_array() {
+        for v in arr {
+            if let Some(code) = v.as_i64() {
+                if code != 0 {
+                    return Some(code);
+                }
+            }
+        }
+        return None;
+    }
+
+    if let Some(obj) = errors.as_object() {
+        for v in obj.values() {
+            if let Some(code) = v.as_i64() {
+                if code != 0 {
+                    return Some(code);
+                }
+            }
+        }
+    }
+
+    None
 }

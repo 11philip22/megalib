@@ -28,11 +28,18 @@ impl Session {
     /// # }
     /// ```
     pub async fn refresh(&mut self) -> Result<()> {
+        // Match SDK behavior: ensure keys are initialized before fetching nodes.
+        self.ensure_keys_attribute().await?;
+
         // Fetch filesystem data
         let response = self
             .api_mut()
             .request(json!({"a": "f", "c": 1, "r": 1, "ca": 1}))
             .await?;
+
+        if let Some(sn) = response.get("sn").and_then(|v| v.as_str()) {
+            self.scsn = Some(sn.to_string());
+        }
 
         // Parse share keys from "ok" array
         if let Some(ok_array) = response.get("ok").and_then(|v| v.as_array()) {
@@ -92,7 +99,7 @@ impl Session {
         }
 
         // Build node paths
-        self.build_node_paths(&mut nodes);
+        Self::build_node_paths(&mut nodes);
 
         // Store nodes
         self.nodes = nodes;
@@ -223,7 +230,7 @@ impl Session {
         None
     }
 
-    fn decrypt_node_attrs(&self, attrs_b64: &str, node_key: &[u8]) -> Option<String> {
+    pub(crate) fn decrypt_node_attrs(&self, attrs_b64: &str, node_key: &[u8]) -> Option<String> {
         let encrypted = base64url_decode(attrs_b64).ok()?;
 
         // Use first 16 bytes of node key for attribute decryption
@@ -259,7 +266,7 @@ impl Session {
     }
 
     /// Build full paths for all nodes.
-    fn build_node_paths(&self, nodes: &mut [Node]) {
+    pub(crate) fn build_node_paths(nodes: &mut [Node]) {
         // Create handle -> node index map
         let handle_map: HashMap<&str, usize> = nodes
             .iter()
@@ -269,7 +276,7 @@ impl Session {
 
         // First, compute all paths
         let paths: Vec<String> = (0..nodes.len())
-            .map(|i| self.build_node_path(nodes, i, &handle_map, 0))
+            .map(|i| Self::build_node_path(nodes, i, &handle_map, 0))
             .collect();
 
         // Then assign them
@@ -280,7 +287,6 @@ impl Session {
 
     /// Recursively build a node's path.
     fn build_node_path(
-        &self,
         nodes: &[Node],
         idx: usize,
         handle_map: &HashMap<&str, usize>,
@@ -304,7 +310,7 @@ impl Session {
         // Find parent and prepend its path
         if let Some(parent_handle) = &node.parent_handle {
             if let Some(&parent_idx) = handle_map.get(parent_handle.as_str()) {
-                let parent_path = self.build_node_path(nodes, parent_idx, handle_map, depth + 1);
+                let parent_path = Self::build_node_path(nodes, parent_idx, handle_map, depth + 1);
                 return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
             }
         }

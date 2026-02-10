@@ -57,7 +57,13 @@ async fn main() -> Result<()> {
     let session = Arc::new(Mutex::new(session));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
-    // Start SC loop immediately (SDK-style).
+    {
+        let mut s = session.lock().await;
+        println!("Refreshing filesystem...");
+        s.refresh().await?;
+    }
+
+    // Start SC loop after refresh (SDK-style; requires sn from fetchnodes).
     let sc_session = session.clone();
     let stop_for_loop = stop_flag.clone();
     let sc_handle = tokio::spawn(async move {
@@ -82,12 +88,6 @@ async fn main() -> Result<()> {
             sleep(Duration::from_millis(delay_ms)).await;
         }
     });
-
-    {
-        let mut s = session.lock().await;
-        println!("Refreshing filesystem...");
-        s.refresh().await?;
-    }
 
     // Sequence mirrored from mega-sequence.ps1
     ensure_folder(&session, &folder1).await?;

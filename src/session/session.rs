@@ -2,7 +2,7 @@
 //!
 //! This module handles user login, session state, and logout.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
@@ -453,7 +453,6 @@ impl Session {
 
         // On login, attempt to load ^!keys and process pending promotions.
         let _ = session.load_keys_attribute().await;
-        let _ = session.ensure_keys_attribute().await;
         let _ = session.promote_pending_shares().await;
         if session.clear_inuse_flags_for_missing_shares() {
             let _ = session.persist_keys_with_retry().await;
@@ -605,6 +604,11 @@ impl Session {
     ///
     /// Returns true if any local state changed (e.g., ^!keys or authrings updated).
     pub async fn poll_action_packets_once(&mut self) -> Result<bool> {
+        if self.scsn.is_none() {
+            return Err(MegaError::Custom(
+                "SC not initialized; call refresh() before polling action packets".to_string(),
+            ));
+        }
         let (packets, sn) = self.api.poll_sc(self.scsn.as_deref()).await?;
         self.scsn = Some(sn);
         self.dispatch_action_packets(&packets).await
@@ -639,16 +643,16 @@ impl Session {
     async fn dispatch_action_packets(&mut self, packets: &[Value]) -> Result<bool> {
         let mut changed_handles = Vec::new();
         let mut contact_updates = Vec::new();
-        let mut node_updates = false;
+        let mut node_changed = false;
 
         for pkt in packets {
             if let Some(obj) = pkt.as_object() {
                 Self::extract_handles_from_action(obj, &mut changed_handles);
-                if Self::action_packet_touches_nodes(obj) {
-                    node_updates = true;
-                }
                 if let Some(update) = Self::extract_contact_update(obj)? {
                     contact_updates.push(update);
+                }
+                if self.handle_actionpacket_nodes(obj)? {
+                    node_changed = true;
                 }
             }
         }
@@ -665,8 +669,7 @@ impl Session {
             changed = true;
         }
 
-        if node_updates {
-            self.refresh().await?;
+        if node_changed {
             changed = true;
         }
 
@@ -691,21 +694,177 @@ impl Session {
         }
     }
 
-    fn action_packet_touches_nodes(obj: &serde_json::Map<String, Value>) -> bool {
-        for key in ["n", "p", "h", "t", "ph", "f"] {
-            if obj.contains_key(key) {
-                return true;
+    fn handle_actionpacket_nodes(
+        &mut self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let Some(action) = obj.get("a").and_then(|v| v.as_str()) else {
+            return Ok(false);
+        };
+
+        match action {
+            "t" => self.handle_actionpacket_newnodes(obj),
+            "u" => self.handle_actionpacket_update_node(obj),
+            "d" => self.handle_actionpacket_delete_node(obj),
+            "ph" => self.handle_actionpacket_public_link(obj),
+            _ => Ok(false),
+        }
+    }
+
+    fn handle_actionpacket_newnodes(
+        &mut self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let Some(nodes_array) = obj.get("t").and_then(|v| v.as_array()) else {
+            return Ok(false);
+        };
+
+        let mut changed = false;
+        for node_json in nodes_array {
+            if let Some(node) = self.parse_node(node_json) {
+                changed |= self.upsert_node(node);
             }
         }
 
-        if let Some(arr) = obj.get("c").and_then(|v| v.as_array()) {
-            for item in arr {
-                if item.get("h").is_some() || item.get("n").is_some() || item.get("p").is_some() {
-                    return true;
+        if changed {
+            Self::build_node_paths(&mut self.nodes);
+        }
+
+        Ok(changed)
+    }
+
+    fn handle_actionpacket_update_node(
+        &mut self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let Some(handle) = obj.get("n").and_then(|v| v.as_str()) else {
+            return Ok(false);
+        };
+        let node_idx = match self.nodes.iter().position(|n| n.handle == handle) {
+            Some(idx) => idx,
+            None => return Ok(false),
+        };
+
+        let mut changed = false;
+        if let Some(at) = obj.get("at").and_then(|v| v.as_str()) {
+            if let Some(name) = self.decrypt_node_attrs(at, &self.nodes[node_idx].key) {
+                if self.nodes[node_idx].name != name {
+                    self.nodes[node_idx].name = name;
+                    changed = true;
                 }
             }
         }
 
+        if let Some(ts) = obj.get("ts").and_then(|v| v.as_i64()) {
+            if self.nodes[node_idx].timestamp != ts {
+                self.nodes[node_idx].timestamp = ts;
+                changed = true;
+            }
+        }
+
+        if changed {
+            Self::build_node_paths(&mut self.nodes);
+        }
+
+        Ok(changed)
+    }
+
+    fn handle_actionpacket_delete_node(
+        &mut self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let Some(handle) = obj.get("n").and_then(|v| v.as_str()) else {
+            return Ok(false);
+        };
+
+        let handle_map: HashMap<&str, usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.handle.as_str(), i))
+            .collect();
+
+        let mut remove = HashSet::new();
+        for (i, node) in self.nodes.iter().enumerate() {
+            if node.handle == handle
+                || Self::node_has_ancestor_in_nodes(&self.nodes, i, handle, &handle_map)
+            {
+                remove.insert(node.handle.clone());
+            }
+        }
+
+        if remove.is_empty() {
+            return Ok(false);
+        }
+
+        self.nodes.retain(|n| !remove.contains(&n.handle));
+        Self::build_node_paths(&mut self.nodes);
+        Ok(true)
+    }
+
+    fn handle_actionpacket_public_link(
+        &mut self,
+        obj: &serde_json::Map<String, Value>,
+    ) -> Result<bool> {
+        let Some(handle) = obj.get("h").and_then(|v| v.as_str()) else {
+            return Ok(false);
+        };
+
+        let deleted = obj.get("d").and_then(|v| v.as_i64()).unwrap_or(0) == 1;
+        let link_handle = obj.get("ph").and_then(|v| v.as_str());
+
+        for node in &mut self.nodes {
+            if node.handle == handle {
+                if deleted {
+                    if node.link.is_some() {
+                        node.link = None;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
+                if let Some(ph) = link_handle {
+                    if node.link.as_deref() != Some(ph) {
+                        node.link = Some(ph.to_string());
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn upsert_node(&mut self, node: Node) -> bool {
+        if let Some(idx) = self.nodes.iter().position(|n| n.handle == node.handle) {
+            self.nodes[idx] = node;
+            true
+        } else {
+            self.nodes.push(node);
+            true
+        }
+    }
+
+    fn node_has_ancestor_in_nodes(
+        nodes: &[Node],
+        idx: usize,
+        ancestor_handle: &str,
+        handle_map: &HashMap<&str, usize>,
+    ) -> bool {
+        let mut current = nodes[idx].parent_handle.as_deref();
+        for _ in 0..100 {
+            match current {
+                Some(handle) if handle == ancestor_handle => return true,
+                Some(handle) => {
+                    if let Some(&parent_idx) = handle_map.get(handle) {
+                        current = nodes[parent_idx].parent_handle.as_deref();
+                    } else {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
         false
     }
 

@@ -14,6 +14,7 @@ use crate::crypto::aes::{
     aes128_cbc_encrypt, aes128_ctr_encrypt, chunk_mac_calculate, meta_mac_calculate,
 };
 use crate::crypto::keys::pack_node_key;
+use crate::api::client::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::fs::upload_state::UploadState;
@@ -826,7 +827,7 @@ impl Session {
 
         let response = self.api_mut().request(request).await?;
 
-        // Parse result; accept either "f" array or "fh" handles as success.
+        // Parse result; accept "f" array when available.
         if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
             if let Some(node_obj) = nodes_array.get(0) {
                 let node = self
@@ -859,43 +860,72 @@ impl Session {
             }
         }
 
-        if response.get("fh").is_some() {
-            // Refresh to get the new node and return it.
-            self.refresh().await?;
-            let parent_path = self
-                .nodes
-                .iter()
-                .find(|n| n.handle == parent_handle)
-                .and_then(|n| n.path.clone())
-                .unwrap_or_else(|| "/".to_string());
-            let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
+        // Accept seqtag array response with error list.
+        if let Some(arr) = response.as_array() {
+            if let Some(errors) = arr.get(1) {
+                if let Some(code) = first_error_code(errors) {
+                    return Err(MegaError::ApiError {
+                        code: code as i32,
+                        message: ApiErrorCode::from(code).description().to_string(),
+                    });
+                }
+            }
+        }
+
+        // Wait for action packets to add the node, like SDK does.
+        if self.scsn.is_none() {
+            return Err(MegaError::Custom(
+                "SC not initialized; call refresh() before upload".to_string(),
+            ));
+        }
+
+        let parent_path = self
+            .nodes
+            .iter()
+            .find(|n| n.handle == parent_handle)
+            .and_then(|n| n.path.clone())
+            .unwrap_or_else(|| "/".to_string());
+        let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
+
+        for _ in 0..20 {
             if let Some(existing) = self.stat(&target_path) {
                 return Ok(existing.clone());
             }
+            self.poll_action_packets_once().await?;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
 
-        if let Some(code) = response.as_i64() {
-            if code == -8 {
-                let _ = self.refresh().await;
-                let parent_path = self
-                    .nodes
-                    .iter()
-                    .find(|n| n.handle == parent_handle)
-                    .and_then(|n| n.path.clone())
-                    .unwrap_or_else(|| "/".to_string());
-                let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
-                if let Some(existing) = self.stat(&target_path) {
-                    return Ok(existing.clone());
+        Err(MegaError::Custom(
+            "Failed to observe uploaded node via action packets".to_string(),
+        ))
+    }
+}
+
+fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
+    if let Some(code) = errors.as_i64() {
+        return if code != 0 { Some(code) } else { None };
+    }
+
+    if let Some(arr) = errors.as_array() {
+        for v in arr {
+            if let Some(code) = v.as_i64() {
+                if code != 0 {
+                    return Some(code);
                 }
-                return Err(MegaError::ApiError {
-                    code: -8,
-                    message: "Resource already exists".to_string(),
-                });
             }
         }
-
-        return Err(MegaError::Custom(
-            "Invalid API response for upload completion".to_string(),
-        ));
+        return None;
     }
+
+    if let Some(obj) = errors.as_object() {
+        for v in obj.values() {
+            if let Some(code) = v.as_i64() {
+                if code != 0 {
+                    return Some(code);
+                }
+            }
+        }
+    }
+
+    None
 }
