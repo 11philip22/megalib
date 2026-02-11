@@ -1840,22 +1840,6 @@ impl Session {
         self.persist_keys_with_retry().await
     }
 
-    /// Compute handle auth (ha) like the C++ SDK: base64(handle)||base64(handle) then AES-ECB with master key.
-    pub(crate) fn compute_handle_auth(&self, handle_b64: &str) -> Option<String> {
-        let decoded = crate::base64::base64url_decode(handle_b64).ok()?;
-        if decoded.len() != 6 {
-            return None;
-        }
-        let text = crate::base64::base64url_encode(&decoded); // 8 ASCII bytes
-        let mut auth = [0u8; 16];
-        let bytes = text.as_bytes();
-        let len = bytes.len().min(8);
-        auth[..len].copy_from_slice(&bytes[..len]);
-        auth[8..8 + len].copy_from_slice(&bytes[..len]);
-        let enc = crate::crypto::aes::aes128_ecb_encrypt(&auth, &self.master_key);
-        Some(base64url_encode(&enc))
-    }
-
     /// Load a previously saved session from a file.
     ///
     /// Returns `None` if the file doesn't exist.
