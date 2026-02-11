@@ -544,7 +544,7 @@ impl Session {
 
                     // Upload chunk
                     let checksum = upload_checksum(&encrypted_chunk);
-                    let chunk_url = format!("{}/{}?c={}", upload_url, chunk_offset, checksum);
+                    let chunk_url = format!("{}/{}?d={}", upload_url, chunk_offset, checksum);
 
                     let client = reqwest::Client::new();
                     let response = client
@@ -562,10 +562,20 @@ impl Session {
                     }
 
                     let response_text = response.text().await.map_err(MegaError::RequestError)?;
-                    let handle = if !response_text.starts_with("-") && !response_text.is_empty() {
-                        Some(response_text)
+                    let handle = if response_text.is_empty() {
+                        return Err(MegaError::Custom(
+                            "Empty upload response".to_string(),
+                        ));
+                    } else if response_text.starts_with('-') {
+                        let code = response_text.parse::<i64>().unwrap_or(-999);
+                        return Err(MegaError::ApiError {
+                            code: code as i32,
+                            message: crate::api::client::ApiErrorCode::from(code)
+                                .description()
+                                .to_string(),
+                        });
                     } else {
-                        None
+                        Some(response_text)
                     };
 
                     Ok((
@@ -710,7 +720,7 @@ impl Session {
 
             // Upload chunk
             let checksum = upload_checksum(&encrypted_chunk);
-            let chunk_url = format!("{}/{}?c={}", upload_url, offset, checksum);
+            let chunk_url = format!("{}/{}?d={}", upload_url, offset, checksum);
 
             let client = reqwest::Client::new();
             let response = client
@@ -728,9 +738,19 @@ impl Session {
             }
 
             let response_text = response.text().await.map_err(MegaError::RequestError)?;
-            if !response_text.starts_with("-") && !response_text.is_empty() {
-                upload_handle = response_text;
+            if response_text.is_empty() {
+                return Err(MegaError::Custom("Empty upload response".to_string()));
             }
+            if response_text.starts_with('-') {
+                let code = response_text.parse::<i64>().unwrap_or(-999);
+                return Err(MegaError::ApiError {
+                    code: code as i32,
+                    message: crate::api::client::ApiErrorCode::from(code)
+                        .description()
+                        .to_string(),
+                });
+            }
+            upload_handle = response_text;
 
             chunk_macs.push(chunk_mac);
             offset += chunk_size;

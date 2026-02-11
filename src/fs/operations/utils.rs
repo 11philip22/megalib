@@ -33,14 +33,55 @@ pub(crate) fn get_chunk_size(chunk_index: usize, offset: u64, total_size: u64) -
 }
 
 pub(crate) fn upload_checksum(data: &[u8]) -> String {
+    base64url_encode(&upload_crc12(data, 0))
+}
+
+/// Compute the SDK-style CRC12 for upload chunks.
+///
+/// Matches `EncryptByChunks::updateCRC` in the MEGA SDK.
+pub(crate) fn upload_crc12(data: &[u8], offset: usize) -> [u8; 12] {
     let mut crc = [0u8; 12];
 
-    // Rolling XOR checksum
-    for (i, &byte) in data.iter().enumerate() {
-        crc[i % 12] ^= byte;
+    if data.is_empty() {
+        return crc;
     }
 
-    base64url_encode(&crc)
+    let mut idx = 0usize;
+    let mut size = data.len();
+
+    let mut ol = offset % 12;
+    if ol != 0 {
+        let mut ll = 12 - ol;
+        if ll > size {
+            ll = size;
+        }
+        size -= ll;
+        while ll > 0 {
+            crc[ol] ^= data[idx];
+            ol += 1;
+            idx += 1;
+            ll -= 1;
+        }
+    }
+
+    let full = size / 12;
+    let rem = size % 12;
+    for block in 0..full {
+        let base = idx + block * 12;
+        for i in 0..12 {
+            crc[i] ^= data[base + i];
+        }
+    }
+    idx += full * 12;
+
+    if rem > 0 {
+        let start = idx + rem;
+        for i in 0..rem {
+            crc[i] ^= data[start - rem + i];
+        }
+    }
+
+    crc
 }
 
 #[cfg(test)]

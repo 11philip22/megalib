@@ -4,3 +4,4 @@
 - fix key loop
 - account upgrade
 - session_key session encrypt/decrypt
+- upload chunks uses different http client
