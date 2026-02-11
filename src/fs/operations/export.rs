@@ -6,7 +6,6 @@ use std::collections::HashMap;
 
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
-use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::NodeType;
 use crate::session::Session;
@@ -79,17 +78,9 @@ impl Session {
             };
 
             // Build a minimal share: ok/ha, cr covering root + descendants.
-            // If upgraded (^!keys ready), send real ok/ha. Otherwise send zeros (legacy).
-            let (ok, ha) = if self.key_manager.is_ready() {
-                (
-                    base64url_encode(&aes128_ecb_encrypt(&share_key, self.master_key())),
-                    self.compute_handle_auth(&handle)
-                        .unwrap_or_else(|| base64url_encode(&[0u8; 16])),
-                )
-            } else {
-                let zero = base64url_encode(&[0u8; 16]);
-                (zero.clone(), zero)
-            };
+            // SDK sends dummy zero values for ok/ha (even for upgraded accounts).
+            let zero = base64url_encode(&[0u8; 16]);
+            let (ok, ha) = (zero.clone(), zero);
 
             // Persist share key into ^!keys only for upgraded accounts.
             if self.key_manager.is_ready() {

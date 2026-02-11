@@ -249,6 +249,8 @@ pub struct Session {
     pub(crate) manual_verification: bool,
     /// Cached user attributes from `ug` (decoded bytes), to avoid redundant `uga` calls.
     pub(crate) user_attr_cache: HashMap<String, Vec<u8>>,
+    /// Cached user attribute versions for upv (e.g. ^!keys version).
+    pub(crate) user_attr_versions: HashMap<String, String>,
     /// Last completed token for pending keys feed (pk command)
     pub(crate) pending_keys_token: Option<String>,
     /// Flag set when a ^!keys downgrade is detected
@@ -459,6 +461,7 @@ impl Session {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let user_attr_cache = Self::collect_user_attrs_from_ug(&user_info);
+        let user_attr_versions = Self::collect_user_attr_versions_from_ug(&user_info);
 
         let mut session = Session {
             api,
@@ -478,6 +481,7 @@ impl Session {
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
             user_attr_cache,
+            user_attr_versions,
             pending_keys_token: None,
             keys_downgrade_detected: false,
             scsn,
@@ -543,6 +547,36 @@ impl Session {
         cache
     }
 
+    fn collect_user_attr_versions_from_ug(user_info: &Value) -> HashMap<String, String> {
+        let mut versions = HashMap::new();
+        let Some(obj) = user_info.as_object() else {
+            return versions;
+        };
+
+        let attrs = [
+            "^!keys",
+            "*keyring",
+            "*~usk",
+            "*~jscd",
+            "+puCu255",
+            "+puEd255",
+            "+sigCu255",
+            "+sigPubk",
+        ];
+
+        for attr in attrs {
+            if let Some(v) = obj
+                .get(attr)
+                .and_then(|v| v.get("v"))
+                .and_then(|v| v.as_str())
+            {
+                versions.insert(attr.to_string(), v.to_string());
+            }
+        }
+
+        versions
+    }
+
     fn build_upgrade_payload(
         password: &str,
         master_key: &[u8; 16],
@@ -601,11 +635,15 @@ impl Session {
         Ok(UpgradeOutcome::Upgraded)
     }
 
-    fn build_upv_command(attrs: Vec<(&str, String)>) -> Value {
+    fn build_upv_command(attrs: Vec<(&str, String, Option<String>)>) -> Value {
         let mut obj = serde_json::Map::new();
         obj.insert("a".into(), Value::from("upv"));
-        for (name, value) in attrs {
-            obj.insert(name.into(), json!([value, 0]));
+        for (name, value, version) in attrs {
+            if let Some(v) = version {
+                obj.insert(name.into(), json!([value, v]));
+            } else {
+                obj.insert(name.into(), json!([value, 0]));
+            }
         }
         Value::Object(obj)
     }
@@ -689,34 +727,52 @@ impl Session {
 
         let mut commands = Vec::new();
 
+        let usk_missing = self.get_user_attribute_raw("*~usk").await?.is_none();
+        let jscd_missing = self.get_user_attribute_raw("*~jscd").await?.is_none();
+
+        let attr_versions = self.user_attr_versions.clone();
+        let version_for = |name: &str| attr_versions.get(name).cloned();
+
         let mut generated_usk: Option<Vec<u8>> = None;
-        if self.get_user_attribute_raw("*~usk").await?.is_none() {
+        if usk_missing {
             let usk = make_random_key();
             let usk_b64 = base64url_encode(&usk);
-            commands.push(Self::build_upv_command(vec![("*~usk", usk_b64)]));
+            commands.push(Self::build_upv_command(vec![(
+                "*~usk",
+                usk_b64,
+                version_for("*~usk"),
+            )]));
             generated_usk = Some(usk.to_vec());
         }
 
         let mut key_attrs = Vec::new();
         if let Some(enc) = keyring_enc.as_ref() {
-            key_attrs.push(("*keyring", base64url_encode(enc)));
+            key_attrs.push((
+                "*keyring",
+                base64url_encode(enc),
+                version_for("*keyring"),
+            ));
         }
-        key_attrs.push(("^!keys", keys_b64));
-        key_attrs.push(("+puEd255", base64url_encode(&pu_ed)));
-        key_attrs.push(("+puCu255", base64url_encode(&pu_cu)));
-        key_attrs.push(("+sigCu255", base64url_encode(&sig_cu)));
-        key_attrs.push(("+sigPubk", base64url_encode(&sig_pubk)));
+        key_attrs.push(("^!keys", keys_b64, version_for("^!keys")));
+        key_attrs.push(("+puEd255", base64url_encode(&pu_ed), version_for("+puEd255")));
+        key_attrs.push(("+puCu255", base64url_encode(&pu_cu), version_for("+puCu255")));
+        key_attrs.push(("+sigCu255", base64url_encode(&sig_cu), version_for("+sigCu255")));
+        key_attrs.push(("+sigPubk", base64url_encode(&sig_pubk), version_for("+sigPubk")));
         commands.push(Self::build_upv_command(key_attrs));
 
         let mut generated_jscd: Option<Vec<u8>> = None;
-        if self.get_user_attribute_raw("*~jscd").await?.is_none() {
+        if jscd_missing {
             let mut records = BTreeMap::new();
             records.insert("ak".to_string(), make_random_key().to_vec());
             records.insert("ck".to_string(), make_random_key().to_vec());
             records.insert("fn".to_string(), make_random_key().to_vec());
             let jscd = encrypt_tlv_records(&records, &self.master_key)?;
             let jscd_b64 = base64url_encode(&jscd);
-            commands.push(Self::build_upv_command(vec![("*~jscd", jscd_b64)]));
+            commands.push(Self::build_upv_command(vec![(
+                "*~jscd",
+                jscd_b64,
+                version_for("*~jscd"),
+            )]));
             generated_jscd = Some(jscd);
         }
 
@@ -1373,20 +1429,27 @@ impl Session {
             let decoded = base64url_decode(av)?;
             self.user_attr_cache
                 .insert(attr.to_string(), decoded.clone());
+            if let Some(ver) = response.get("v").and_then(|v| v.as_str()) {
+                self.user_attr_versions
+                    .insert(attr.to_string(), ver.to_string());
+            }
             return Ok(Some(decoded));
         }
 
         if let Some(arr) = response.as_array() {
-            if let Some(av) = arr
-                .iter()
-                .find_map(|o| o.get("av").and_then(|v| v.as_str()))
+            if let Some(obj) = arr.iter().find(|o| o.get("av").and_then(|v| v.as_str()).is_some())
             {
+                let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
                 if av.is_empty() {
                     return Ok(None);
                 }
                 let decoded = base64url_decode(av)?;
                 self.user_attr_cache
                     .insert(attr.to_string(), decoded.clone());
+                if let Some(ver) = obj.get("v").and_then(|v| v.as_str()) {
+                    self.user_attr_versions
+                        .insert(attr.to_string(), ver.to_string());
+                }
                 return Ok(Some(decoded));
             }
         }
@@ -1922,6 +1985,7 @@ impl Session {
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
             user_attr_cache: HashMap::new(),
+            user_attr_versions: HashMap::new(),
             pending_keys_token: data.pending_keys_token,
             keys_downgrade_detected: data.keys_downgrade_detected,
             scsn,
@@ -1976,6 +2040,7 @@ mod tests {
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
             user_attr_cache: HashMap::new(),
+            user_attr_versions: HashMap::new(),
             pending_keys_token: None,
             scsn: None,
             wsc_url: None,
