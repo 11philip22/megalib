@@ -39,6 +39,7 @@ impl Session {
 
         if let Some(sn) = response.get("sn").and_then(|v| v.as_str()) {
             self.scsn = Some(sn.to_string());
+            self.wsc_url = None;
         }
 
         // Parse share keys from "ok" array

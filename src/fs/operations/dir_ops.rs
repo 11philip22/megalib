@@ -2,6 +2,8 @@
 
 use rand::RngCore;
 use serde_json::json;
+use tokio::time::{timeout, sleep};
+use std::time::Duration;
 
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
@@ -118,12 +120,21 @@ impl Session {
             ));
         }
 
+        const SC_POLL_TIMEOUT: Duration = Duration::from_secs(2);
+        const SC_POLL_DELAY: Duration = Duration::from_millis(200);
+
         for _ in 0..10 {
             if let Some(node) = self.stat(path) {
                 return Ok(node.clone());
             }
-            self.poll_action_packets_once().await?;
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match timeout(SC_POLL_TIMEOUT, self.poll_action_packets_once()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    // Timeout; avoid blocking on long-poll.
+                }
+            }
+            sleep(SC_POLL_DELAY).await;
         }
 
         Err(MegaError::Custom(

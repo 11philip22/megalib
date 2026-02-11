@@ -153,7 +153,13 @@ impl Session {
         if let Some(tok) = last_completed {
             req["d"] = json!(tok);
         }
-        let resp = self.api_mut().request(req).await?;
+        let resp = self
+            .api_mut()
+            .request_with_allowed(req, &[-9])
+            .await?;
+        if resp.as_i64() == Some(-9) {
+            return Ok((String::new(), Vec::new()));
+        }
 
         // Response is object: { "d": "<token>", "<userHandle>": { "<shareHandle>": "<b64key>", ... }, ... }
         let mut token = String::new();

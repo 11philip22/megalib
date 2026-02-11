@@ -72,6 +72,14 @@ impl MegaRsaKey {
         base64url_encode(&data)
     }
 
+    /// Serialize public key in MEGA's MPI binary format (no base64).
+    pub fn public_key_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        append_mpi(&mut data, &self.m);
+        append_mpi(&mut data, &self.e);
+        data
+    }
+
     /// Decode public key from MEGA's MPI format (base64).
     pub fn from_encoded_public_key(b64: &str) -> Result<Self, String> {
         let data =
@@ -116,6 +124,16 @@ impl MegaRsaKey {
         // Encrypt with AES-128-ECB
         let encrypted = aes128_ecb_encrypt(&data, master_key);
         base64url_encode(&encrypted)
+    }
+
+    /// Serialize private key in MEGA's MPI binary format (p||q||d||u, no encryption).
+    pub fn private_key_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        append_mpi(&mut data, &self.p);
+        append_mpi(&mut data, &self.q);
+        append_mpi(&mut data, &self.d);
+        append_mpi(&mut data, &self.u);
+        data
     }
 
     /// Decrypt data using RSA private key.

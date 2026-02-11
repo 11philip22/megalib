@@ -2,6 +2,7 @@
 
 use rand::RngCore;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
@@ -167,10 +168,8 @@ impl Session {
                 });
             }
 
-            let link_handle = response
-                .as_str()
-                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
-                .to_string();
+            let mut link_handle = parse_public_link_handle(&response)
+                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?;
 
             // Update the node with the link and remember share key for children
             self.nodes[node_idx].link = Some(link_handle.clone());
@@ -180,6 +179,16 @@ impl Session {
             if self.key_manager.is_ready() {
                 self.key_manager.add_share_key_from_str(&handle, &share_key);
                 let _ = self.persist_keys_attribute().await;
+            }
+
+            // Allow SC action packets to update the public link (SDK parity).
+            if self.scsn.is_some() {
+                let _ = self.poll_action_packets_once().await;
+                if let Some(node) = self.get_node_by_handle(&handle) {
+                    if let Some(ph) = node.link.as_deref() {
+                        link_handle = ph.to_string();
+                    }
+                }
             }
 
             // Build folder URL
@@ -199,13 +208,21 @@ impl Session {
                 .await?;
 
             // Response is the public link handle as a string
-            let link_handle = response
-                .as_str()
-                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?
-                .to_string();
+            let mut link_handle = parse_public_link_handle(&response)
+                .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?;
 
             // Update the node with the link
             self.nodes[node_idx].link = Some(link_handle.clone());
+
+            // Allow SC action packets to update the public link (SDK parity).
+            if self.scsn.is_some() {
+                let _ = self.poll_action_packets_once().await;
+                if let Some(node) = self.get_node_by_handle(&handle) {
+                    if let Some(ph) = node.link.as_deref() {
+                        link_handle = ph.to_string();
+                    }
+                }
+            }
 
             // Build file URL
             let key_b64 = base64url_encode(&key);
@@ -257,17 +274,32 @@ impl Session {
             .as_array()
             .ok_or_else(|| MegaError::Custom("Invalid batch response".to_string()))?;
 
-        let mut results = Vec::new();
-
+        let mut parsed_links = HashMap::new();
         for (i, resp) in responses.iter().enumerate() {
-            if let Some(link_handle) = resp.as_str() {
+            if let Some(link_handle) = parse_public_link_handle(resp) {
                 let idx = node_indices[i];
-                self.nodes[idx].link = Some(link_handle.to_string());
+                self.nodes[idx].link = Some(link_handle.clone());
+                parsed_links.insert(handles[i].clone(), link_handle);
+            }
+        }
 
-                let node = &self.nodes[idx];
+        // Allow SC action packets to update public links (SDK parity).
+        if self.scsn.is_some() {
+            let _ = self.poll_action_packets_once().await;
+        }
+
+        let mut results = Vec::new();
+        for handle in &handles {
+            let Some(node) = self.get_node_by_handle(handle) else {
+                continue;
+            };
+            let link_handle = node
+                .link
+                .clone()
+                .or_else(|| parsed_links.get(handle).cloned());
+            if let Some(link_handle) = link_handle {
                 let key_b64 = base64url_encode(&node.key);
                 let url = format!("https://mega.nz/file/{}#{}", link_handle, key_b64);
-
                 if let Some(path) = &node.path {
                     results.push((path.clone(), url));
                 }
@@ -275,5 +307,17 @@ impl Session {
         }
 
         Ok(results)
+    }
+}
+
+fn parse_public_link_handle(response: &Value) -> Option<String> {
+    if let Some(link) = response.as_str() {
+        return Some(link.to_string());
+    }
+    let arr = response.as_array()?;
+    if arr.len() >= 2 {
+        arr[1].as_str().map(|s| s.to_string())
+    } else {
+        arr.first().and_then(|v| v.as_str()).map(|s| s.to_string())
     }
 }

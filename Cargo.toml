@@ -31,6 +31,7 @@ aes-gcm = "0.10"
 # Use the latest stable CCM crate (0.5.x). 0.6 is still in pre-release.
 ccm = "0.5"
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 # Base64
 base64 = "0.22"

@@ -132,9 +132,13 @@ impl Keyring {
     pub fn generate() -> Self {
         let mut rng = rand::thread_rng();
         let mut ed = [0u8; 32];
-        let mut cu = [0u8; 32];
         rng.fill_bytes(&mut ed);
+        let mut cu = [0u8; 32];
         rng.fill_bytes(&mut cu);
+        // Clamp for X25519 private key material.
+        cu[0] &= 248;
+        cu[31] &= 127;
+        cu[31] |= 64;
         Keyring {
             ed25519: Some(ed.to_vec()),
             cu25519: Some(cu.to_vec()),
@@ -162,24 +166,7 @@ impl Keyring {
         records.insert(TLV_KEY_ED25519.to_string(), ed.to_vec());
         records.insert(TLV_KEY_CU25519.to_string(), cu.to_vec());
 
-        let plain = build_tlv_records(&records)?;
-
-        // SDK writes AES-GCM (12-byte IV, 16-byte tag)
-        let iv_len = 12;
-        let mut iv = vec![0u8; iv_len];
-        rand::thread_rng().fill_bytes(&mut iv);
-
-        let cipher = Aes128Gcm::new_from_slice(master_key)
-            .map_err(|e| MegaError::CryptoError(e.to_string()))?;
-        let mut ct = cipher
-            .encrypt(aes_gcm::Nonce::from_slice(&iv), plain.as_ref())
-            .map_err(|_| MegaError::CryptoError("GCM encrypt failed".into()))?;
-
-        let mut out = Vec::with_capacity(1 + iv.len() + ct.len());
-        out.push(ENC_GCM_12_16);
-        out.extend_from_slice(&iv);
-        out.append(&mut ct);
-        Ok(out)
+        encrypt_tlv_records(&records, master_key)
     }
 }
 
@@ -241,6 +228,31 @@ fn build_tlv_records(records: &BTreeMap<String, Vec<u8>>) -> Result<Vec<u8>> {
         out.extend_from_slice(&(value.len() as u16).to_be_bytes());
         out.extend_from_slice(value);
     }
+    Ok(out)
+}
+
+/// Encrypt an arbitrary TLV record map into MEGA's attribute container format.
+pub fn encrypt_tlv_records(
+    records: &BTreeMap<String, Vec<u8>>,
+    master_key: &[u8; 16],
+) -> Result<Vec<u8>> {
+    let plain = build_tlv_records(records)?;
+
+    // SDK writes AES-GCM (12-byte IV, 16-byte tag)
+    let iv_len = 12;
+    let mut iv = vec![0u8; iv_len];
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let cipher = Aes128Gcm::new_from_slice(master_key)
+        .map_err(|e| MegaError::CryptoError(e.to_string()))?;
+    let mut ct = cipher
+        .encrypt(aes_gcm::Nonce::from_slice(&iv), plain.as_ref())
+        .map_err(|_| MegaError::CryptoError("GCM encrypt failed".into()))?;
+
+    let mut out = Vec::with_capacity(1 + iv.len() + ct.len());
+    out.push(ENC_GCM_12_16);
+    out.extend_from_slice(&iv);
+    out.append(&mut ct);
     Ok(out)
 }
 

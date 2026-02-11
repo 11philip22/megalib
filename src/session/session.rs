@@ -2,17 +2,19 @@
 //!
 //! This module handles user login, session state, and logout.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::crypto::key_manager::KeyManager;
-use crate::crypto::keyring::Keyring;
+use crate::crypto::keyring::{Keyring, encrypt_tlv_records};
 use crate::crypto::{
     AuthRing, AuthState, MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id,
     derive_key_v2, encrypt_key, make_password_key, make_random_key, make_username_hash,
@@ -245,12 +247,16 @@ pub struct Session {
     pub(crate) warnings: crate::crypto::Warnings,
     /// Manual verification flag
     pub(crate) manual_verification: bool,
+    /// Cached user attributes from `ug` (decoded bytes), to avoid redundant `uga` calls.
+    pub(crate) user_attr_cache: HashMap<String, Vec<u8>>,
     /// Last completed token for pending keys feed (pk command)
     pub(crate) pending_keys_token: Option<String>,
     /// Flag set when a ^!keys downgrade is detected
     pub(crate) keys_downgrade_detected: bool,
     /// Last seen action-packet sequence number (scsn) for SC polling.
     pub(crate) scsn: Option<String>,
+    /// WSC base URL from SC polling (SDK uses `w` field).
+    pub(crate) wsc_url: Option<String>,
     /// Whether resume is enabled for interrupted transfers
     resume_enabled: bool,
     /// Progress callback for transfer progress
@@ -259,6 +265,14 @@ pub struct Session {
     previews_enabled: bool,
     /// Number of concurrent transfer workers (default: 1 for sequential)
     workers: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UpgradeOutcome {
+    NotNeeded,
+    Upgraded,
+    AlreadyUpgraded,
+    Failed,
 }
 
 impl Session {
@@ -403,13 +417,33 @@ impl Session {
         // Set session ID for future requests
         api.set_session_id(session_id.clone());
 
-        api.request_batch(vec![
-            json!({"a": "stp"}),
-            json!({"a": "uq", "pro": 1, "src": -1, "v": 2})
-        ]).await?;
+        let mut upgrade_outcome = UpgradeOutcome::NotNeeded;
+        if login_variant == 1 {
+            upgrade_outcome =
+                Self::attempt_account_upgrade(&mut api, password, &master_key)
+                    .await
+                    .unwrap_or(UpgradeOutcome::Failed);
+
+            let mut batch = Vec::new();
+            if matches!(upgrade_outcome, UpgradeOutcome::Upgraded) {
+                batch.push(json!({
+                    "a": "log",
+                    "e": 99473,
+                    "m": "Account successfully upgraded to v2"
+                }));
+            }
+            batch.push(json!({"a": "uq", "pro": 1, "src": -1, "v": 2}));
+            let _ = api.request_batch(batch).await;
+        } else {
+            api.request_batch(vec![
+                json!({"a": "stp"}),
+                json!({"a": "uq", "pro": 1, "src": -1, "v": 2})
+            ])
+            .await?;
+        }
 
         // Step 7: Get user info
-        let user_info = api.request(json!({"a": "ug"})).await?;
+        let user_info = api.request(json!({"a": "ug", "v": 1})).await?;
 
         let user_handle = user_info["u"]
             .as_str()
@@ -424,6 +458,7 @@ impl Session {
             .get("sn")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let user_attr_cache = Self::collect_user_attrs_from_ug(&user_info);
 
         let mut session = Session {
             api,
@@ -442,14 +477,26 @@ impl Session {
             backups: Vec::new(),
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
+            user_attr_cache,
             pending_keys_token: None,
             keys_downgrade_detected: false,
             scsn,
+            wsc_url: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
             workers: 1,
         };
+
+        let account_is_v2 = login_variant == 2
+            || matches!(
+                upgrade_outcome,
+                UpgradeOutcome::Upgraded | UpgradeOutcome::AlreadyUpgraded
+            );
+
+        if account_is_v2 && !session.user_attr_cache.contains_key("^!keys") {
+            let _ = session.attach_account_keys_if_missing().await;
+        }
 
         // On login, attempt to load ^!keys and process pending promotions.
         let _ = session.load_keys_attribute().await;
@@ -459,6 +506,250 @@ impl Session {
         }
 
         Ok(session)
+    }
+
+    fn collect_user_attrs_from_ug(user_info: &Value) -> HashMap<String, Vec<u8>> {
+        let mut cache = HashMap::new();
+        let Some(obj) = user_info.as_object() else {
+            return cache;
+        };
+
+        let attrs = [
+            "^!keys",
+            "*keyring",
+            "*~usk",
+            "*~jscd",
+            "+puCu255",
+            "+puEd255",
+            "+sigCu255",
+            "+sigPubk",
+        ];
+
+        for attr in attrs {
+            if let Some(av) = obj
+                .get(attr)
+                .and_then(|v| v.get("av"))
+                .and_then(|v| v.as_str())
+            {
+                if av.is_empty() {
+                    continue;
+                }
+                if let Ok(decoded) = base64url_decode(av) {
+                    cache.insert(attr.to_string(), decoded);
+                }
+            }
+        }
+
+        cache
+    }
+
+    fn build_upgrade_payload(
+        password: &str,
+        master_key: &[u8; 16],
+    ) -> Result<(String, String, String)> {
+        let client_random = make_random_key();
+        let mut buffer = b"mega.nz".to_vec();
+        buffer.resize(200, b'P');
+        buffer.extend_from_slice(&client_random);
+        let salt = Sha256::digest(&buffer);
+
+        let derived = derive_key_v2(password, salt.as_slice())?;
+        let password_key: [u8; 16] = derived[..16].try_into().unwrap();
+        let auth_key = &derived[16..32];
+
+        let encrypted_master_key = encrypt_key(master_key, &password_key);
+
+        let mut hasher = Sha256::new();
+        hasher.update(auth_key);
+        let hashed = hasher.finalize();
+        let hak = &hashed[..16];
+
+        Ok((
+            base64url_encode(&client_random),
+            base64url_encode(&encrypted_master_key),
+            base64url_encode(hak),
+        ))
+    }
+
+    async fn attempt_account_upgrade(
+        api: &mut ApiClient,
+        password: &str,
+        master_key: &[u8; 16],
+    ) -> Result<UpgradeOutcome> {
+        let (crv, emk, hak) = Self::build_upgrade_payload(password, master_key)?;
+        let resp = api
+            .request_batch(vec![
+                json!({"a": "stp"}),
+                json!({"a": "avu", "crv": crv, "emk": emk, "hak": hak}),
+            ])
+            .await?;
+
+        let arr = resp.as_array().ok_or(MegaError::InvalidResponse)?;
+        let avu = arr.get(1).ok_or(MegaError::InvalidResponse)?;
+        if let Some(code) = avu.as_i64() {
+            if code == 0 {
+                return Ok(UpgradeOutcome::Upgraded);
+            }
+            if code == -8 {
+                return Ok(UpgradeOutcome::AlreadyUpgraded);
+            }
+            if code < 0 {
+                return Ok(UpgradeOutcome::Failed);
+            }
+        }
+
+        Ok(UpgradeOutcome::Upgraded)
+    }
+
+    fn build_upv_command(attrs: Vec<(&str, String)>) -> Value {
+        let mut obj = serde_json::Map::new();
+        obj.insert("a".into(), Value::from("upv"));
+        for (name, value) in attrs {
+            obj.insert(name.into(), json!([value, 0]));
+        }
+        Value::Object(obj)
+    }
+
+    fn validate_upv_batch(resp: Value) -> Result<()> {
+        if let Some(arr) = resp.as_array() {
+            for item in arr {
+                if let Some(code) = item.as_i64() {
+                    if code < 0 {
+                        let error_code = crate::api::client::ApiErrorCode::from(code);
+                        return Err(MegaError::ApiError {
+                            code: code as i32,
+                            message: error_code.description().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn attach_account_keys_if_missing(&mut self) -> Result<()> {
+        if self.get_user_attribute_raw("^!keys").await?.is_some() {
+            return Ok(());
+        }
+
+        let existing_keyring = self.get_user_attribute_raw("*keyring").await?;
+        let (keyring, keyring_enc) = if let Some(enc) = existing_keyring {
+            (Keyring::from_encrypted(&enc, &self.master_key)?, None)
+        } else {
+            let kr = Keyring::generate();
+            let enc = kr.to_encrypted(&self.master_key)?;
+            (kr, Some(enc))
+        };
+
+        let ed = keyring
+            .ed25519
+            .clone()
+            .ok_or_else(|| MegaError::Custom("Missing Ed25519 key".to_string()))?;
+        let cu = keyring
+            .cu25519
+            .clone()
+            .ok_or_else(|| MegaError::Custom("Missing Curve25519 key".to_string()))?;
+        if ed.len() != 32 || cu.len() != 32 {
+            return Err(MegaError::Custom(
+                "Invalid keyring lengths; expected 32-byte keys".to_string(),
+            ));
+        }
+
+        let mut ed_arr = [0u8; 32];
+        ed_arr.copy_from_slice(&ed);
+        let signing = SigningKey::from_bytes(&ed_arr);
+        let pu_ed = signing.verifying_key().to_bytes().to_vec();
+
+        let mut cu_arr = [0u8; 32];
+        cu_arr.copy_from_slice(&cu);
+        let cu_secret = StaticSecret::from(cu_arr);
+        let pu_cu = PublicKey::from(&cu_secret).to_bytes().to_vec();
+
+        let sig_cu = signing.sign(&pu_cu).to_bytes().to_vec();
+        let rsa_pub = self.rsa_key.public_key_bytes();
+        let sig_pubk = signing.sign(&rsa_pub).to_bytes().to_vec();
+
+        let mut km = KeyManager::new();
+        km.set_priv_keys(&ed, &cu);
+        km.priv_rsa = self.rsa_key.private_key_bytes();
+        km.generation = 1;
+        km.creation_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
+        if let Ok(decoded_handle) = base64url_decode(&self.user_handle) {
+            let mut ident = [0u8; 8];
+            let copy_len = decoded_handle.len().min(8);
+            ident[..copy_len].copy_from_slice(&decoded_handle[..copy_len]);
+            km.identity = u64::from_le_bytes(ident);
+        }
+
+        let keys_blob = km.encode_container(&self.master_key)?;
+        let keys_b64 = base64url_encode(&keys_blob);
+
+        let mut commands = Vec::new();
+
+        let mut generated_usk: Option<Vec<u8>> = None;
+        if self.get_user_attribute_raw("*~usk").await?.is_none() {
+            let usk = make_random_key();
+            let usk_b64 = base64url_encode(&usk);
+            commands.push(Self::build_upv_command(vec![("*~usk", usk_b64)]));
+            generated_usk = Some(usk.to_vec());
+        }
+
+        let mut key_attrs = Vec::new();
+        if let Some(enc) = keyring_enc.as_ref() {
+            key_attrs.push(("*keyring", base64url_encode(enc)));
+        }
+        key_attrs.push(("^!keys", keys_b64));
+        key_attrs.push(("+puEd255", base64url_encode(&pu_ed)));
+        key_attrs.push(("+puCu255", base64url_encode(&pu_cu)));
+        key_attrs.push(("+sigCu255", base64url_encode(&sig_cu)));
+        key_attrs.push(("+sigPubk", base64url_encode(&sig_pubk)));
+        commands.push(Self::build_upv_command(key_attrs));
+
+        let mut generated_jscd: Option<Vec<u8>> = None;
+        if self.get_user_attribute_raw("*~jscd").await?.is_none() {
+            let mut records = BTreeMap::new();
+            records.insert("ak".to_string(), make_random_key().to_vec());
+            records.insert("ck".to_string(), make_random_key().to_vec());
+            records.insert("fn".to_string(), make_random_key().to_vec());
+            let jscd = encrypt_tlv_records(&records, &self.master_key)?;
+            let jscd_b64 = base64url_encode(&jscd);
+            commands.push(Self::build_upv_command(vec![("*~jscd", jscd_b64)]));
+            generated_jscd = Some(jscd);
+        }
+
+        if !commands.is_empty() {
+            let resp = self.api.request_batch(commands).await?;
+            Self::validate_upv_batch(resp)?;
+        }
+
+        // Cache the attributes we just set so we don't immediately re-fetch via uga.
+        if let Some(enc) = keyring_enc {
+            self.user_attr_cache
+                .insert("*keyring".to_string(), enc);
+        }
+        if let Some(usk) = generated_usk {
+            self.user_attr_cache.insert("*~usk".to_string(), usk);
+        }
+        self.user_attr_cache.insert("^!keys".to_string(), keys_blob);
+        self.user_attr_cache
+            .insert("+puEd255".to_string(), pu_ed);
+        self.user_attr_cache
+            .insert("+puCu255".to_string(), pu_cu);
+        self.user_attr_cache
+            .insert("+sigCu255".to_string(), sig_cu);
+        self.user_attr_cache
+            .insert("+sigPubk".to_string(), sig_pubk);
+        if let Some(jscd) = generated_jscd {
+            self.user_attr_cache.insert("*~jscd".to_string(), jscd);
+        }
+
+        self.key_manager = km;
+        self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
+        self.authring_cu = AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
+        Ok(())
     }
 
     /// Get the current session ID.
@@ -609,9 +900,20 @@ impl Session {
                 "SC not initialized; call refresh() before polling action packets".to_string(),
             ));
         }
-        let (packets, sn) = self.api.poll_sc(self.scsn.as_deref()).await?;
+        let (packets, sn, wsc) = self
+            .api
+            .poll_sc(self.scsn.as_deref(), self.wsc_url.as_deref())
+            .await?;
         self.scsn = Some(sn);
+        if let Some(w) = wsc {
+            self.wsc_url = Some(w);
+        }
         self.dispatch_action_packets(&packets).await
+    }
+
+    /// Poll user alerts (SC50) once. Optional, used by clients that need alerts.
+    pub async fn poll_user_alerts_once(&mut self) -> Result<(Vec<Value>, Option<String>)> {
+        self.api.poll_user_alerts().await
     }
 
     /// Run a lightweight action-packet loop with exponential backoff.
@@ -644,10 +946,14 @@ impl Session {
         let mut changed_handles = Vec::new();
         let mut contact_updates = Vec::new();
         let mut node_changed = false;
+        let mut key_event = false;
 
         for pkt in packets {
             if let Some(obj) = pkt.as_object() {
                 Self::extract_handles_from_action(obj, &mut changed_handles);
+                if Self::is_key_attr_update(obj) {
+                    key_event = true;
+                }
                 if let Some(update) = Self::extract_contact_update(obj)? {
                     contact_updates.push(update);
                 }
@@ -665,8 +971,10 @@ impl Session {
             self.maybe_clear_cv_warning();
         }
 
-        if self.handle_actionpacket_keys(&changed_handles).await? {
-            changed = true;
+        if key_event || !changed_handles.is_empty() {
+            if self.handle_actionpacket_keys(&changed_handles).await? {
+                changed = true;
+            }
         }
 
         if node_changed {
@@ -694,6 +1002,31 @@ impl Session {
         }
     }
 
+    fn is_key_attr_update(obj: &serde_json::Map<String, Value>) -> bool {
+        let Some(action) = obj.get("a").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        if action != "ua" {
+            return false;
+        }
+        let Some(attrs) = obj.get("ua").and_then(|v| v.as_array()) else {
+            return false;
+        };
+        attrs.iter().any(|v| {
+            matches!(
+                v.as_str(),
+                Some("^!keys")
+                    | Some("*keyring")
+                    | Some("*~usk")
+                    | Some("*~jscd")
+                    | Some("+puCu255")
+                    | Some("+puEd255")
+                    | Some("+sigCu255")
+                    | Some("+sigPubk")
+            )
+        })
+    }
+
     fn handle_actionpacket_nodes(
         &mut self,
         obj: &serde_json::Map<String, Value>,
@@ -715,7 +1048,15 @@ impl Session {
         &mut self,
         obj: &serde_json::Map<String, Value>,
     ) -> Result<bool> {
-        let Some(nodes_array) = obj.get("t").and_then(|v| v.as_array()) else {
+        let nodes_array = if let Some(arr) = obj.get("t").and_then(|v| v.as_array()) {
+            Some(arr)
+        } else if let Some(tobj) = obj.get("t").and_then(|v| v.as_object()) {
+            tobj.get("f").and_then(|v| v.as_array())
+        } else {
+            None
+        };
+
+        let Some(nodes_array) = nodes_array else {
             return Ok(false);
         };
 
@@ -1011,6 +1352,10 @@ impl Session {
     /// Fetch a raw user attribute (e.g. "^!keys" or "*keyring"). Returns decoded bytes if present.
     /// If the attribute does not exist, returns Ok(None).
     pub async fn get_user_attribute_raw(&mut self, attr: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(cached) = self.user_attr_cache.get(attr) {
+            return Ok(Some(cached.clone()));
+        }
+
         let response = match self.api_mut().get_user_attribute(attr).await {
             Ok(v) => v,
             Err(MegaError::ApiError { code, .. }) if code == -9 => {
@@ -1025,7 +1370,10 @@ impl Session {
             if av.is_empty() {
                 return Ok(None);
             }
-            return Ok(Some(base64url_decode(av)?));
+            let decoded = base64url_decode(av)?;
+            self.user_attr_cache
+                .insert(attr.to_string(), decoded.clone());
+            return Ok(Some(decoded));
         }
 
         if let Some(arr) = response.as_array() {
@@ -1036,7 +1384,10 @@ impl Session {
                 if av.is_empty() {
                     return Ok(None);
                 }
-                return Ok(Some(base64url_decode(av)?));
+                let decoded = base64url_decode(av)?;
+                self.user_attr_cache
+                    .insert(attr.to_string(), decoded.clone());
+                return Ok(Some(decoded));
             }
         }
 
@@ -1570,9 +1921,11 @@ impl Session {
             backups: Vec::new(),
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
+            user_attr_cache: HashMap::new(),
             pending_keys_token: data.pending_keys_token,
             keys_downgrade_detected: data.keys_downgrade_detected,
             scsn,
+            wsc_url: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
@@ -1622,8 +1975,10 @@ mod tests {
             backups: Vec::new(),
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
+            user_attr_cache: HashMap::new(),
             pending_keys_token: None,
             scsn: None,
+            wsc_url: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,

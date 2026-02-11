@@ -30,6 +30,10 @@ async fn sleep(duration: Duration) {
 
 /// Base URL for MEGA API
 const API_URL: &str = "https://g.api.mega.co.nz/cs";
+/// Base URL for SC polling (action packets)
+const WSC_URL: &str = "https://g.api.mega.co.nz/wsc";
+/// Base URL for user alerts polling
+const SC_ALERTS_URL: &str = "https://g.api.mega.co.nz/sc?c=50";
 
 /// MEGA API error codes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,30 +469,90 @@ impl ApiClient {
         }
     }
 
-    /// Poll the SC (action packet) channel.
+    /// Poll the SC (action packet) channel using the SDK-style WSC endpoint.
     ///
-    /// Returns the list of action packets and the next sequence number.
-    pub async fn poll_sc(&mut self, sn: Option<&str>) -> Result<(Vec<Value>, String)> {
-        let mut payload = serde_json::json!({ "a": "sc" });
-        if let Some(s) = sn {
-            payload["sn"] = Value::String(s.to_string());
-        }
+    /// Returns the list of action packets, the next sequence number, and an optional
+    /// WSC base URL (from the `w` field).
+    pub async fn poll_sc(
+        &mut self,
+        sn: Option<&str>,
+        wsc_base: Option<&str>,
+    ) -> Result<(Vec<Value>, String, Option<String>)> {
+        let sn = sn.ok_or_else(|| MegaError::Custom("Missing SC sequence number".to_string()))?;
+        let sid = self
+            .session_id
+            .as_deref()
+            .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
 
-        let resp = self.request(payload).await?;
-        let arr = resp.as_array().ok_or(MegaError::InvalidResponse)?;
+        let base = wsc_base.unwrap_or(WSC_URL);
+        let mut url = base.to_string();
+        let sep = if url.contains('?') { "&" } else { "?" };
+        url.push_str(sep);
+        url.push_str("sn=");
+        url.push_str(sn);
+        url.push_str("&sid=");
+        url.push_str(sid);
 
-        let mut events = Vec::new();
-        let mut next_sn: Option<String> = None;
-        for item in arr {
-            if let Some(sn_value) = item.get("sn").and_then(|v| v.as_str()) {
-                next_sn = Some(sn_value.to_string());
-                continue;
+        let response_text = self.http.post(&url, "").await?;
+        let resp: Value = serde_json::from_str(&response_text)
+            .map_err(|_| MegaError::InvalidResponse)?;
+
+        if let Some(code) = resp.as_i64() {
+            if code == 0 {
+                return Ok((Vec::new(), sn.to_string(), None));
             }
-            events.push(item.clone());
+            let error_code = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: error_code.description().to_string(),
+            });
         }
 
-        let sn_out = next_sn.ok_or(MegaError::InvalidResponse)?;
-        Ok((events, sn_out))
+        let obj = resp.as_object().ok_or(MegaError::InvalidResponse)?;
+        let next_sn = obj
+            .get("sn")
+            .and_then(|v| v.as_str())
+            .ok_or(MegaError::InvalidResponse)?
+            .to_string();
+        let wsc = obj.get("w").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let events = obj
+            .get("a")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.clone())
+            .unwrap_or_default();
+
+        Ok((events, next_sn, wsc))
+    }
+
+    /// Poll user alerts (SC50).
+    ///
+    /// Returns the list of alert objects and the last-seen sequence (`lsn`) if present.
+    pub async fn poll_user_alerts(&mut self) -> Result<(Vec<Value>, Option<String>)> {
+        let sid = self
+            .session_id
+            .as_deref()
+            .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
+        let url = format!("{}&sid={}", SC_ALERTS_URL, sid);
+        let response_text = self.http.post(&url, "").await?;
+        let resp: Value = serde_json::from_str(&response_text)
+            .map_err(|_| MegaError::InvalidResponse)?;
+
+        if let Some(code) = resp.as_i64() {
+            let error_code = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: error_code.description().to_string(),
+            });
+        }
+
+        let obj = resp.as_object().ok_or(MegaError::InvalidResponse)?;
+        let alerts = obj
+            .get("c")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.clone())
+            .unwrap_or_default();
+        let lsn = obj.get("lsn").and_then(|v| v.as_str()).map(|s| s.to_string());
+        Ok((alerts, lsn))
     }
 
     /// Make a batch API request to MEGA.
