@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::engine::general_purpose;
+use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -12,7 +14,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::aes::aes128_ecb_encrypt;
+use crate::crypto::aes::{aes128_ecb_encrypt, aes128_ecb_encrypt_block, aes128_ecb_decrypt_block};
 use crate::crypto::key_manager::KeyManager;
 use crate::crypto::keyring::{Keyring, encrypt_tlv_records};
 use crate::crypto::{
@@ -1364,7 +1366,7 @@ impl Session {
     /// Save session to a file for later restoration.
     ///
     /// This allows you to avoid re-logging in on every run.
-    /// The saved file contains encrypted credentials - keep it secure!
+    /// The saved file contains the SDK-compatible session string - keep it secure!
     ///
     /// # Example
     /// ```no_run
@@ -1377,23 +1379,210 @@ impl Session {
     /// # }
     /// ```
     pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        let data = SessionCache {
-            session_id: self.session_id.clone(),
-            master_key: base64url_encode(&self.master_key),
-            email: self.email.clone(),
-            name: self.name.clone(),
-            user_handle: self.user_handle.clone(),
-            pending_keys_token: self.pending_keys_token.clone(),
-            keys_downgrade_detected: self.keys_downgrade_detected,
-            scsn: self.scsn.clone(),
+        let session = self.dump_session()?;
+        std::fs::write(path, session)
+            .map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Dump the session in SDK-compatible binary format.
+    ///
+    /// Normal account sessions are encoded as:
+    /// - if session_key exists: [1] + AES-ECB(master_key, session_key) + sid_bytes
+    /// - otherwise: master_key + sid_bytes
+    pub fn dump_session_blob(&self) -> Result<Vec<u8>> {
+        let sid_bytes = base64url_decode(&self.session_id)
+            .map_err(|_| MegaError::Custom("Invalid session id".to_string()))?;
+        if sid_bytes.is_empty() {
+            return Err(MegaError::Custom("Session id is empty".to_string()));
+        }
+
+        let mut out = Vec::with_capacity(1 + 16 + sid_bytes.len());
+        if let Some(sek) = self.session_key {
+            out.push(1);
+            let enc = aes128_ecb_encrypt_block(&self.master_key, &sek);
+            out.extend_from_slice(&enc);
+        } else {
+            out.extend_from_slice(&self.master_key);
+        }
+        out.extend_from_slice(&sid_bytes);
+        Ok(out)
+    }
+
+    /// Dump the session as a standard base64 string (SDK `dumpSession()` compatible).
+    pub fn dump_session(&self) -> Result<String> {
+        let blob = self.dump_session_blob()?;
+        Ok(general_purpose::STANDARD.encode(blob))
+    }
+
+    /// Parse a SDK-compatible session blob (base64 string).
+    ///
+    /// Returns a decoded session payload for normal account sessions.
+    pub fn parse_session_blob(session_b64: &str) -> Result<SessionBlob> {
+        let data = general_purpose::STANDARD
+            .decode(session_b64.as_bytes())
+            .map_err(|_| MegaError::Custom("Invalid session blob".to_string()))?;
+        if data.is_empty() {
+            return Err(MegaError::Custom("Empty session blob".to_string()));
+        }
+        if data[0] == 2 {
+            return Err(MegaError::Custom(
+                "Folder-link sessions are not supported; use parse_folder_session_blob".to_string(),
+            ));
+        }
+
+        let (session_version, key_bytes, sid_bytes, master_key_encrypted) = if data[0] == 1
+            && data.len() >= 17
+        {
+            (1u8, &data[1..17], &data[17..], true)
+        } else if data.len() >= 16 {
+            (0u8, &data[0..16], &data[16..], false)
+        } else {
+            return Err(MegaError::Custom("Invalid session blob length".to_string()));
         };
 
-        let json = serde_json::to_string_pretty(&data)
-            .map_err(|e| MegaError::Custom(format!("Serialization error: {}", e)))?;
+        if sid_bytes.is_empty() {
+            return Err(MegaError::Custom("Session id is empty".to_string()));
+        }
 
-        std::fs::write(path, json).map_err(|e| MegaError::Custom(format!("Write error: {}", e)))?;
+        let mut master_key = [0u8; 16];
+        master_key.copy_from_slice(key_bytes);
+        let session_id = base64url_encode(sid_bytes);
 
-        Ok(())
+        Ok(SessionBlob {
+            session_id,
+            master_key,
+            session_version,
+            master_key_encrypted,
+        })
+    }
+
+    /// Parse a SDK folder-link session blob (type 2).
+    pub fn parse_folder_session_blob(session_b64: &str) -> Result<FolderSessionBlob> {
+        let data = general_purpose::STANDARD
+            .decode(session_b64.as_bytes())
+            .map_err(|_| MegaError::Custom("Invalid session blob".to_string()))?;
+        if data.is_empty() {
+            return Err(MegaError::Custom("Empty session blob".to_string()));
+        }
+        if data[0] != 2 {
+            return Err(MegaError::Custom("Not a folder-link session blob".to_string()));
+        }
+
+        let mut idx = 1usize;
+        if idx + 6 + 6 + 16 + 8 > data.len() {
+            return Err(MegaError::Custom("Invalid folder session blob".to_string()));
+        }
+
+        let public_handle = base64url_encode(&data[idx..idx + 6]);
+        idx += 6;
+        let root_handle = base64url_encode(&data[idx..idx + 6]);
+        idx += 6;
+        let mut folder_key = [0u8; 16];
+        folder_key.copy_from_slice(&data[idx..idx + 16]);
+        idx += 16;
+
+        let flags = &data[idx..idx + 8];
+        idx += 8;
+        if flags[3..].iter().any(|b| *b != 0) {
+            return Err(MegaError::Custom(
+                "Invalid folder session flags".to_string(),
+            ));
+        }
+        let has_write = flags[0] != 0;
+        let has_account = flags[1] != 0;
+        let has_padding = flags[2] != 0;
+
+        let read_string = |buf: &[u8], pos: &mut usize| -> Result<String> {
+            if *pos + 2 > buf.len() {
+                return Err(MegaError::Custom("Invalid folder session blob".to_string()));
+            }
+            let len = u16::from_le_bytes([buf[*pos], buf[*pos + 1]]) as usize;
+            *pos += 2;
+            if *pos + len > buf.len() {
+                return Err(MegaError::Custom("Invalid folder session blob".to_string()));
+            }
+            let out = String::from_utf8(buf[*pos..*pos + len].to_vec())
+                .map_err(|_| MegaError::Custom("Invalid folder session string".to_string()))?;
+            *pos += len;
+            Ok(out)
+        };
+
+        let write_auth = if has_write {
+            Some(read_string(&data, &mut idx)?)
+        } else {
+            None
+        };
+        let account_auth = if has_account {
+            Some(read_string(&data, &mut idx)?)
+        } else {
+            None
+        };
+        let padding = if has_padding {
+            Some(read_string(&data, &mut idx)?)
+        } else {
+            None
+        };
+
+        if idx != data.len() {
+            return Err(MegaError::Custom("Invalid folder session blob".to_string()));
+        }
+
+        Ok(FolderSessionBlob {
+            public_handle,
+            root_handle,
+            folder_key,
+            write_auth,
+            account_auth,
+            padding,
+        })
+    }
+
+    /// Dump a folder-link session blob (type 2) as standard base64.
+    pub fn dump_folder_session_blob(blob: &FolderSessionBlob) -> Result<String> {
+        let public_bytes = base64url_decode(&blob.public_handle)
+            .map_err(|_| MegaError::Custom("Invalid public handle".to_string()))?;
+        let root_bytes = base64url_decode(&blob.root_handle)
+            .map_err(|_| MegaError::Custom("Invalid root handle".to_string()))?;
+        if public_bytes.len() != 6 || root_bytes.len() != 6 {
+            return Err(MegaError::Custom("Invalid handle length".to_string()));
+        }
+
+        let mut out = Vec::new();
+        out.push(2);
+        out.extend_from_slice(&public_bytes);
+        out.extend_from_slice(&root_bytes);
+        out.extend_from_slice(&blob.folder_key);
+
+        let has_write = blob.write_auth.is_some();
+        let has_account = blob.account_auth.is_some();
+        let has_padding = true;
+        let mut flags = [0u8; 8];
+        flags[0] = if has_write { 1 } else { 0 };
+        flags[1] = if has_account { 1 } else { 0 };
+        flags[2] = if has_padding { 1 } else { 0 };
+        out.extend_from_slice(&flags);
+
+        let mut write_string = |s: &str| {
+            let len = s.len().min(u16::MAX as usize) as u16;
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&s.as_bytes()[..len as usize]);
+        };
+
+        if let Some(auth) = blob.write_auth.as_deref() {
+            write_string(auth);
+        }
+        if let Some(auth) = blob.account_auth.as_deref() {
+            write_string(auth);
+        }
+
+        let padding = blob
+            .padding
+            .clone()
+            .unwrap_or_else(|| "P".to_string());
+        write_string(&padding);
+
+        Ok(general_purpose::STANDARD.encode(out))
     }
 
     /// Try to decode the keyring (*keyring) attribute and return Ed25519/Cu25519 privkeys.
@@ -1889,22 +2078,27 @@ impl Session {
             return Ok(None);
         }
 
-        let json = std::fs::read_to_string(path)
+        let session_b64 = std::fs::read_to_string(path)
             .map_err(|e| MegaError::Custom(format!("Read error: {}", e)))?;
-
-        let data: SessionCache = serde_json::from_str(&json)
-            .map_err(|e| MegaError::Custom(format!("Parse error: {}", e)))?;
-
-        // Decode master key
-        let master_key_bytes = base64url_decode(&data.master_key)?;
-        if master_key_bytes.len() != 16 {
-            return Err(MegaError::Custom("Invalid master key".to_string()));
+        let session_b64 = session_b64.trim();
+        if session_b64.is_empty() {
+            return Err(MegaError::Custom("Empty session file".to_string()));
         }
-        let mut master_key = [0u8; 16];
-        master_key.copy_from_slice(&master_key_bytes);
 
-        // Create API client with session ID (with or without proxy)
-        // Create API client with session ID (with or without proxy)
+        let session = match Self::login_with_session(session_b64, proxy).await {
+            Ok(session) => session,
+            Err(_) => {
+                let _ = std::fs::remove_file(path);
+                return Ok(None);
+            }
+        };
+
+        Ok(Some(session))
+    }
+
+    async fn login_with_session(session_b64: &str, proxy: Option<&str>) -> Result<Self> {
+        let blob = Session::parse_session_blob(session_b64)?;
+
         let mut api = if let Some(p) = proxy {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -1920,45 +2114,86 @@ impl Session {
         } else {
             ApiClient::new()
         };
-        api.set_session_id(data.session_id.clone());
 
-        // Verify session is still valid by fetching user info
-        let user_info = match api.request(json!({"a": "ug"})).await {
-            Ok(info) => info,
-            Err(_) => {
-                // Session expired, delete cache file
-                let _ = std::fs::remove_file(path);
-                return Ok(None);
+        // Use existing session id to validate the session on the server.
+        let mut session_id = blob.session_id.clone();
+        api.set_session_id(session_id.clone());
+
+        let sek = make_random_key();
+        let sek_b64 = base64url_encode(&sek);
+        let mut login_payload = json!({
+            "a": "us",
+            "sek": &sek_b64
+        });
+        if let Some(si) = device_id_hash() {
+            login_payload["si"] = Value::String(si);
+        }
+
+        let login_response = api.request(login_payload).await?;
+
+        let session_key = match login_response.get("sek").and_then(|v| v.as_str()) {
+            Some(sek_b64) => {
+                let decoded = base64url_decode(sek_b64)?;
+                if decoded.len() != 16 {
+                    return Err(MegaError::InvalidResponse);
+                }
+                let mut key = [0u8; 16];
+                key.copy_from_slice(&decoded);
+                Some(key)
+            }
+            None => None,
+        };
+
+        let mut master_key = blob.master_key;
+        if blob.master_key_encrypted {
+            let sek = session_key.ok_or(MegaError::InvalidResponse)?;
+            master_key = aes128_ecb_decrypt_block(&blob.master_key, &sek);
+        }
+
+        let rsa_key = if let Some(privk_b64) = login_response.get("privk").and_then(|v| v.as_str()) {
+            decrypt_private_key(privk_b64, &master_key)?
+        } else {
+            MegaRsaKey {
+                p: num_bigint::BigUint::from(2u32),
+                q: num_bigint::BigUint::from(3u32),
+                d: num_bigint::BigUint::from(1u32),
+                u: num_bigint::BigUint::from(1u32),
+                m: num_bigint::BigUint::from(6u32),
+                e: num_bigint::BigUint::from(3u32),
             }
         };
 
-        // Create a placeholder RSA key (not needed for most operations)
-        let rsa_key = MegaRsaKey {
-            p: num_bigint::BigUint::from(2u32),
-            q: num_bigint::BigUint::from(3u32),
-            d: num_bigint::BigUint::from(1u32),
-            u: num_bigint::BigUint::from(1u32),
-            m: num_bigint::BigUint::from(6u32),
-            e: num_bigint::BigUint::from(3u32),
-        };
+        if let Some(tsid) = login_response.get("tsid").and_then(|v| v.as_str()) {
+            session_id = tsid.to_string();
+            api.set_session_id(session_id.clone());
+        }
 
-        // Get fresh user info
+        let user_info = api.request(json!({"a": "ug", "v": 1})).await?;
+
         let user_handle = user_info["u"]
             .as_str()
-            .unwrap_or(&data.user_handle)
+            .ok_or(MegaError::InvalidResponse)?
             .to_string();
-        let scsn = data
-            .scsn
-            .or_else(|| user_info.get("sn").and_then(|v| v.as_str()).map(|s| s.to_string()));
+        let user_email = user_info["email"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let user_name = user_info["name"].as_str().map(|s| s.to_string());
+        let scsn = user_info
+            .get("sn")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let user_attr_cache = Self::collect_user_attrs_from_ug(&user_info);
+        let user_attr_versions = Self::collect_user_attr_versions_from_ug(&user_info);
 
-        Ok(Some(Session {
+        let mut session = Session {
             api,
-            session_id: data.session_id,
-            session_key: None,
+            session_id,
+            session_key,
             master_key,
             rsa_key,
-            email: data.email,
-            name: data.name,
+            email: user_email,
+            name: user_name,
             user_handle,
             nodes: Vec::new(),
             share_keys: HashMap::new(),
@@ -1968,35 +2203,52 @@ impl Session {
             backups: Vec::new(),
             warnings: crate::crypto::Warnings::default(),
             manual_verification: false,
-            user_attr_cache: HashMap::new(),
-            user_attr_versions: HashMap::new(),
-            pending_keys_token: data.pending_keys_token,
-            keys_downgrade_detected: data.keys_downgrade_detected,
+            user_attr_cache,
+            user_attr_versions,
+            pending_keys_token: None,
+            keys_downgrade_detected: false,
             scsn,
             wsc_url: None,
             resume_enabled: false,
             progress_callback: None,
             previews_enabled: false,
             workers: 1,
-        }))
+        };
+
+        let account_is_v2 = user_info.get("aav").and_then(|v| v.as_i64()) == Some(2);
+        if account_is_v2 && !session.user_attr_cache.contains_key("^!keys") {
+            let _ = session.attach_account_keys_if_missing().await;
+        }
+
+        let _ = session.load_keys_attribute().await;
+        let _ = session.promote_pending_shares().await;
+        if session.clear_inuse_flags_for_missing_shares() {
+            let _ = session.persist_keys_with_retry().await;
+        }
+
+        Ok(session)
     }
 }
 
-    /// Serializable session cache data.
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct SessionCache {
-        session_id: String,
-        master_key: String,
-        email: String,
-        name: Option<String>,
-        user_handle: String,
-    #[serde(default)]
-    pending_keys_token: Option<String>,
-    #[serde(default)]
-    keys_downgrade_detected: bool,
-    #[serde(default)]
-    scsn: Option<String>,
-    }
+/// Parsed SDK session blob (normal account sessions).
+#[derive(Debug, Clone)]
+pub struct SessionBlob {
+    pub session_id: String,
+    pub master_key: [u8; 16],
+    pub session_version: u8,
+    pub master_key_encrypted: bool,
+}
+
+/// Parsed SDK folder-link session blob (type 2).
+#[derive(Debug, Clone)]
+pub struct FolderSessionBlob {
+    pub public_handle: String,
+    pub root_handle: String,
+    pub folder_key: [u8; 16],
+    pub write_auth: Option<String>,
+    pub account_auth: Option<String>,
+    pub padding: Option<String>,
+}
 
 #[cfg(test)]
 mod tests {

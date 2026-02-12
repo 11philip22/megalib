@@ -1,6 +1,7 @@
 //! Example: Session caching to avoid repeated logins
 //!
 //! This example demonstrates how to cache a session and reuse it.
+//! The cache file stores the raw SDK-compatible session string.
 //!
 //! Usage:
 //!   cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]
@@ -10,7 +11,7 @@ mod cli;
 use cli::{parse_credentials, usage_and_exit};
 use megalib::Session;
 
-const SESSION_FILE: &str = "mega_session.json";
+const SESSION_FILE: &str = "mega_session";
 const USAGE: &str = "Usage: cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]";
 
 #[tokio::main]
