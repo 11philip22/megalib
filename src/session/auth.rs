@@ -68,20 +68,9 @@ impl Session {
 
     /// Internal login implementation.
     async fn login_internal(email: &str, password: &str, proxy: Option<&str>) -> Result<Self> {
-        let mut api = if let Some(p) = proxy {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                ApiClient::with_proxy(p)?
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                return Err(MegaError::Custom(format!(
-                    "Proxy support not available in WASM (ignored proxy: {})",
-                    p
-                )));
-            }
-        } else {
-            ApiClient::new()
+        let mut api = match proxy {
+            Some(p) => ApiClient::with_proxy(p)?,
+            None => ApiClient::new(),
         };
         let email_lower = email.to_lowercase();
 
@@ -429,20 +418,9 @@ impl Session {
     ) -> Result<Self> {
         let blob = Session::parse_session_blob(session_b64)?;
 
-        let mut api = if let Some(p) = proxy {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                ApiClient::with_proxy(p)?
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                return Err(MegaError::Custom(format!(
-                    "Proxy support not available in WASM (ignored proxy: {})",
-                    p
-                )));
-            }
-        } else {
-            ApiClient::new()
+        let mut api = match proxy {
+            Some(p) => ApiClient::with_proxy(p)?,
+            None => ApiClient::new(),
         };
 
         // Use existing session id to validate the session on the server.

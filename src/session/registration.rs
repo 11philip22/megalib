@@ -109,14 +109,10 @@ pub async fn register(
     name: &str,
     proxy: Option<&str>,
 ) -> Result<RegistrationState> {
-    #[cfg(not(target_arch = "wasm32"))]
     let mut api = match proxy {
         Some(url) => ApiClient::with_proxy(url)?,
         None => ApiClient::new(),
     };
-
-    #[cfg(target_arch = "wasm32")]
-    let mut api = ApiClient::new();
 
     // 1. Generate cryptographic keys
     let master_key = make_random_key();
@@ -220,14 +216,10 @@ pub async fn verify_registration(
     signup_key: &str,
     proxy: Option<&str>,
 ) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
     let mut api = match proxy {
         Some(url) => ApiClient::with_proxy(url)?,
         None => ApiClient::new(),
     };
-
-    #[cfg(target_arch = "wasm32")]
-    let mut api = ApiClient::new();
 
     // 1. Generate RSA keypair
     let rsa_key = MegaRsaKey::generate()

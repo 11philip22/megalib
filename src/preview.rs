@@ -1,7 +1,7 @@
 //! Preview/thumbnail generation for file uploads.
 //!
 //! This module provides functionality to generate 128x128 thumbnails for files before they are uploaded.
-//! Available on native targets (not WASM) as it requires filesystem access and the `image` crate.
+//! Requires filesystem access and the `image` crate.
 //!
 //! # Supported Formats
 //!

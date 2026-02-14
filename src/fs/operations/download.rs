@@ -3,11 +3,8 @@
 use futures::stream::{self, StreamExt};
 use serde_json::json;
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{self, OpenOptions};
-#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufWriter, Write};
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use crate::crypto::aes::aes128_ctr_decrypt;
@@ -257,8 +254,6 @@ impl Session {
     /// - If interrupted and restarted, detect the partial download and resume
     /// - On successful completion, rename the temp file to the target path
     ///
-    /// This method is only available on native targets (not WASM).
-    ///
     /// # Arguments
     /// * `node` - The file node to download
     /// * `local_path` - Target file path
@@ -276,7 +271,6 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_to_file<P: AsRef<std::path::Path>>(
         &mut self,
         node: &Node,

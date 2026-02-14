@@ -2,7 +2,7 @@
 ///
 /// This demonstrates uploading from any source implementing AsyncRead + AsyncSeek.
 /// In this example we use a Cursor wrapping a Vec<u8>, but you could use any
-/// compatible reader, making this suitable for WASM environments.
+/// compatible reader.
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};

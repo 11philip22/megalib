@@ -5,7 +5,6 @@ use futures::stream::{self, StreamExt};
 use rand::RngCore;
 use serde_json::json;
 
-#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use super::utils::{get_chunk_size, upload_checksum};
@@ -18,7 +17,6 @@ use crate::api::client::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::fs::upload_state::UploadState;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::fs::upload_state::calculate_file_hash;
 use crate::session::Session;
 
@@ -107,13 +105,9 @@ impl Session {
 
     /// Upload a file to a directory.
     ///
-    /// This method is only available on native targets (not WASM).
-    /// For WASM, use `upload_from_bytes` or `upload_from_reader` instead.
-    ///
     /// # Arguments
     /// * `local_path` - Path to the local file to upload
     /// * `remote_parent_path` - Path to the remote parent directory
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
@@ -190,8 +184,6 @@ impl Session {
     /// allowing uploads to be resumed if interrupted. The state file is
     /// automatically deleted on successful completion.
     ///
-    /// This method is only available on native targets (not WASM).
-    ///
     /// # Arguments
     /// * `local_path` - Path to the local file to upload
     /// * `remote_parent_path` - Path to the remote parent directory
@@ -208,7 +200,6 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn upload_resumable<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
@@ -315,8 +306,6 @@ impl Session {
     /// Upload data from a byte slice to a directory.
     ///
     /// This method is useful for uploading in-memory data without writing to disk first.
-    /// It's particularly suitable for WASM environments where filesystem access is not available.
-    ///
     /// Note: This method does NOT support resume (the data must be re-provided if interrupted).
     /// For large uploads that need resume support, use `upload_resumable` with a file path.
     ///
@@ -357,7 +346,7 @@ impl Session {
     ///
     /// This method accepts any type implementing `AsyncRead + AsyncSeek + Unpin + Send`,
     /// enabling uploads from various sources like in-memory buffers, network streams,
-    /// or custom data sources. Particularly useful for WASM environments.
+    /// or custom data sources.
     ///
     /// Note: This method does NOT support resume. The reader is consumed during upload,
     /// and if the upload is interrupted, you must provide a fresh reader to retry.
@@ -445,7 +434,6 @@ impl Session {
     }
 
     /// Internal method to upload with optional state tracking.
-    #[cfg(not(target_arch = "wasm32"))]
     async fn upload_internal(
         &mut self,
         path: &std::path::Path,

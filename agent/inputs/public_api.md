@@ -1,7 +1,7 @@
 # Public API
 
 ## Top-Level Exports (`megalib::*`)
-- Modules: `api`, `base64`, `crypto`, `error`, `fs`, `http`, `preview` (non-WASM), `progress`, `public`, `session`.
+- Modules: `api`, `base64`, `crypto`, `error`, `fs`, `http`, `preview`, `progress`, `public`, `session`.
 - Re-exports: `MegaError`, `Result`, `Node`, `NodeType`, `Quota`, `ProgressCallback`, `TransferProgress`, `make_progress_bar`, `PublicFile`, `PublicFolder`, `download_public_file`, `get_public_file_info`, `open_folder`, `parse_folder_link`, `parse_mega_link`, `RegistrationState`, `Session`, `register`, `verify_registration`.
 
 Evidence:
@@ -108,7 +108,7 @@ Evidence:
 - `src/progress.rs::TransferProgress`
 - `src/progress.rs::make_progress_bar`
 
-### `preview` (non-WASM)
+### `preview`
 - Functions: `generate_thumbnail`, `generate_image_thumbnail`, `generate_video_thumbnail`, `is_image`, `is_video`, `has_ffmpegthumbnailer`.
 
 Evidence:

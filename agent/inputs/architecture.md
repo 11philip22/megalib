@@ -18,7 +18,7 @@ Evidence:
 - `src/fs/operations/*` implements filesystem operations as `impl Session` methods.
 - `src/session/*` implements login, session caching, registration, and key management helpers.
 - `src/crypto/*` implements MEGA-specific auth, AES/RSA, keyring, and ^!keys handling.
-- `src/preview.rs` generates thumbnails for uploads on non-WASM targets.
+- `src/preview.rs` generates thumbnails for uploads.
 - `src/progress.rs` defines transfer progress reporting and callbacks.
 
 Evidence:
@@ -78,12 +78,3 @@ Evidence:
 - `src/crypto/key_manager.rs::KeyManager`
 - `src/session/session.rs::enable_previews`
 - `src/preview.rs::generate_thumbnail`
-
-## Platform Gating
-- Proxy support and preview generation are only available on non-WASM targets.
-- WASM uses a custom async sleep implementation for backoff.
-
-Evidence:
-- `src/http.rs::HttpClient`
-- `src/lib.rs::preview`
-- `src/api/client.rs::sleep`

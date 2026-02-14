@@ -54,17 +54,8 @@ Evidence:
 - `src/public.rs::get_public_file_info`
 
 ## Preview/Thumbnail Generation
-- Preview generation is available on native targets and uses the `image` crate plus optional `ffmpegthumbnailer` for video thumbnails.
+- Preview generation uses the `image` crate plus optional `ffmpegthumbnailer` for video thumbnails.
 
 Evidence:
 - `src/preview.rs::generate_thumbnail`
-- `Cargo.toml::target.'cfg(not(target_arch = "wasm32"))'.dependencies`
-
-## Platform Gating (WASM vs Native)
-- Proxy support and preview generation are gated to non-WASM targets.
-- WASM uses a custom async sleep for backoff.
-
-Evidence:
-- `src/http.rs::HttpClient`
-- `src/lib.rs::preview`
-- `src/api/client.rs::sleep`
+- `Cargo.toml::dependencies`

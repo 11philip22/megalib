@@ -2,18 +2,12 @@ use sha2::{Digest, Sha256};
 
 use crate::base64::base64url_encode;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn device_id_hash() -> Option<String> {
     let id = device_id_bytes()?;
     let mut hasher = Sha256::new();
     hasher.update(&id);
     let digest = hasher.finalize();
     Some(base64url_encode(&digest))
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(super) fn device_id_hash() -> Option<String> {
-    None
 }
 
 #[cfg(target_os = "windows")]

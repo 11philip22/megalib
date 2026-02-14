@@ -9,8 +9,9 @@ keywords = ["mega", "meganz", "cloud-storage", "file-transfer"]
 categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
 
 [dependencies]
-# HTTP client - works on both platforms with different backends
+# HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
+tokio = { version = "1", features = ["full"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -42,20 +43,7 @@ hex = "0.4.3"
 futures = "0.3"
 tracing = "0.1"
 
-# Ensure getrandom works in WASM (uses browser crypto)
-getrandom = { version = "0.2", features = ["js"] }
-
-# Native-only dependencies
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", features = ["full"] }
 image = "0.25.9"
-
-# WASM-only dependencies
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

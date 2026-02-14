@@ -1,7 +1,7 @@
 /// Example: Upload data from memory using upload_from_bytes
 ///
 /// This demonstrates uploading in-memory data without writing to disk first.
-/// Useful for WASM environments or when data is generated programmatically.
+/// Useful when data is generated programmatically.
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
