@@ -15,9 +15,13 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use std::time::Duration;
 
-const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 FOLDER2 LOCAL1 LOCAL2]
+// const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 FOLDER2 LOCAL1 LOCAL2]
 
-Defaults: FOLDER1=/Root/lol1 FOLDER2=/Root/lol2 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
+// Defaults: FOLDER1=/Root/lol1 FOLDER2=/Root/lol2 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
+
+const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 LOCAL1 LOCAL2]
+
+Defaults: FOLDER1=/Root/lol1 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
@@ -34,19 +38,21 @@ async fn main() -> Result<()> {
         .get(0)
         .cloned()
         .unwrap_or_else(|| "/Root/lol1".to_string());
-    let folder2 = creds
-        .positionals
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| "/Root/lol2".to_string());
+    // let folder2 = creds
+    //     .positionals
+    //     .get(1)
+    //     .cloned()
+    //     .unwrap_or_else(|| "/Root/lol2".to_string());
     let local1 = creds
         .positionals
-        .get(2)
+        // .get(2)
+        .get(1)
         .cloned()
         .unwrap_or_else(|| "./Cargo.toml".to_string());
     let local2 = creds
         .positionals
-        .get(3)
+        // .get(3)
+        .get(2)
         .cloned()
         .unwrap_or_else(|| "./Cargo.lock".to_string());
 
@@ -95,14 +101,14 @@ async fn main() -> Result<()> {
     wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.lock")?;
 
     upload_and_export(&session, &local2, &folder1).await?;
-    wait_for_enter("Check if both files are in the folder and login to upgrade encryption. Then press Enter to continue")?;
+    // wait_for_enter("Check if both files are in the folder and login to upgrade encryption. Then press Enter to continue")?;
 
-    ensure_folder(&session, &folder2).await?;
-    upload_and_export(&session, &local2, &folder2).await?;
-    wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.toml")?;
+    // ensure_folder(&session, &folder2).await?;
+    // upload_and_export(&session, &local2, &folder2).await?;
+    // wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.toml")?;
 
-    upload_and_export(&session, &local1, &folder2).await?;
-    println!("Please verify if both files are in the folder now.");
+    // upload_and_export(&session, &local1, &folder2).await?;
+    // println!("Please verify if both files are in the folder now.");
 
     println!("Sequence complete. SC loop is still running (Ctrl+C to stop)...");
     let stop_signal = stop_flag.clone();
