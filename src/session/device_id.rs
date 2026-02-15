@@ -2,6 +2,11 @@ use sha2::{Digest, Sha256};
 
 use crate::base64::base64url_encode;
 
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
+#[cfg(target_os = "windows")]
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+
 pub(super) fn device_id_hash() -> Option<String> {
     let id = device_id_bytes()?;
     let mut hasher = Sha256::new();
@@ -12,101 +17,15 @@ pub(super) fn device_id_hash() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn device_id_bytes() -> Option<Vec<u8>> {
-    use std::ffi::{OsString, c_void};
-    use std::os::windows::ffi::OsStringExt;
-    use std::ptr;
-
-    type HKEY = *mut c_void;
-
-    const HKEY_LOCAL_MACHINE: HKEY = 0x80000002 as HKEY;
-    const KEY_QUERY_VALUE: u32 = 0x0001;
-    const KEY_WOW64_64KEY: u32 = 0x0100;
-    const REG_SZ: u32 = 1;
-
-    #[link(name = "advapi32")]
-    extern "system" {
-        fn RegOpenKeyExW(
-            hKey: HKEY,
-            lpSubKey: *const u16,
-            ulOptions: u32,
-            samDesired: u32,
-            phkResult: *mut HKEY,
-        ) -> i32;
-        fn RegQueryValueExW(
-            hKey: HKEY,
-            lpValueName: *const u16,
-            lpReserved: *mut u32,
-            lpType: *mut u32,
-            lpData: *mut u8,
-            lpcbData: *mut u32,
-        ) -> i32;
-        fn RegCloseKey(hKey: HKEY) -> i32;
-    }
-
-    let subkey: Vec<u16> = "Software\\Microsoft\\Cryptography\0".encode_utf16().collect();
-    let mut hkey: HKEY = ptr::null_mut();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            subkey.as_ptr(),
-            0,
-            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
-            &mut hkey,
-        )
-    };
-    if status != 0 {
-        return None;
-    }
-
-    let value: Vec<u16> = "MachineGuid\0".encode_utf16().collect();
-    let mut data_type: u32 = 0;
-    let mut data_len: u32 = 0;
-    let status = unsafe {
-        RegQueryValueExW(
-            hkey,
-            value.as_ptr(),
-            ptr::null_mut(),
-            &mut data_type,
-            ptr::null_mut(),
-            &mut data_len,
-        )
-    };
-    if status != 0 || data_len == 0 {
-        unsafe {
-            RegCloseKey(hkey);
-        }
-        return None;
-    }
-
-    let mut buf: Vec<u16> = vec![0u16; (data_len as usize + 1) / 2];
-    let status = unsafe {
-        RegQueryValueExW(
-            hkey,
-            value.as_ptr(),
-            ptr::null_mut(),
-            &mut data_type,
-            buf.as_mut_ptr() as *mut u8,
-            &mut data_len,
-        )
-    };
-    unsafe {
-        RegCloseKey(hkey);
-    }
-    if status != 0 || data_type != REG_SZ {
-        return None;
-    }
-
-    let len_u16 = (data_len as usize) / 2;
-    let mut slice = &buf[..len_u16];
-    if slice.last() == Some(&0) {
-        slice = &slice[..slice.len() - 1];
-    }
-    let os = OsString::from_wide(slice);
-    let s = os.to_string_lossy();
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm
+        .open_subkey_with_flags("Software\\Microsoft\\Cryptography", KEY_READ | KEY_WOW64_64KEY)
+        .ok()?;
+    let s: String = key.get_value("MachineGuid").ok()?;
     if s.is_empty() {
         None
     } else {
-        Some(s.as_bytes().to_vec())
+        Some(s.into_bytes())
     }
 }
 

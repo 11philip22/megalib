@@ -89,12 +89,19 @@ Suggested starting points: `login`, `ls`, `upload`, `download`, `upload_resume`,
 `export`, `share`, `folder`, `download_public`, `upload_bytes`, `upload_reader`.
 See `examples/` for the full list and example-specific flags.
 
+## Documentation
+
+For detailed API documentation, visit [docs.rs/megalib](https://docs.rs/megalib).
+
 ## Contributing
 
-PRs are welcome!  
-Please run `cargo fmt` and `cargo clippy` before submitting.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-If you’re changing behavior, please document it in the PR.
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/cool-feature`)
+3. Commit your changes (`git commit -m 'Add some cool feature'`)
+4. Push to the branch (`git push origin feature/cool-feature`)
+5. Open a Pull Request
 
 ## Support
 
