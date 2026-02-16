@@ -2,8 +2,6 @@
 
 use rand::RngCore;
 use serde_json::json;
-use tokio::time::{timeout, sleep};
-use std::time::Duration;
 
 use super::utils::normalize_path;
 use crate::base64::base64url_encode;
@@ -61,6 +59,7 @@ impl Session {
         let key_b64 = crate::base64::base64url_encode(&encrypted_key);
 
         // 4. Call API
+        let session_id = self.session_id().to_string();
         let response = self
             .api_mut()
             .request(json!({
@@ -73,11 +72,14 @@ impl Session {
                     "k": key_b64
                 }],
                 "v": 4,
-                "sm": 1
+                "sm": 1,
+                "i": session_id
             }))
             .await?;
+        let seqtag = self.track_seqtag_from_response(&response);
 
         // 5. Parse response
+        let mut created_node: Option<Node> = None;
         if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
             if let Some(node_obj) = nodes_array.get(0) {
                 let mut node = self.parse_node(node_obj).ok_or_else(|| {
@@ -96,7 +98,7 @@ impl Session {
                     last_node.path = Some(parent_path_str);
                 }
 
-                return Ok(node);
+                created_node = Some(node);
             }
         }
 
@@ -113,33 +115,25 @@ impl Session {
             }
         }
 
-        // Wait for action packets to add the node, like SDK does.
-        if self.scsn.is_none() {
+        if let Some(tag) = seqtag {
+            if !self.defer_seqtag_wait {
+                self.wait_for_seqtag(&tag).await?;
+            }
+        }
+
+        if let Some(node) = created_node {
+            return Ok(node);
+        }
+        if self.defer_seqtag_wait {
             return Err(MegaError::Custom(
-                "SC not initialized; call refresh() before mkdir".to_string(),
+                "Folder creation pending action packets".to_string(),
             ));
         }
-
-        const SC_POLL_TIMEOUT: Duration = Duration::from_secs(2);
-        const SC_POLL_DELAY: Duration = Duration::from_millis(200);
-
-        for _ in 0..10 {
-            if let Some(node) = self.stat(path) {
-                return Ok(node.clone());
-            }
-            match timeout(SC_POLL_TIMEOUT, self.poll_action_packets_once()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    // Timeout; avoid blocking on long-poll.
-                }
-            }
-            sleep(SC_POLL_DELAY).await;
+        if let Some(node) = self.stat(path) {
+            return Ok(node.clone());
         }
 
-        Err(MegaError::Custom(
-            "Folder creation pending action packets".to_string(),
-        ))
+        Err(MegaError::Custom("Folder creation pending action packets".to_string()))
     }
 
     /// Remove a file or directory.
@@ -149,12 +143,20 @@ impl Session {
             .map(|n| n.handle.clone())
             .ok_or_else(|| crate::error::MegaError::Custom(format!("Node not found: {}", path)))?;
 
-        self.api_mut()
+        let session_id = self.session_id().to_string();
+        let response = self
+            .api_mut()
             .request(json!({
                 "a": "d",
-                "n": node_handle
+                "n": node_handle,
+                "i": session_id
             }))
             .await?;
+        if let Some(tag) = self.track_seqtag_from_response(&response) {
+            if !self.defer_seqtag_wait {
+                self.wait_for_seqtag(&tag).await?;
+            }
+        }
 
         Ok(())
     }
@@ -196,13 +198,21 @@ impl Session {
         let dest_handle = dest_parent.handle.clone();
 
         // Call move API: {a: "m", n: source_handle, t: dest_parent_handle}
-        self.api_mut()
+        let session_id = self.session_id().to_string();
+        let response = self
+            .api_mut()
             .request(json!({
                 "a": "m",
                 "n": source_handle,
-                "t": dest_handle
+                "t": dest_handle,
+                "i": session_id
             }))
             .await?;
+        if let Some(tag) = self.track_seqtag_from_response(&response) {
+            if !self.defer_seqtag_wait {
+                self.wait_for_seqtag(&tag).await?;
+            }
+        }
 
         Ok(())
     }
@@ -271,13 +281,21 @@ impl Session {
         let attrs_b64 = base64url_encode(&encrypted_attrs);
 
         // Call setattr API: {a: "a", n: handle, attr: encrypted_attrs}
-        self.api_mut()
+        let session_id = self.session_id().to_string();
+        let response = self
+            .api_mut()
             .request(json!({
                 "a": "a",
                 "n": handle,
-                "attr": attrs_b64
+                "attr": attrs_b64,
+                "i": session_id
             }))
             .await?;
+        if let Some(tag) = self.track_seqtag_from_response(&response) {
+            if !self.defer_seqtag_wait {
+                self.wait_for_seqtag(&tag).await?;
+            }
+        }
 
         // Update local cache
         self.nodes[node_idx].name = new_name.to_string();

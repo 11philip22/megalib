@@ -100,7 +100,8 @@ impl Session {
                 "n": handle,
                 "s": [{"u": "EXP", "r": 0}],
                 "ok": ok,
-                "ha": ha
+                "ha": ha,
+                "i": self.session_id()
             });
             if let Some(cr_value) = cr {
                 request["cr"] = cr_value;
@@ -128,6 +129,11 @@ impl Session {
                         .to_string(),
                 });
             }
+            if let Some(tag) = self.track_seqtag_from_response(&share_resp) {
+                if !self.defer_seqtag_wait {
+                    self.wait_for_seqtag(&tag).await?;
+                }
+            }
 
             if self.key_manager.is_ready() {
                 let _ = self.key_manager.set_share_key_in_use(&handle, true);
@@ -142,11 +148,13 @@ impl Session {
             // );
 
             // Step 2: Get the public link handle
+            let session_id = self.session_id().to_string();
             let response = self
                 .api_mut()
                 .request(json!({
                     "a": "l",
-                    "n": handle
+                    "n": handle,
+                    "i": session_id
                 }))
                 .await?;
 
@@ -190,11 +198,13 @@ impl Session {
             ))
         } else {
             // File export uses "l" (link) API directly
+            let session_id = self.session_id().to_string();
             let response = self
                 .api_mut()
                 .request(json!({
                     "a": "l",
-                    "n": handle
+                    "n": handle,
+                    "i": session_id
                 }))
                 .await?;
 
@@ -255,7 +265,10 @@ impl Session {
         }
 
         // Build batch request
-        let requests: Vec<Value> = handles.iter().map(|h| json!({"a": "l", "n": h})).collect();
+        let requests: Vec<Value> = handles
+            .iter()
+            .map(|h| json!({"a": "l", "n": h, "i": self.session_id()}))
+            .collect();
 
         // Make batch API call
         let response = self.api_mut().request_batch(requests).await?;

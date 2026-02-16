@@ -816,7 +816,8 @@ impl Session {
             "t": parent_handle,
             "n": [node_data],
             "v": 4,   // request file IDs/handles (matches SDK)
-            "sm": 1   // secure mode flag like SDK/webclient
+            "sm": 1,  // secure mode flag like SDK/webclient
+            "i": self.session_id()
         });
 
         if let Some((share_handle, share_key)) = self.find_share_for_handle(parent_handle) {
@@ -834,6 +835,7 @@ impl Session {
         }
 
         let response = self.api_mut().request(request).await?;
+        let seqtag = self.track_seqtag_from_response(&response);
 
         // Parse result; accept "f" array when available.
         if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
@@ -864,6 +866,11 @@ impl Session {
                     last_node.path = Some(parent_path_str);
                 }
 
+                if let Some(tag) = seqtag {
+                    if !self.defer_seqtag_wait {
+                        self.wait_for_seqtag(&tag).await?;
+                    }
+                }
                 return Ok(node);
             }
         }
@@ -880,10 +887,14 @@ impl Session {
             }
         }
 
-        // Wait for action packets to add the node, like SDK does.
-        if self.scsn.is_none() {
+        if let Some(tag) = seqtag {
+            if !self.defer_seqtag_wait {
+                self.wait_for_seqtag(&tag).await?;
+            }
+        }
+        if self.defer_seqtag_wait {
             return Err(MegaError::Custom(
-                "SC not initialized; call refresh() before upload".to_string(),
+                "Failed to observe uploaded node via action packets".to_string(),
             ));
         }
 
@@ -895,12 +906,8 @@ impl Session {
             .unwrap_or_else(|| "/".to_string());
         let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
 
-        for _ in 0..20 {
-            if let Some(existing) = self.stat(&target_path) {
-                return Ok(existing.clone());
-            }
-            self.poll_action_packets_once().await?;
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if let Some(existing) = self.stat(&target_path) {
+            return Ok(existing.clone());
         }
 
         Err(MegaError::Custom(

@@ -29,18 +29,20 @@ async fn main() -> Result<()> {
     let local_path = creds.positionals[1].clone();
 
     println!("Logging in...");
-    let mut session = creds.login().await?;
-    println!("Logged in as: {}", session.email);
+    let session = creds.login().await?;
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
     // Enable parallel downloads
-    session.set_workers(4);
+    session.set_workers(4).await?;
 
     println!("Looking for: {}", remote_path);
     let node = session
         .stat(&remote_path)
+        .await?
         .ok_or_else(|| {
             megalib::error::MegaError::Custom(format!("File not found: {}", remote_path))
         })?
@@ -49,7 +51,7 @@ async fn main() -> Result<()> {
     println!("Found: {} ({} bytes)", node.name, node.size);
 
     // Enable resume support
-    session.set_resume(true);
+    session.set_resume(true).await?;
     println!("Resume enabled: downloads will continue from partial files");
 
     // Set up progress callback
@@ -67,7 +69,8 @@ async fn main() -> Result<()> {
         let _ = std::io::stdout().flush();
 
         true // Continue download
-    }));
+    }))
+    .await?;
 
     // Check if partial file exists
     let local_path_buf = std::path::Path::new(&local_path);

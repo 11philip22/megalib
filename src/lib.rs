@@ -86,4 +86,4 @@ pub use public::{
     PublicFile, PublicFolder, download_public_file, get_public_file_info, open_folder,
     parse_folder_link, parse_mega_link,
 };
-pub use session::{RegistrationState, Session, register, verify_registration};
+pub use session::{RegistrationState, Session, SessionHandle, AccountInfo, register, verify_registration};

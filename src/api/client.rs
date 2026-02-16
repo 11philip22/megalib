@@ -15,6 +15,7 @@ async fn sleep(duration: Duration) {
 const API_URL: &str = "https://g.api.mega.co.nz/cs";
 /// Base URL for SC polling (action packets)
 const WSC_URL: &str = "https://g.api.mega.co.nz/wsc";
+const SC_URL: &str = "https://g.api.mega.co.nz/sc";
 /// Base URL for user alerts polling
 const SC_ALERTS_URL: &str = "https://g.api.mega.co.nz/sc?c=50";
 
@@ -453,20 +454,25 @@ impl ApiClient {
 
     /// Poll the SC (action packet) channel using the SDK-style WSC endpoint.
     ///
-    /// Returns the list of action packets, the next sequence number, and an optional
-    /// WSC base URL (from the `w` field).
+    /// Returns the list of action packets, the next sequence number, an optional
+    /// WSC base URL (from the `w` field), and whether more packets are pending (`ir`).
     pub async fn poll_sc(
         &mut self,
         sn: Option<&str>,
         wsc_base: Option<&str>,
-    ) -> Result<(Vec<Value>, String, Option<String>)> {
+        use_sc: bool,
+    ) -> Result<(Vec<Value>, String, Option<String>, bool)> {
         let sn = sn.ok_or_else(|| MegaError::Custom("Missing SC sequence number".to_string()))?;
         let sid = self
             .session_id
             .as_deref()
             .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
 
-        let base = wsc_base.unwrap_or(WSC_URL);
+        let base = if use_sc {
+            SC_URL
+        } else {
+            wsc_base.unwrap_or(WSC_URL)
+        };
         let mut url = base.to_string();
         let sep = if url.contains('?') { "&" } else { "?" };
         url.push_str(sep);
@@ -481,7 +487,7 @@ impl ApiClient {
 
         if let Some(code) = resp.as_i64() {
             if code == 0 {
-                return Ok((Vec::new(), sn.to_string(), None));
+                return Ok((Vec::new(), sn.to_string(), None, false));
             }
             let error_code = ApiErrorCode::from(code);
             return Err(MegaError::ApiError {
@@ -497,13 +503,18 @@ impl ApiClient {
             .ok_or(MegaError::InvalidResponse)?
             .to_string();
         let wsc = obj.get("w").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let ir = obj
+            .get("ir")
+            .and_then(|v| v.as_i64())
+            .map(|v| v == 1)
+            .unwrap_or(false);
         let events = obj
             .get("a")
             .and_then(|v| v.as_array())
             .map(|arr| arr.clone())
             .unwrap_or_default();
 
-        Ok((events, next_sn, wsc))
+        Ok((events, next_sn, wsc, ir))
     }
 
     /// Poll user alerts (SC50).

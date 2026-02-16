@@ -16,6 +16,7 @@ use crate::crypto::key_manager::{KeyManager, PendingUid};
 use crate::crypto::{AuthRing, AuthState};
 use crate::error::{MegaError, Result};
 use crate::session::Session;
+use crate::session::session::Contact;
 
 /// Contact public keys and verification status (subset of SDK contact info).
 #[derive(Debug, Clone)]
@@ -469,10 +470,10 @@ impl Session {
     /// Handle multiple contact updates from an action packet batch.
     pub async fn handle_contact_updates(
         &mut self,
-        updates: &[(String, Option<Vec<u8>>, Option<Vec<u8>>, bool)],
+        updates: &[(String, Option<Vec<u8>>, Option<Vec<u8>>, bool, Option<Contact>)],
     ) -> Result<bool> {
         let mut changed = false;
-        for (h, ed, cu, verified) in updates {
+        for (h, ed, cu, verified, _contact) in updates {
             let ed_ref = ed.as_deref();
             let cu_ref = cu.as_deref();
             if self
@@ -552,12 +553,19 @@ impl Session {
     /// - Promote pending shares
     /// - Clear in-use flags for removed shares
     /// Returns true if local state changed and was persisted.
-    pub async fn handle_actionpacket_keys(&mut self, changed_handles: &[String]) -> Result<bool> {
+    pub async fn handle_actionpacket_keys(
+        &mut self,
+        changed_handles: &[String],
+        share_changed: bool,
+    ) -> Result<bool> {
         if !self.key_manager.is_ready() {
             return Ok(false);
         }
 
         let mut changed = false;
+        if share_changed {
+            changed = true;
+        }
 
         // If any changed handle matches share roots or removals, clear in-use flags.
         let changed_set: HashSet<String> = changed_handles.iter().cloned().collect();

@@ -40,11 +40,20 @@ impl Session {
         if let Some(sn) = response.get("sn").and_then(|v| v.as_str()) {
             self.scsn = Some(sn.to_string());
             self.wsc_url = None;
+            self.sc_catchup = true;
+            self.current_seqtag = None;
+            self.current_seqtag_seen = false;
+            self.alerts_catchup_pending = true;
         }
 
         // Parse share keys from "ok" array
         if let Some(ok_array) = response.get("ok").and_then(|v| v.as_array()) {
             self.parse_share_keys(ok_array);
+        }
+
+        // Parse outgoing shares (and pending shares) to seed sharee tracking.
+        if let Some(s_array) = response.get("s").and_then(|v| v.as_array()) {
+            self.ingest_outshares_from_fetch(s_array);
         }
 
         // Parse public links from "ph" array (if present)
@@ -178,6 +187,7 @@ impl Session {
         let node_type = NodeType::from_i64(node_type_int)?;
         let size = json.get("s").and_then(|v| v.as_u64()).unwrap_or(0);
         let timestamp = json.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let file_attr = json.get("fa").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let (name, node_key) = match node_type {
             NodeType::Root => ("Root".to_string(), Vec::new()),
@@ -205,6 +215,7 @@ impl Session {
             key: node_key,
             path: None,
             link: None,
+            file_attr,
         })
     }
 

@@ -4,16 +4,8 @@ use cli::parse_credentials;
 use tracing_subscriber::{fmt, EnvFilter};
 use megalib::api::client::ApiErrorCode;
 use megalib::error::{MegaError, Result};
-use megalib::Session;
+use megalib::SessionHandle;
 use std::io::{self, Write};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tokio::signal;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
-use std::time::Duration;
 
 // const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 FOLDER2 LOCAL1 LOCAL2]
 
@@ -58,42 +50,11 @@ async fn main() -> Result<()> {
 
     println!("Logging in...");
     let session = creds.login().await?;
-    println!("Logged in as: {}", session.email);
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
-    let session = Arc::new(Mutex::new(session));
-    let stop_flag = Arc::new(AtomicBool::new(false));
-
-    {
-        let mut s = session.lock().await;
-        println!("Refreshing filesystem...");
-        s.refresh().await?;
-    }
-
-    // Start SC loop after refresh (SDK-style; requires sn from fetchnodes).
-    let sc_session = session.clone();
-    let stop_for_loop = stop_flag.clone();
-    let sc_handle = tokio::spawn(async move {
-        let mut delay_ms = 1_000u64;
-        let max_delay = 60_000u64;
-        loop {
-            if stop_for_loop.load(Ordering::SeqCst) {
-                break;
-            }
-            let mut guard = sc_session.lock().await;
-            match guard.poll_action_packets_once().await {
-                Ok(_) => delay_ms = 1_000,
-                Err(MegaError::ServerBusy) | Err(MegaError::InvalidResponse) => {
-                    delay_ms = (delay_ms * 2).min(max_delay);
-                }
-                Err(e) => {
-                    eprintln!("SC loop fatal: {e}");
-                    break;
-                }
-            }
-            drop(guard);
-            sleep(Duration::from_millis(delay_ms)).await;
-        }
-    });
+    println!("Refreshing filesystem...");
+    session.refresh().await?;
 
     // Sequence mirrored from mega-sequence.ps1
     ensure_folder(&session, &folder1).await?;
@@ -110,17 +71,12 @@ async fn main() -> Result<()> {
     // upload_and_export(&session, &local1, &folder2).await?;
     // println!("Please verify if both files are in the folder now.");
 
-    println!("Sequence complete. SC loop is still running (Ctrl+C to stop)...");
-    let stop_signal = stop_flag.clone();
-    signal::ctrl_c().await.ok();
-    stop_signal.store(true, Ordering::SeqCst);
-    let _ = sc_handle.await;
+    println!("Sequence complete.");
     Ok(())
 }
 
-async fn ensure_folder(session: &Arc<Mutex<Session>>, path: &str) -> Result<()> {
-    let mut guard = session.lock().await;
-    match guard.mkdir(path).await {
+async fn ensure_folder(session: &SessionHandle, path: &str) -> Result<()> {
+    match session.mkdir(path).await {
         Ok(_) => {
             println!("Created folder: {}", path);
         }
@@ -133,18 +89,17 @@ async fn ensure_folder(session: &Arc<Mutex<Session>>, path: &str) -> Result<()> 
 }
 
 async fn upload_and_export(
-    session: &Arc<Mutex<Session>>,
+    session: &SessionHandle,
     local: &str,
     remote_folder: &str,
 ) -> Result<()> {
-    let mut guard = session.lock().await;
     println!("Uploading {local} to {remote_folder} ...");
     let remote_path = format!("{}/", remote_folder.trim_end_matches('/'));
-    let node = guard.upload(local, &remote_path).await?;
+    let node = session.upload(local, &remote_path).await?;
     println!("Uploaded as {} ({} bytes)", node.name, node.size);
 
     println!("Exporting {} ...", remote_folder);
-    let link = guard.export(remote_folder).await?;
+    let link = session.export(remote_folder).await?;
     println!("Public link: {link}");
     Ok(())
 }

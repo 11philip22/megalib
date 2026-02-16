@@ -30,12 +30,19 @@ async fn main() {
 
     match creds.login().await {
         Ok(session) => {
+            let info = match session.account_info().await {
+                Ok(info) => info,
+                Err(e) => {
+                    eprintln!("ƒ?O Failed to read account info: {}", e);
+                    std::process::exit(1);
+                }
+            };
             println!("ƒo. Login successful!");
             println!();
-            println!("Email: {}", session.email);
-            println!("Name: {}", session.name.as_deref().unwrap_or("(not set)"));
-            println!("User Handle: {}", session.user_handle);
-            println!("Session ID: {}...", &session.session_id()[..20]);
+            println!("Email: {}", info.email);
+            println!("Name: {}", info.name.as_deref().unwrap_or("(not set)"));
+            println!("User Handle: {}", info.user_handle);
+            println!("Session ID: {}...", &info.session_id[..20]);
         }
         Err(e) => {
             eprintln!("ƒ?O Login failed: {}", e);

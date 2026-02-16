@@ -6,7 +6,7 @@
 mod cli;
 
 use cli::{ArgParser, credentials_from_parser, usage_and_exit};
-use megalib::Session;
+use megalib::SessionHandle;
 
 const USAGE: &str = "Usage: cargo run --example export -- --email EMAIL --password PASSWORD --path <PATH> [--proxy PROXY]";
 
@@ -23,13 +23,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("Logging in...");
-    let mut session = if let Some(p) = creds.proxy.as_deref() {
+    let session = if let Some(p) = creds.proxy.as_deref() {
         println!("Using proxy: {}", p);
-        Session::login_with_proxy(&creds.email, &creds.password, p).await?
+        SessionHandle::login_with_proxy(&creds.email, &creds.password, p).await?
     } else {
-        Session::login(&creds.email, &creds.password).await?
+        SessionHandle::login(&creds.email, &creds.password).await?
     };
-    println!("Logged in as: {}", session.email);
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;

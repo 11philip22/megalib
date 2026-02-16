@@ -22,7 +22,7 @@ async fn main() {
     }
 
     println!("Logging in...");
-    let mut session = creds.login().await.expect("Login failed");
+    let session = creds.login().await.expect("Login failed");
 
     println!("Refreshing filesystem...");
     session.refresh().await.expect("Refresh failed");
@@ -39,7 +39,7 @@ async fn main() {
     // List path
     println!("\n📁 Listing: {}\n", path);
 
-    match session.list(&path, false) {
+    match session.list(&path, false).await {
         Ok(nodes) => {
             if nodes.is_empty() {
                 println!("  (empty)");

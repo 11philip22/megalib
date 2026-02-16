@@ -9,7 +9,7 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
-use megalib::Session;
+use megalib::SessionHandle;
 
 const SESSION_FILE: &str = "mega_session";
 const USAGE: &str = "Usage: cargo run --example cached_session -- --email EMAIL --password PASSWORD [--proxy PROXY]";
@@ -23,18 +23,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Try to load cached session first
     println!("Checking for cached session...");
-    let mut session = match Session::load(SESSION_FILE).await? {
+    let session = match if let Some(proxy) = creds.proxy.as_deref() {
+        SessionHandle::load_with_proxy(SESSION_FILE, proxy).await?
+    } else {
+        SessionHandle::load(SESSION_FILE).await?
+    } {
         Some(s) => {
-            println!("✅ Loaded cached session for: {}", s.email);
+            let info = s.account_info().await?;
+            println!("✅ Loaded cached session for: {}", info.email);
             s
         }
         None => {
             println!("No cached session found, logging in...");
             let s = creds.login().await?;
-            println!("Logged in as: {}", s.email);
+            let info = s.account_info().await?;
+            println!("Logged in as: {}", info.email);
 
             // Save session for next time
-            s.save(SESSION_FILE)?;
+            s.save(SESSION_FILE).await?;
             println!("💾 Session saved to {}", SESSION_FILE);
             s
         }
@@ -52,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (quota.used as f64 / quota.total as f64) * 100.0
     );
 
-    let root_items = session.list("/Root", false)?;
+    let root_items = session.list("/Root", false).await?;
     println!("\n📁 Root directory: {} items", root_items.len());
 
     Ok(())

@@ -40,17 +40,18 @@ async fn main() -> Result<()> {
     let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
     println!("Logging in...");
-    let mut session = creds.login().await?;
-    println!("Logged in as: {}", session.email);
+    let session = creds.login().await?;
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
     // Enable parallel uploads (e.g., 4 concurrent chunks)
-    session.set_workers(4);
+    session.set_workers(4).await?;
 
     // Check if remote parent exists
-    if session.stat(&remote_parent).is_none() {
+    if session.stat(&remote_parent).await?.is_none() {
         eprintln!("Error: Remote directory not found: {}", remote_parent);
         std::process::exit(1);
     }
@@ -81,7 +82,8 @@ async fn main() -> Result<()> {
         let _ = std::io::stdout().flush();
 
         true // Continue upload
-    }));
+    }))
+    .await?;
 
     println!(
         "Uploading {} ({:.2} MB) to {}",

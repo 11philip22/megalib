@@ -29,13 +29,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("Logging in...");
-    let mut session = creds.login().await?;
-    println!("Logged in as {}", session.email);
+    let session = creds.login().await?;
+    let info = session.account_info().await?;
+    println!("Logged in as {}", info.email);
 
     println!("Fetching file list...");
     session.refresh().await?;
 
     // Resolve folder path to node
+    let nodes = session.nodes().await?;
     let node = if folder_path.starts_with('/') {
         // Path lookup
         // We need to implement lookup or just iterate.
@@ -49,14 +51,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Let's search by handle if it looks like one (8 chars), else search by name in Root?
 
         // Simple search: Find first folder with matching name or path
-        session.nodes().iter().find(|n| {
+        nodes.iter().find(|n| {
             n.name == folder_path
                 || n.handle == folder_path
                 || n.path().map_or(false, |p| p == folder_path.as_str())
         })
     } else {
         // Handle
-        session.nodes().iter().find(|n| n.handle == folder_path)
+        nodes.iter().find(|n| n.handle == folder_path)
     };
 
     let node = node.ok_or("Folder not found")?;

@@ -6,7 +6,7 @@
 mod cli;
 
 use cli::{ArgParser, Credentials, usage_and_exit};
-use megalib::Session;
+use megalib::SessionHandle;
 
 const USAGE: &str = "Usage: cargo run --example passwd -- --email EMAIL --password CURRENT --new NEW [--proxy PROXY]";
 
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Logging in with old password...");
-    let mut session = creds.login().await?;
+    let session = creds.login().await?;
     println!("Logged in successfully.");
 
     println!("Changing password...");
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Verifying new password...");
     // Try to login with new password
-    let session_new = Session::login(&creds.email, &new_password).await;
+    let session_new = SessionHandle::login(&creds.email, &new_password).await;
     match session_new {
         Ok(_) => println!("Verification successful: Logged in with new password."),
         Err(e) => println!("Verification failed: {}", e),

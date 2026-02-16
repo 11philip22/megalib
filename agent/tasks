@@ -1,0 +1,280 @@
+Action Packet Parity Plan (megalib vs SDK)
+
+Purpose
+- Make megalib’s SC pipeline and action-packet processing match SDK behavior.
+- Provide concrete steps and file-level guidance so a new agent can implement without prior context.
+- Introduce an actor-style session runtime so SC polling happens in the background like the SDK.
+
+Conventions
+- “AP” means action packet from SC/WSC.
+- “seqtag” means the `st` string in action packets (SDK gating).
+- “self AP” means AP with `i` == current session id.
+- “actor” means a single task owns session state; all operations are messages to it.
+
+Phase 0 — Actor Runtime (SDK-like background polling)
+
+0.1 Define actor types and message protocol
+Files
+- megalib/src/session (new module, e.g., actor.rs)
+- megalib/src/lib.rs (exports)
+Steps
+1. Introduce `SessionActor` that owns all mutable session state (current Session fields).
+2. Introduce `SessionHandle` that clones and sends commands via an async channel.
+3. Define a `SessionCommand` enum for API operations:
+   - Refresh, List, Stat, Mkdir, Upload, Export, Move/Rename/Delete, Quota, etc.
+   - Each command carries a `oneshot` sender for result.
+Acceptance
+- All session operations can be expressed as actor commands.
+
+0.2 Move SC polling into the actor loop
+Files
+- megalib/src/session/actor.rs (new)
+Steps
+1. Actor event loop uses `select!` to process:
+   - incoming user commands
+   - SC polling ticks
+2. SC polling is continuous once `scsn` is known:
+   - no user code must call `poll_action_packets_once()`.
+3. Polling never holds a mutex (actor owns state).
+Acceptance
+- SC/WSC polling runs without user intervention.
+
+0.3 Seqtag waiters in the actor
+Files
+- megalib/src/session/actor.rs
+Steps
+1. Add `seqtag_waiters: HashMap<String, Vec<oneshot::Sender<()>>>` in actor state.
+2. When a mutating command returns an `st`, register a waiter and delay reply until resolved.
+3. When AP with `st` arrives, resolve waiters and unblock the original command.
+Acceptance
+- Mutations complete only after matching AP, without blocking SC polling.
+
+0.4 Migration strategy (non-breaking)
+Files
+- megalib/src/session/session.rs
+- megalib/examples
+Steps
+1. Add `Session::spawn_actor()` → returns `SessionHandle`.
+2. Keep `Session` API for now; update examples to use `SessionHandle`.
+3. Mark direct `poll_action_packets_once()` as debug-only / legacy.
+Acceptance
+- Existing code still compiles, but actor path is available and preferred.
+
+Phase 1 — SC Pipeline Parity (transport + sequencing)
+
+1.1 Extend SC poll result to include `ir`
+Files
+- megalib/src/api/client.rs
+Steps
+1. Add a struct (or tuple) to return `ir` from `poll_sc`.
+   - Parse `ir` from the JSON response: `ir == 1` means “more APs pending”.
+   - Preserve existing parsing of `sn`, `w`, and `a`.
+2. Update callers (`Session::poll_action_packets_once`) to use `ir`.
+Acceptance
+- A single SC response with `ir:1` triggers additional polls until `ir` is false.
+
+1.2 Add SC state fields to Session
+Files
+- megalib/src/session/session.rs
+Steps
+1. Add fields to `Session`:
+   - `sc_catchup: bool` (true right after `refresh()` or any SC reset).
+   - `current_seqtag: Option<String>`.
+   - `current_seqtag_seen: bool`.
+2. Initialize defaults:
+   - `sc_catchup = true` when `refresh()` sets `scsn`.
+   - `current_seqtag = None`, `current_seqtag_seen = false` on new session.
+Acceptance
+- After `refresh()`, session begins in “catchup mode”.
+
+1.3 Add “self AP” suppression
+Files
+- megalib/src/session/session.rs
+- all mutating API call sites (mkdir, upload finalize, export, delete, move, rename, share, etc.)
+Steps
+1. Add `"i": <sessionid>` to outgoing mutating commands (SDK `notself()` behavior).
+2. In AP processing, if `i` equals `session_id`, skip the packet.
+3. Preserve SDK exception:
+   - Still process self APs with `a == "d"` or `a == "t"` (move sequences) to keep tree consistent.
+Acceptance
+- Self-originating APs no longer cause double application except for move pairs.
+
+1.4 Implement sequence-tag gating (`st`)
+Files
+- megalib/src/session/session.rs
+- mutating operations in:
+  - megalib/src/fs/operations/dir_ops.rs (mkdir)
+  - megalib/src/fs/operations/upload.rs (putnodes)
+  - megalib/src/fs/operations/export.rs (s2)
+  - any delete/move/rename APIs
+Steps
+1. Add a helper to extract seqtag from command responses:
+   - Many write ops return `[ "<st>", {...} ]` (see existing logs like `"!GUk2$A"`).
+   - Store this string in `current_seqtag` and set `current_seqtag_seen = false`.
+2. In AP dispatch, detect `st` on packets and mark `current_seqtag_seen = true` when it matches.
+3. Add a helper `wait_for_seqtag()`:
+   - Poll SC until the expected seqtag is seen or a timeout elapses.
+   - Use the same SC loop (respects `ir` batches).
+4. After any mutating request, call `wait_for_seqtag()` before returning.
+Acceptance
+- After a mutating command, the tree is consistent without ad‑hoc sleeps.
+
+1.5 Catch-up path (`sc/wsc`)
+Files
+- megalib/src/api/client.rs
+- megalib/src/session/session.rs
+Steps
+1. Add a “catchup” mode to SC polling:
+   - If `sc_catchup == true`, poll `sc/wsc` (SDK path).
+   - Switch back to `wsc` once `ir` batches end.
+2. Keep honoring `w` from response as the new base URL.
+Acceptance
+- First AP cycle after `refresh()` uses `sc/wsc`, then normal `wsc`.
+
+Phase 2 — Share Action Packets (`s` / `s2`)
+
+2.1 Add AP handler for `s` / `s2`
+Files
+- megalib/src/session/session.rs
+Steps
+1. Add a new handler invoked by `handle_actionpacket_nodes` for `a == "s"` and `a == "s2"`.
+2. Parse fields used in SDK `sc_shares`:
+   - `n` (node handle), `o` (owner), `u` (target), `p` (pending), `k`, `ok`, `ha`, `r`, `ts`, `op`, `okd`, `ou`.
+3. Determine share direction:
+   - Outbound if `o == self.user_handle`.
+   - Inbound otherwise.
+Acceptance
+- `s`/`s2` packets are routed to a dedicated handler.
+
+2.2 Decrypt and persist share keys
+Files
+- megalib/src/session/session.rs
+- megalib/src/crypto/rsa.rs
+Steps
+1. If `ok` present and outbound, decrypt with master key (AES-ECB).
+2. If `k` present and looks RSA‑encrypted:
+   - Base64url decode and RSA decrypt using `self.rsa_key`.
+3. Persist:
+   - `KeyManager::add_share_key_with_flags` (trusted + in_use when appropriate).
+   - Update `Session.share_keys`.
+Acceptance
+- Share keys appear in `share_keys` after APs without a full refresh.
+
+2.3 Pending share handling
+Files
+- megalib/src/crypto/key_manager.rs
+- megalib/src/session/keys.rs
+Steps
+1. If `p` (pending contact handle) exists, add to pending out‑shares:
+   - Use `add_pending_out_email` or `add_pending_out_user_handle` based on packet data.
+2. If inbound share key arrives encrypted, add to pending in‑shares.
+3. After AP batch, call `promote_pending_shares()` to resolve keys.
+Acceptance
+- Pending shares resolve after AP processing, matching SDK behavior.
+
+2.4 In‑use and trusted flags
+Files
+- megalib/src/session/keys.rs
+- megalib/src/crypto/key_manager.rs
+Steps
+1. When share is active (r >= 0), set IN_USE and TRUSTED.
+2. On share removal (r == ACCESS_UNKNOWN):
+   - If last sharee leaves, clear IN_USE (SDK `sc_shares` logic).
+Acceptance
+- IN_USE flag matches SDK after add/remove of sharees.
+
+Phase 3 — User Attribute APs (`ua`)
+
+3.1 Parse user attribute updates
+Files
+- megalib/src/session/session.rs
+Steps
+1. Parse `ua` array and `v` array from AP.
+2. If array sizes match, compare each version to `user_attr_versions`.
+3. On mismatch, mark attribute as stale in cache.
+Acceptance
+- Attribute version changes detected without a full refresh.
+
+3.2 Refetch relevant attributes
+Files
+- megalib/src/session/session.rs
+Steps
+1. For changed attrs, call `get_user_attribute_raw`:
+   - Priority: `^!keys`, `*keyring`, `*~usk`, `*~jscd`, `+puCu255`, `+puEd255`, `+sigCu255`, `+sigPubk`.
+2. If the seqtag matches our own mutation, skip refetch to avoid redundant work.
+Acceptance
+- Key attributes refresh automatically on external change.
+
+Phase 4 — File Attribute APs (`fa`)
+
+4.1 Store file attributes on nodes
+Files
+- megalib/src/fs/node.rs
+- megalib/src/fs/operations/tree.rs
+Steps
+1. Add `file_attr: Option<String>` to `Node`.
+2. Populate `file_attr` when parsing nodes (`f` response) if `fa` is present.
+Acceptance
+- File attributes survive refresh.
+
+4.2 Handle `fa` APs
+Files
+- megalib/src/session/session.rs
+Steps
+1. Add handler for `a == "fa"`:
+   - Extract node handle and `fa`.
+   - Update the node in cache.
+2. Mark node tree changed if `fa` is new or updated.
+Acceptance
+- `fa` updates appear in cached nodes without refresh.
+
+Phase 5 — Contact APs (`c`)
+
+5.1 Minimal contact model
+Files
+- megalib/src/session/session.rs (new struct + field)
+Steps
+1. Add `contacts: HashMap<String, Contact>` to Session.
+2. Contact fields: handle, email, status, last_updated.
+3. Parse `c` AP payload to update/insert contacts.
+Acceptance
+- Contact updates don’t get lost (needed for share flows and key promotion).
+
+5.2 Tie contact updates to key handling
+Files
+- megalib/src/session/keys.rs
+Steps
+1. When contact is updated/removed, ensure authring flags and pending shares are consistent.
+2. If a contact is deleted, remove any pending outshares to that user.
+Acceptance
+- Pending share list stays consistent after contact changes.
+
+Phase 6 — Optional SDK Extras (follow-up only if needed)
+
+6.1 Upgrade/payment APs (`psts`, `ftr`)
+Files
+- megalib/src/session/session.rs
+Steps
+1. Parse APs and surface via callbacks or logs.
+2. No-op is acceptable unless you want alert parity.
+
+6.2 User alerts via `sc?c=50`
+Files
+- megalib/src/api/client.rs
+- megalib/src/session/session.rs
+Steps
+1. Poll `sc?c=50` after state is current (SDK begins after catchup).
+2. Store alerts in session or surface via callback.
+
+Notes for Implementation
+- Use SDK references for behavior:
+  - `sdk/src/megaclient.cpp`: `handleScChannel`, `sc_procActionPacketWithoutCommonTags`, `sc_shares`, `sc_userattr`, `sc_fileattr`.
+  - `sdk/src/json.cpp`: `JSONWriter::notself`.
+- Keep internal API shape stable: avoid changing public Rust APIs unless needed.
+
+Parity Enforcement Checklist (Background Polling)
+- All user-facing operations use `SessionHandle` (actor) and do not call `poll_action_packets_once()` directly.
+- There is exactly one SC poll loop per session, running automatically after `refresh()`.
+- No long-poll or network I/O occurs while holding any lock (actor-only ownership).
+- Every mutating command registers a seqtag waiter and completes only after matching `st`.
+- `ir:1` responses are fully drained before marking the poll cycle complete.

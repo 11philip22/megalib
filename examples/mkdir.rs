@@ -15,8 +15,9 @@ async fn main() -> Result<()> {
     let target = creds.positionals[0].clone();
 
     println!("Logging in...");
-    let mut session = creds.login().await?;
-    println!("Logged in as: {}", session.email);
+    let session = creds.login().await?;
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;

@@ -23,14 +23,14 @@ async fn main() {
     }
 
     println!("Logging in...");
-    let mut session = creds.login().await.expect("Login failed");
+    let session = creds.login().await.expect("Login failed");
 
     println!("Refreshing filesystem...");
     session.refresh().await.expect("Refresh failed");
 
     println!("Getting info for: {}", path);
-    match session.stat(&path) {
-        Some(node) => {
+    match session.stat(&path).await {
+        Ok(Some(node)) => {
             println!("\n🔍 Node Information:");
             println!("  Name:          {}", node.name);
             println!("  Type:          {:?}", node.node_type);
@@ -44,8 +44,12 @@ async fn main() {
                 println!("  Full Path:     {}", p);
             }
         }
-        None => {
+        Ok(None) => {
             eprintln!("❌ Node not found: {}", path);
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to fetch node: {}", e);
             process::exit(1);
         }
     }

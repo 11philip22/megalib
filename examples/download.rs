@@ -7,8 +7,6 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
-use std::fs::File;
-use std::io::BufWriter;
 
 const USAGE: &str = "Usage: cargo run --example download -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
 
@@ -22,8 +20,9 @@ async fn main() -> Result<()> {
     let local_path = creds.positionals[1].clone();
 
     println!("Logging in...");
-    let mut session = creds.login().await?;
-    println!("Logged in as: {}", session.email);
+    let session = creds.login().await?;
+    let info = session.account_info().await?;
+    println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
@@ -35,6 +34,7 @@ async fn main() -> Result<()> {
 
     let node = session
         .stat(&remote_path)
+        .await?
         .ok_or_else(|| {
             megalib::error::MegaError::Custom(format!("File not found: {}", remote_path))
         })?
@@ -43,12 +43,7 @@ async fn main() -> Result<()> {
     println!("Found node: {} ({} bytes)", node.name, node.size);
 
     println!("Downloading to: {}", local_path);
-    let file = File::create(&local_path).map_err(|e| {
-        megalib::error::MegaError::Custom(format!("Failed to create local file: {}", e))
-    })?;
-    let mut writer = BufWriter::new(file);
-
-    session.download(&node, &mut writer).await?;
+    session.download_to_file(&node, &local_path).await?;
 
     println!("Download complete!");
 

@@ -71,6 +71,8 @@ pub struct Node {
     pub(crate) path: Option<String>,
     /// Public link handle (set by export)
     pub(crate) link: Option<String>,
+    /// File attributes (fa)
+    pub(crate) file_attr: Option<String>,
 }
 
 impl Node {
@@ -208,6 +210,7 @@ mod tests {
             key: vec![],
             path: None,
             link: None,
+            file_attr: None,
         };
 
         assert!(file_node.is_file());
@@ -224,6 +227,7 @@ mod tests {
             key: vec![],
             path: None,
             link: None,
+            file_attr: None,
         };
 
         assert!(!folder_node.is_file());
@@ -242,6 +246,7 @@ mod tests {
             key: vec![1, 2, 3, 4], // Fake key
             path: None,
             link: Some("LINK_HANDLE".to_string()),
+            file_attr: None,
         };
 
         assert!(node.is_exported());

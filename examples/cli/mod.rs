@@ -80,11 +80,11 @@ pub fn credentials_from_parser(parser: &mut ArgParser, usage: &'static str) -> C
 
 impl Credentials {
     #[allow(dead_code)]
-    pub async fn login(&self) -> megalib::error::Result<megalib::Session> {
+    pub async fn login(&self) -> megalib::error::Result<megalib::SessionHandle> {
         if let Some(proxy) = &self.proxy {
-            megalib::Session::login_with_proxy(&self.email, &self.password, proxy).await
+            megalib::SessionHandle::login_with_proxy(&self.email, &self.password, proxy).await
         } else {
-            megalib::Session::login(&self.email, &self.password).await
+            megalib::SessionHandle::login(&self.email, &self.password).await
         }
     }
 }
