@@ -64,14 +64,14 @@ tokio = { version = "1", features = ["full"] }
 Minimal login + list to confirm everything works:
 
 ```rust
-use megalib::Session;
+use megalib::SessionHandle;
 
 #[tokio::main]
 async fn main() -> megalib::Result<()> {
-    let mut session = Session::login("user@example.com", "password").await?;
+    let session = SessionHandle::login("user@example.com", "password").await?;
     session.refresh().await?;
 
-    for node in session.list("/Root", false)? {
+    for node in session.list("/Root", false).await? {
         println!("{} ({} bytes)", node.name, node.size);
     }
 

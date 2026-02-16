@@ -24,14 +24,14 @@
 //! ## Example: Basic Usage
 //!
 //! ```no_run
-//! use megalib::Session;
+//! use megalib::SessionHandle;
 //!
 //! # async fn example() -> megalib::Result<()> {
 //! // Login
-//! let mut session = Session::login("user@example.com", "password").await?;
+//! let session = SessionHandle::login("user@example.com", "password").await?;
 //!
 //! // List files in root
-//! let files = session.list("/", false)?;
+//! let files = session.list("/", false).await?;
 //! for file in files {
 //!     println!("{} ({} bytes)", file.name, file.size);
 //! }
@@ -40,7 +40,7 @@
 //! session.upload_resumable("local_file.txt", "/Root").await?;
 //!
 //! // Download a file to local disk
-//! if let Some(node) = session.stat("/Root/remote_file.txt").cloned() {
+//! if let Some(node) = session.stat("/Root/remote_file.txt").await? {
 //!     session.download_to_file(&node, "downloaded_file.txt").await?;
 //! }
 //!
@@ -86,4 +86,4 @@ pub use public::{
     PublicFile, PublicFolder, download_public_file, get_public_file_info, open_folder,
     parse_folder_link, parse_mega_link,
 };
-pub use session::{RegistrationState, Session, SessionHandle, AccountInfo, register, verify_registration};
+pub use session::{RegistrationState, SessionHandle, AccountInfo, register, verify_registration};

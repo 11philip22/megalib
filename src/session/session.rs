@@ -24,7 +24,7 @@ use tokio::time::{sleep, timeout};
 /// MEGA user session.
 ///
 /// This holds all authentication state needed for API requests.
-pub struct Session {
+pub(crate) struct Session {
     /// API client for making requests
     pub(crate) api: ApiClient,
     /// Session ID
@@ -478,7 +478,7 @@ impl Session {
     ///
     /// Returns true if any local state changed (e.g., ^!keys or authrings updated).
     /// This is legacy; prefer the Session actor which polls in the background.
-    pub async fn poll_action_packets_once(&mut self) -> Result<bool> {
+    pub(crate) async fn poll_action_packets_once(&mut self) -> Result<bool> {
         let (changed, _) = self.poll_action_packets_once_with_seqtags().await?;
         Ok(changed)
     }
@@ -600,7 +600,7 @@ impl Session {
     ///
     /// The `should_stop` predicate is evaluated after each poll to allow
     /// embedding applications to terminate the loop.
-    pub async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
+    pub(crate) async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
     where
         F: FnMut() -> bool,
     {
@@ -1357,7 +1357,7 @@ impl Session {
     }
 
     /// Spawn a background actor that owns this session and polls SC automatically.
-    pub fn spawn_actor(self) -> crate::session::actor::SessionHandle {
+    pub(crate) fn spawn_actor(self) -> crate::session::actor::SessionHandle {
         crate::session::actor::SessionHandle::from_session(self)
     }
 
