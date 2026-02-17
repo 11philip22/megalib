@@ -6,6 +6,7 @@ mod device_id;
 pub mod keys;
 pub mod registration;
 mod session;
+mod action_packets;
 
 pub use actor::{AccountInfo, SessionHandle};
 pub use keys::ContactPublicKeys;
