@@ -5,6 +5,7 @@ mod auth;
 mod device_id;
 pub mod keys;
 pub mod registration;
+mod sharing;
 mod session;
 mod action_packets;
 
