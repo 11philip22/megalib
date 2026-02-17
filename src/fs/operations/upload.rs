@@ -13,7 +13,7 @@ use crate::crypto::aes::{
     aes128_cbc_encrypt, aes128_ctr_encrypt, chunk_mac_calculate, meta_mac_calculate,
 };
 use crate::crypto::keys::pack_node_key;
-use crate::api::client::ApiErrorCode;
+use crate::api::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::fs::upload_state::UploadState;
@@ -558,7 +558,7 @@ impl Session {
                         let code = response_text.parse::<i64>().unwrap_or(-999);
                         return Err(MegaError::ApiError {
                             code: code as i32,
-                            message: crate::api::client::ApiErrorCode::from(code)
+                            message: crate::api::ApiErrorCode::from(code)
                                 .description()
                                 .to_string(),
                         });
@@ -733,7 +733,7 @@ impl Session {
                 let code = response_text.parse::<i64>().unwrap_or(-999);
                 return Err(MegaError::ApiError {
                     code: code as i32,
-                    message: crate::api::client::ApiErrorCode::from(code)
+                    message: crate::api::ApiErrorCode::from(code)
                         .description()
                         .to_string(),
                 });

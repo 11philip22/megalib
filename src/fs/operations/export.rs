@@ -117,7 +117,7 @@ impl Session {
             if let Some(err) = share_resp.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
                     code: err as i32,
-                    message: crate::api::client::ApiErrorCode::from(err)
+                    message: crate::api::ApiErrorCode::from(err)
                         .description()
                         .to_string(),
                 });
@@ -165,7 +165,7 @@ impl Session {
             if let Some(err) = response.as_i64().filter(|v| *v < 0) {
                 return Err(MegaError::ApiError {
                     code: err as i32,
-                    message: crate::api::client::ApiErrorCode::from(err)
+                    message: crate::api::ApiErrorCode::from(err)
                         .description()
                         .to_string(),
                 });

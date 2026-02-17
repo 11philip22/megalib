@@ -2,7 +2,7 @@ mod cli;
 
 use cli::parse_credentials;
 use tracing_subscriber::{fmt, EnvFilter};
-use megalib::api::client::ApiErrorCode;
+use megalib::api::ApiErrorCode;
 use megalib::error::{MegaError, Result};
 use megalib::SessionHandle;
 use std::io::{self, Write};

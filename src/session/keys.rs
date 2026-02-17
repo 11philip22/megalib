@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use serde_json::json;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::api::client::ApiErrorCode;
+use crate::api::ApiErrorCode;
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::{aes128_ecb_decrypt, aes128_ecb_encrypt};
 use crate::crypto::key_manager::{KeyManager, PendingUid};

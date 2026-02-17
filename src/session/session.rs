@@ -186,7 +186,7 @@ impl Session {
             for item in arr {
                 if let Some(code) = item.as_i64() {
                     if code < 0 {
-                        let error_code = crate::api::client::ApiErrorCode::from(code);
+                        let error_code = crate::api::ApiErrorCode::from(code);
                         return Err(MegaError::ApiError {
                             code: code as i32,
                             message: error_code.description().to_string(),
@@ -1663,7 +1663,7 @@ impl Session {
             .await?;
 
         if let Some(err) = resp.as_i64().filter(|v| *v < 0) {
-            let code = crate::api::client::ApiErrorCode::from(err);
+            let code = crate::api::ApiErrorCode::from(err);
             return Err(MegaError::ApiError {
                 code: err as i32,
                 message: code.description().to_string(),
@@ -1953,7 +1953,7 @@ impl Session {
         if let Some(err_code) = response.as_i64() {
             if err_code < 0 {
                 // Fix: Fully qualified path to ApiErrorCode
-                let error_code = crate::api::client::ApiErrorCode::from(err_code);
+                let error_code = crate::api::ApiErrorCode::from(err_code);
                 return Err(MegaError::ApiError {
                     code: err_code as i32,
                     message: error_code.description().to_string(),

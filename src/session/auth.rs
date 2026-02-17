@@ -401,7 +401,7 @@ impl Session {
         if let Some(err_code) = response.as_i64() {
             if err_code < 0 {
                 // Fix: Fully qualified path to ApiErrorCode
-                let error_code = crate::api::client::ApiErrorCode::from(err_code);
+                let error_code = crate::api::ApiErrorCode::from(err_code);
                 return Err(MegaError::ApiError {
                     code: err_code as i32,
                     message: error_code.description().to_string(),
