@@ -61,8 +61,13 @@ impl AuthRing {
                 } else {
                     AuthState::Seen
                 };
-                self.entries
-                    .insert(handle_b64.to_string(), AuthEntry { fingerprint: fp, state });
+                self.entries.insert(
+                    handle_b64.to_string(),
+                    AuthEntry {
+                        fingerprint: fp,
+                        state,
+                    },
+                );
                 state
             }
         }
@@ -147,7 +152,13 @@ impl AuthRing {
                 _ => AuthState::Seen,
             };
             let fp = value[1..].to_vec();
-            ring.entries.insert(tag, AuthEntry { fingerprint: fp, state });
+            ring.entries.insert(
+                tag,
+                AuthEntry {
+                    fingerprint: fp,
+                    state,
+                },
+            );
         }
         ring
     }
@@ -156,7 +167,11 @@ impl AuthRing {
 /// Convenience: parse handle from email if possible (SDK sometimes uses emails in pending data).
 pub fn normalize_handle(input: &str) -> Option<String> {
     // Handle is 11-char base64url; if input decodes to 8 bytes, accept; else None.
-    if input.len() == 11 && base64url_decode(input).map(|v| v.len() == 8).unwrap_or(false) {
+    if input.len() == 11
+        && base64url_decode(input)
+            .map(|v| v.len() == 8)
+            .unwrap_or(false)
+    {
         Some(input.to_string())
     } else {
         None

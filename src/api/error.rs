@@ -136,16 +136,31 @@ mod tests {
         assert_eq!(ApiErrorCode::TooManyIps.description(), "Too many IPs");
         assert_eq!(ApiErrorCode::AccessDenied.description(), "Access denied");
         assert_eq!(ApiErrorCode::Exist.description(), "Resource already exists");
-        assert_eq!(ApiErrorCode::NotExist.description(), "Resource does not exist");
+        assert_eq!(
+            ApiErrorCode::NotExist.description(),
+            "Resource does not exist"
+        );
         assert_eq!(ApiErrorCode::Circular.description(), "Circular linking");
-        assert_eq!(ApiErrorCode::AccessViolation.description(), "Access violation");
-        assert_eq!(ApiErrorCode::AppKey.description(), "Application key required");
+        assert_eq!(
+            ApiErrorCode::AccessViolation.description(),
+            "Access violation"
+        );
+        assert_eq!(
+            ApiErrorCode::AppKey.description(),
+            "Application key required"
+        );
         assert_eq!(ApiErrorCode::Expired.description(), "Session expired");
         assert_eq!(ApiErrorCode::NotConfirmed.description(), "Not confirmed");
         assert_eq!(ApiErrorCode::Blocked.description(), "Resource blocked");
         assert_eq!(ApiErrorCode::OverQuota.description(), "Over quota");
-        assert_eq!(ApiErrorCode::TempUnavail.description(), "Temporarily unavailable");
-        assert_eq!(ApiErrorCode::TooManyConnections.description(), "Too many connections");
+        assert_eq!(
+            ApiErrorCode::TempUnavail.description(),
+            "Temporarily unavailable"
+        );
+        assert_eq!(
+            ApiErrorCode::TooManyConnections.description(),
+            "Too many connections"
+        );
         assert_eq!(ApiErrorCode::Unknown.description(), "Unknown error");
     }
 }

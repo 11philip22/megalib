@@ -74,7 +74,11 @@ pub struct Warnings(pub Vec<(String, Vec<u8>)>);
 
 impl Warnings {
     pub fn set_cv(&mut self, enabled: bool) {
-        let val = if enabled { b"1".to_vec() } else { b"0".to_vec() };
+        let val = if enabled {
+            b"1".to_vec()
+        } else {
+            b"0".to_vec()
+        };
         if let Some(entry) = self.0.iter_mut().find(|(k, _)| k == "cv") {
             entry.1 = val;
         } else {
@@ -456,8 +460,7 @@ impl KeyManager {
     pub fn remove_share_key(&mut self, handle_b64: &str) -> bool {
         if let Some(handle) = Self::decode_handle(handle_b64) {
             let before = self.share_keys.len();
-            self.share_keys
-                .retain(|e| e.handle != handle);
+            self.share_keys.retain(|e| e.handle != handle);
             return self.share_keys.len() != before;
         }
         false
@@ -781,18 +784,16 @@ impl KeyManager {
         let mut out = Vec::new();
         for (tag, value) in map {
             // Legacy edge case: SDK used to store pending inshare value as base64 string.
-            let decoded_value = if !value.is_empty()
-                && value.iter().all(|b| b.is_ascii())
-                && value.len() > 12
-            {
-                if let Ok(txt) = std::str::from_utf8(&value) {
-                    base64url_decode(txt).unwrap_or(value.clone())
+            let decoded_value =
+                if !value.is_empty() && value.iter().all(|b| b.is_ascii()) && value.len() > 12 {
+                    if let Ok(txt) = std::str::from_utf8(&value) {
+                        base64url_decode(txt).unwrap_or(value.clone())
+                    } else {
+                        value.clone()
+                    }
                 } else {
                     value.clone()
-                }
-            } else {
-                value.clone()
-            };
+                };
 
             if decoded_value.len() < 8 {
                 continue;

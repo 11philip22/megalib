@@ -4,9 +4,9 @@ use rand::RngCore;
 use serde_json::json;
 
 use super::utils::normalize_path;
+use crate::api::ApiErrorCode;
 use crate::base64::base64url_encode;
 use crate::crypto::aes::aes128_cbc_encrypt;
-use crate::api::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::session::Session;
@@ -133,7 +133,9 @@ impl Session {
             return Ok(node.clone());
         }
 
-        Err(MegaError::Custom("Folder creation pending action packets".to_string()))
+        Err(MegaError::Custom(
+            "Folder creation pending action packets".to_string(),
+        ))
     }
 
     /// Remove a file or directory.

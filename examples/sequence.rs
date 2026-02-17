@@ -1,19 +1,19 @@
 mod cli;
 
 use cli::parse_credentials;
-use tracing_subscriber::{fmt, EnvFilter};
+use megalib::SessionHandle;
 use megalib::api::ApiErrorCode;
 use megalib::error::{MegaError, Result};
-use megalib::SessionHandle;
 use std::io::{self, Write};
+use tracing_subscriber::{EnvFilter, fmt};
 
 const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 FOLDER2 LOCAL1 LOCAL2]
 
 Defaults: FOLDER1=/Root/lol1 FOLDER2=/Root/lol2 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
     fmt().with_env_filter(filter).with_target(false).init();
 }
 
@@ -58,7 +58,9 @@ async fn main() -> Result<()> {
     wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.lock")?;
 
     upload_and_export(&session, &local2, &folder1).await?;
-    wait_for_enter("Check if both files are in the folder and login to upgrade encryption. Then press Enter to continue")?;
+    wait_for_enter(
+        "Check if both files are in the folder and login to upgrade encryption. Then press Enter to continue",
+    )?;
 
     ensure_folder(&session, &folder2).await?;
     upload_and_export(&session, &local2, &folder2).await?;

@@ -1,12 +1,12 @@
 //! MEGA API client with request/response handling.
 
+use super::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::http::HttpClient;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tracing::{info_span, trace};
-use super::ApiErrorCode;
 
 async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
@@ -387,8 +387,8 @@ impl ApiClient {
         url.push_str(sid);
 
         let response_text = self.http.post(&url, "").await?;
-        let resp: Value = serde_json::from_str(&response_text)
-            .map_err(|_| MegaError::InvalidResponse)?;
+        let resp: Value =
+            serde_json::from_str(&response_text).map_err(|_| MegaError::InvalidResponse)?;
 
         if let Some(code) = resp.as_i64() {
             if code == 0 {
@@ -432,8 +432,8 @@ impl ApiClient {
             .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
         let url = format!("{}&sid={}", SC_ALERTS_URL, sid);
         let response_text = self.http.post(&url, "").await?;
-        let resp: Value = serde_json::from_str(&response_text)
-            .map_err(|_| MegaError::InvalidResponse)?;
+        let resp: Value =
+            serde_json::from_str(&response_text).map_err(|_| MegaError::InvalidResponse)?;
 
         if let Some(code) = resp.as_i64() {
             let error_code = ApiErrorCode::from(code);
@@ -449,7 +449,10 @@ impl ApiClient {
             .and_then(|v| v.as_array())
             .map(|arr| arr.clone())
             .unwrap_or_default();
-        let lsn = obj.get("lsn").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let lsn = obj
+            .get("lsn")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         Ok((alerts, lsn))
     }
 

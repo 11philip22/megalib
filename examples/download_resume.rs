@@ -56,21 +56,22 @@ async fn main() -> Result<()> {
 
     // Set up progress callback
     let file_name = node.name.clone();
-    session.watch_status(Box::new(move |progress: &TransferProgress| {
-        let percent = progress.percent();
-        let done_mb = progress.done as f64 / 1_000_000.0;
-        let total_mb = progress.total as f64 / 1_000_000.0;
+    session
+        .watch_status(Box::new(move |progress: &TransferProgress| {
+            let percent = progress.percent();
+            let done_mb = progress.done as f64 / 1_000_000.0;
+            let total_mb = progress.total as f64 / 1_000_000.0;
 
-        print!(
-            "\r[{:>6.2}%] {:.2} MB / {:.2} MB - {}",
-            percent, done_mb, total_mb, file_name
-        );
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
+            print!(
+                "\r[{:>6.2}%] {:.2} MB / {:.2} MB - {}",
+                percent, done_mb, total_mb, file_name
+            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
 
-        true // Continue download
-    }))
-    .await?;
+            true // Continue download
+        }))
+        .await?;
 
     // Check if partial file exists
     let local_path_buf = std::path::Path::new(&local_path);

@@ -19,7 +19,10 @@ pub(super) fn device_id_hash() -> Option<String> {
 fn device_id_bytes() -> Option<Vec<u8>> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm
-        .open_subkey_with_flags("Software\\Microsoft\\Cryptography", KEY_READ | KEY_WOW64_64KEY)
+        .open_subkey_with_flags(
+            "Software\\Microsoft\\Cryptography",
+            KEY_READ | KEY_WOW64_64KEY,
+        )
         .ok()?;
     let s: String = key.get_value("MachineGuid").ok()?;
     if s.is_empty() {
@@ -42,7 +45,10 @@ fn device_id_bytes() -> Option<Vec<u8>> {
     }
 
     let mut uuid = [0u8; 16];
-    let ts = Timespec { tv_sec: 1, tv_nsec: 0 };
+    let ts = Timespec {
+        tv_sec: 1,
+        tv_nsec: 0,
+    };
     let rc = unsafe { gethostuuid(uuid.as_mut_ptr(), &ts) };
     if rc != 0 {
         return None;
@@ -91,11 +97,7 @@ fn device_id_bytes() -> Option<Vec<u8>> {
     if data.last() == Some(&b'\n') {
         data.pop();
     }
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 #[cfg(any(target_os = "ios", target_os = "android"))]

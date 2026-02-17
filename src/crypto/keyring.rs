@@ -243,8 +243,8 @@ pub fn encrypt_tlv_records(
     let mut iv = vec![0u8; iv_len];
     rand::thread_rng().fill_bytes(&mut iv);
 
-    let cipher = Aes128Gcm::new_from_slice(master_key)
-        .map_err(|e| MegaError::CryptoError(e.to_string()))?;
+    let cipher =
+        Aes128Gcm::new_from_slice(master_key).map_err(|e| MegaError::CryptoError(e.to_string()))?;
     let mut ct = cipher
         .encrypt(aes_gcm::Nonce::from_slice(&iv), plain.as_ref())
         .map_err(|_| MegaError::CryptoError("GCM encrypt failed".into()))?;

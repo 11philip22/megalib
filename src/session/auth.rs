@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::api::ApiClient;
@@ -156,10 +156,9 @@ impl Session {
 
         let mut upgrade_outcome = UpgradeOutcome::NotNeeded;
         if login_variant == 1 {
-            upgrade_outcome =
-                Self::attempt_account_upgrade(&mut api, password, &master_key)
-                    .await
-                    .unwrap_or(UpgradeOutcome::Failed);
+            upgrade_outcome = Self::attempt_account_upgrade(&mut api, password, &master_key)
+                .await
+                .unwrap_or(UpgradeOutcome::Failed);
 
             let mut batch = Vec::new();
             if matches!(upgrade_outcome, UpgradeOutcome::Upgraded) {
@@ -174,7 +173,7 @@ impl Session {
         } else {
             api.request_batch(vec![
                 json!({"a": "stp"}),
-                json!({"a": "uq", "pro": 1, "src": -1, "v": 2})
+                json!({"a": "uq", "pro": 1, "src": -1, "v": 2}),
             ])
             .await?;
         }
@@ -412,10 +411,7 @@ impl Session {
         Ok(())
     }
 
-    pub(super) async fn login_with_session(
-        session_b64: &str,
-        proxy: Option<&str>,
-    ) -> Result<Self> {
+    pub(super) async fn login_with_session(session_b64: &str, proxy: Option<&str>) -> Result<Self> {
         let blob = Session::parse_session_blob(session_b64)?;
 
         let mut api = match proxy {
@@ -458,7 +454,8 @@ impl Session {
             master_key = aes128_ecb_decrypt_block(&blob.master_key, &sek);
         }
 
-        let rsa_key = if let Some(privk_b64) = login_response.get("privk").and_then(|v| v.as_str()) {
+        let rsa_key = if let Some(privk_b64) = login_response.get("privk").and_then(|v| v.as_str())
+        {
             decrypt_private_key(privk_b64, &master_key)?
         } else {
             MegaRsaKey {
@@ -482,10 +479,7 @@ impl Session {
             .as_str()
             .ok_or(MegaError::InvalidResponse)?
             .to_string();
-        let user_email = user_info["email"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let user_email = user_info["email"].as_str().unwrap_or_default().to_string();
         let user_name = user_info["name"].as_str().map(|s| s.to_string());
         let scsn = user_info
             .get("sn")

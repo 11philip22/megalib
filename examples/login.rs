@@ -6,14 +6,14 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 const USAGE: &str =
     "Usage: cargo run --example login -- --email EMAIL --password PASSWORD [--proxy PROXY]";
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
     fmt().with_env_filter(filter).with_target(false).init();
 }
 

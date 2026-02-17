@@ -8,12 +8,12 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use super::utils::{get_chunk_size, upload_checksum};
+use crate::api::ApiErrorCode;
 use crate::base64::base64url_encode;
 use crate::crypto::aes::{
     aes128_cbc_encrypt, aes128_ctr_encrypt, chunk_mac_calculate, meta_mac_calculate,
 };
 use crate::crypto::keys::pack_node_key;
-use crate::api::ApiErrorCode;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::fs::upload_state::UploadState;
@@ -551,9 +551,7 @@ impl Session {
 
                     let response_text = response.text().await.map_err(MegaError::RequestError)?;
                     let handle = if response_text.is_empty() {
-                        return Err(MegaError::Custom(
-                            "Empty upload response".to_string(),
-                        ));
+                        return Err(MegaError::Custom("Empty upload response".to_string()));
                     } else if response_text.starts_with('-') {
                         let code = response_text.parse::<i64>().unwrap_or(-999);
                         return Err(MegaError::ApiError {

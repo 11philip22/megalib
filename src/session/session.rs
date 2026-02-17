@@ -5,10 +5,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose;
 use base64::Engine;
+use base64::engine::general_purpose;
 use ed25519_dalek::{Signer, SigningKey};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::api::ApiClient;
@@ -280,17 +280,29 @@ impl Session {
 
         let mut key_attrs = Vec::new();
         if let Some(enc) = keyring_enc.as_ref() {
-            key_attrs.push((
-                "*keyring",
-                base64url_encode(enc),
-                version_for("*keyring"),
-            ));
+            key_attrs.push(("*keyring", base64url_encode(enc), version_for("*keyring")));
         }
         key_attrs.push(("^!keys", keys_b64, version_for("^!keys")));
-        key_attrs.push(("+puEd255", base64url_encode(&pu_ed), version_for("+puEd255")));
-        key_attrs.push(("+puCu255", base64url_encode(&pu_cu), version_for("+puCu255")));
-        key_attrs.push(("+sigCu255", base64url_encode(&sig_cu), version_for("+sigCu255")));
-        key_attrs.push(("+sigPubk", base64url_encode(&sig_pubk), version_for("+sigPubk")));
+        key_attrs.push((
+            "+puEd255",
+            base64url_encode(&pu_ed),
+            version_for("+puEd255"),
+        ));
+        key_attrs.push((
+            "+puCu255",
+            base64url_encode(&pu_cu),
+            version_for("+puCu255"),
+        ));
+        key_attrs.push((
+            "+sigCu255",
+            base64url_encode(&sig_cu),
+            version_for("+sigCu255"),
+        ));
+        key_attrs.push((
+            "+sigPubk",
+            base64url_encode(&sig_pubk),
+            version_for("+sigPubk"),
+        ));
         commands.push(Self::build_upv_command(key_attrs));
 
         let mut generated_jscd: Option<Vec<u8>> = None;
@@ -319,20 +331,17 @@ impl Session {
 
         // Cache the attributes we just set so we don't immediately re-fetch via uga.
         if let Some(enc) = keyring_enc {
-            self.user_attr_cache
-                .insert("*keyring".to_string(), enc);
+            self.user_attr_cache.insert("*keyring".to_string(), enc);
         }
         if let Some(usk) = generated_usk {
             self.user_attr_cache.insert("*~usk".to_string(), usk);
         }
-        self.user_attr_cache.insert("^!keys".to_string(), keys_blob.clone());
+        self.user_attr_cache
+            .insert("^!keys".to_string(), keys_blob.clone());
         self.last_keys_blob_b64 = Some(base64url_encode(&keys_blob));
-        self.user_attr_cache
-            .insert("+puEd255".to_string(), pu_ed);
-        self.user_attr_cache
-            .insert("+puCu255".to_string(), pu_cu);
-        self.user_attr_cache
-            .insert("+sigCu255".to_string(), sig_cu);
+        self.user_attr_cache.insert("+puEd255".to_string(), pu_ed);
+        self.user_attr_cache.insert("+puCu255".to_string(), pu_cu);
+        self.user_attr_cache.insert("+sigCu255".to_string(), sig_cu);
         self.user_attr_cache
             .insert("+sigPubk".to_string(), sig_pubk);
         if let Some(jscd) = generated_jscd {
@@ -693,9 +702,11 @@ impl Session {
                     let needs_update = self
                         .contacts
                         .get(&c.handle)
-                        .map(|existing| existing.last_updated != c.last_updated
-                            || existing.status != c.status
-                            || existing.email != c.email)
+                        .map(|existing| {
+                            existing.last_updated != c.last_updated
+                                || existing.status != c.status
+                                || existing.email != c.email
+                        })
                         .unwrap_or(true);
                     if needs_update {
                         self.contacts.insert(c.handle.clone(), c.clone());
@@ -749,10 +760,7 @@ impl Session {
         Ok(changed)
     }
 
-    fn extract_handles_from_action(
-        obj: &serde_json::Map<String, Value>,
-        out: &mut Vec<String>,
-    ) {
+    fn extract_handles_from_action(obj: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
         for key in ["n", "p", "h", "t", "k"] {
             if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
                 out.push(v.to_string());
@@ -819,12 +827,7 @@ impl Session {
             let Some(version) = ver_val.as_str() else {
                 continue;
             };
-            if self
-                .user_attr_versions
-                .get(attr)
-                .map(|v| v.as_str())
-                != Some(version)
-            {
+            if self.user_attr_versions.get(attr).map(|v| v.as_str()) != Some(version) {
                 stale.insert(attr.to_string());
             }
         }
@@ -860,10 +863,7 @@ impl Session {
         Ok(changed)
     }
 
-    fn handle_actionpacket_nodes(
-        &mut self,
-        obj: &serde_json::Map<String, Value>,
-    ) -> Result<bool> {
+    fn handle_actionpacket_nodes(&mut self, obj: &serde_json::Map<String, Value>) -> Result<bool> {
         let Some(action) = obj.get("a").and_then(|v| v.as_str()) else {
             return Ok(false);
         };
@@ -912,10 +912,7 @@ impl Session {
         Ok(false)
     }
 
-    fn handle_actionpacket_share(
-        &mut self,
-        obj: &serde_json::Map<String, Value>,
-    ) -> Result<bool> {
+    fn handle_actionpacket_share(&mut self, obj: &serde_json::Map<String, Value>) -> Result<bool> {
         let Some(handle) = obj.get("n").and_then(|v| v.as_str()) else {
             return Ok(false);
         };
@@ -962,8 +959,7 @@ impl Session {
                     } else if !outbound && self.key_manager.is_ready() {
                         if let Some(owner_b64) = owner {
                             if let Some(owner_handle) = Self::decode_user_handle(owner_b64) {
-                                self.key_manager
-                                    .add_pending_in(handle, &owner_handle, enc);
+                                self.key_manager.add_pending_in(handle, &owner_handle, enc);
                                 changed = true;
                             }
                         }
@@ -1233,11 +1229,7 @@ impl Session {
     }
 
     fn outshare_total(&self, handle: &str) -> usize {
-        let out_count = self
-            .outshares
-            .get(handle)
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let out_count = self.outshares.get(handle).map(|s| s.len()).unwrap_or(0);
         let pending_count = self
             .pending_outshares
             .get(handle)
@@ -1318,7 +1310,15 @@ impl Session {
 
     fn extract_contact_update(
         obj: &serde_json::Map<String, Value>,
-    ) -> Result<Option<(String, Option<Vec<u8>>, Option<Vec<u8>>, bool, Option<Contact>)>> {
+    ) -> Result<
+        Option<(
+            String,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            bool,
+            Option<Contact>,
+        )>,
+    > {
         let user = match obj.get("u").and_then(|v| v.as_str()) {
             Some(u) => u.to_string(),
             None => return Ok(None),
@@ -1434,15 +1434,14 @@ impl Session {
             ));
         }
 
-        let (session_version, key_bytes, sid_bytes, master_key_encrypted) = if data[0] == 1
-            && data.len() >= 17
-        {
-            (1u8, &data[1..17], &data[17..], true)
-        } else if data.len() >= 16 {
-            (0u8, &data[0..16], &data[16..], false)
-        } else {
-            return Err(MegaError::Custom("Invalid session blob length".to_string()));
-        };
+        let (session_version, key_bytes, sid_bytes, master_key_encrypted) =
+            if data[0] == 1 && data.len() >= 17 {
+                (1u8, &data[1..17], &data[17..], true)
+            } else if data.len() >= 16 {
+                (0u8, &data[0..16], &data[16..], false)
+            } else {
+                return Err(MegaError::Custom("Invalid session blob length".to_string()));
+            };
 
         if sid_bytes.is_empty() {
             return Err(MegaError::Custom("Session id is empty".to_string()));
@@ -1469,7 +1468,9 @@ impl Session {
             return Err(MegaError::Custom("Empty session blob".to_string()));
         }
         if data[0] != 2 {
-            return Err(MegaError::Custom("Not a folder-link session blob".to_string()));
+            return Err(MegaError::Custom(
+                "Not a folder-link session blob".to_string(),
+            ));
         }
 
         let mut idx = 1usize;
@@ -1579,10 +1580,7 @@ impl Session {
             write_string(auth);
         }
 
-        let padding = blob
-            .padding
-            .clone()
-            .unwrap_or_else(|| "P".to_string());
+        let padding = blob.padding.clone().unwrap_or_else(|| "P".to_string());
         write_string(&padding);
 
         Ok(general_purpose::STANDARD.encode(out))
@@ -1629,7 +1627,9 @@ impl Session {
         }
 
         if let Some(arr) = response.as_array() {
-            if let Some(obj) = arr.iter().find(|o| o.get("av").and_then(|v| v.as_str()).is_some())
+            if let Some(obj) = arr
+                .iter()
+                .find(|o| o.get("av").and_then(|v| v.as_str()).is_some())
             {
                 let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
                 if av.is_empty() {
@@ -1671,8 +1671,7 @@ impl Session {
         }
 
         if let Some(ver) = Self::extract_attr_version(&resp, attr) {
-            self.user_attr_versions
-                .insert(attr.to_string(), ver);
+            self.user_attr_versions.insert(attr.to_string(), ver);
         }
         if attr == "^!keys" {
             self.last_keys_blob_b64 = Some(value_b64.to_string());
@@ -1776,10 +1775,8 @@ impl Session {
                 }
             }
             // Cache authrings/backups/warnings/manual verification in session for quick access.
-            self.authring_ed =
-                AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
-            self.authring_cu =
-                AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
+            self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
+            self.authring_cu = AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
             self.backups = self.key_manager.backups.clone();
             self.warnings = self.key_manager.warnings.clone();
             self.manual_verification = self.key_manager.manual_verification;
@@ -2107,7 +2104,6 @@ impl Session {
 
         Ok(Some(session))
     }
-
 }
 
 /// Parsed SDK session blob (normal account sessions).

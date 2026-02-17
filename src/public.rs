@@ -550,7 +550,10 @@ fn parse_public_node(
         (node_key, name)
     };
 
-    let file_attr = json.get("fa").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let file_attr = json
+        .get("fa")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     Some(Node {
         name,

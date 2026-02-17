@@ -149,15 +149,15 @@ impl Session {
     }
 
     /// Fetch pending keys from the server (read variant of 'pk'). Returns lastcompleted token.
-    pub async fn fetch_pending_keys(&mut self, last_completed: Option<&str>) -> Result<(String, Vec<(String, String, Vec<u8>)>)> {
+    pub async fn fetch_pending_keys(
+        &mut self,
+        last_completed: Option<&str>,
+    ) -> Result<(String, Vec<(String, String, Vec<u8>)>)> {
         let mut req = json!({"a": "pk"});
         if let Some(tok) = last_completed {
             req["d"] = json!(tok);
         }
-        let resp = self
-            .api_mut()
-            .request_with_allowed(req, &[-9])
-            .await?;
+        let resp = self.api_mut().request_with_allowed(req, &[-9]).await?;
         if resp.as_i64() == Some(-9) {
             return Ok((String::new(), Vec::new()));
         }
@@ -225,8 +225,7 @@ impl Session {
                 if let Ok(u) = base64url_decode(&user_b64) {
                     if u.len() == 8 {
                         uh.copy_from_slice(&u);
-                        self.key_manager
-                            .add_pending_in(&share_b64, &uh, enc_key);
+                        self.key_manager.add_pending_in(&share_b64, &uh, enc_key);
                     }
                 }
             }
@@ -422,16 +421,12 @@ impl Session {
 
         if let Some(cu) = cu_pub {
             let prev = self.authring_cu.get_state(contact_handle_b64);
-            let st = self
-                .authring_cu
-                .update(contact_handle_b64, cu, verified);
+            let st = self.authring_cu.update(contact_handle_b64, cu, verified);
             fingerprint_changed |= prev.is_some() && st == AuthState::Changed;
         }
         if let Some(ed) = ed_pub {
             let prev = self.authring_ed.get_state(contact_handle_b64);
-            let st = self
-                .authring_ed
-                .update(contact_handle_b64, ed, verified);
+            let st = self.authring_ed.update(contact_handle_b64, ed, verified);
             fingerprint_changed |= prev.is_some() && st == AuthState::Changed;
         }
 
@@ -470,7 +465,13 @@ impl Session {
     /// Handle multiple contact updates from an action packet batch.
     pub async fn handle_contact_updates(
         &mut self,
-        updates: &[(String, Option<Vec<u8>>, Option<Vec<u8>>, bool, Option<Contact>)],
+        updates: &[(
+            String,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            bool,
+            Option<Contact>,
+        )],
     ) -> Result<bool> {
         let mut changed = false;
         for (h, ed, cu, verified, _contact) in updates {
@@ -569,11 +570,8 @@ impl Session {
 
         // If any changed handle matches share roots or removals, clear in-use flags.
         let changed_set: HashSet<String> = changed_handles.iter().cloned().collect();
-        let mut needs_clear = !changed_set.is_empty()
-            && self
-                .share_roots()
-                .iter()
-                .any(|h| changed_set.contains(h));
+        let mut needs_clear =
+            !changed_set.is_empty() && self.share_roots().iter().any(|h| changed_set.contains(h));
 
         if !needs_clear {
             // also check for removed shares
@@ -691,8 +689,7 @@ impl Session {
                     .await
                 {
                     Ok(_) => {
-                        self.key_manager.generation =
-                            self.key_manager.generation.saturating_add(1);
+                        self.key_manager.generation = self.key_manager.generation.saturating_add(1);
                         self.rebuild_share_key_cache();
                         self.last_keys_blob_b64 = Some(blob_b64);
                         return Ok(());
@@ -704,7 +701,10 @@ impl Session {
                         // fetch remote and merge
                         if let Some(remote_blob) = self.get_user_attribute_raw("^!keys").await? {
                             let mut remote = KeyManager::new();
-                            if remote.decode_container(&remote_blob, &self.master_key).is_ok() {
+                            if remote
+                                .decode_container(&remote_blob, &self.master_key)
+                                .is_ok()
+                            {
                                 remote.merge_from(&desired);
                                 self.key_manager = remote;
                                 self.rebuild_share_key_cache();

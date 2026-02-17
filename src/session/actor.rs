@@ -1,19 +1,19 @@
 //! Actor-based session runtime for background SC polling.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::io::Write;
 
 use futures::io::{AsyncRead, AsyncSeek};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep};
 
+use crate::crypto::{AuthState, Warnings};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, Quota};
 use crate::progress::ProgressCallback;
 use crate::session::session::{FolderSessionBlob, Session, SessionBlob};
-use crate::crypto::{AuthState, Warnings};
 
 trait AsyncReadSeek: AsyncRead + AsyncSeek + Unpin + Send {}
 
@@ -244,7 +244,10 @@ impl SessionHandle {
         Ok(session.map(SessionActor::spawn))
     }
 
-    pub async fn load_with_proxy<P: AsRef<std::path::Path>>(path: P, proxy: &str) -> Result<Option<Self>> {
+    pub async fn load_with_proxy<P: AsRef<std::path::Path>>(
+        path: P,
+        proxy: &str,
+    ) -> Result<Option<Self>> {
         let session = Session::load_with_proxy(path, proxy).await?;
         Ok(session.map(SessionActor::spawn))
     }
@@ -264,7 +267,8 @@ impl SessionHandle {
     }
 
     pub async fn account_info(&self) -> Result<AccountInfo> {
-        self.request(|reply| SessionCommand::AccountInfo { reply }).await
+        self.request(|reply| SessionCommand::AccountInfo { reply })
+            .await
     }
 
     pub async fn dump_session(&self) -> Result<String> {
@@ -278,7 +282,8 @@ impl SessionHandle {
     }
 
     pub async fn refresh(&self) -> Result<()> {
-        self.request(|reply| SessionCommand::Refresh { reply }).await
+        self.request(|reply| SessionCommand::Refresh { reply })
+            .await
     }
 
     pub async fn quota(&self) -> Result<Quota> {
@@ -706,13 +711,8 @@ impl SessionActor {
                 let _ = reply.send(res);
             }
             SessionCommand::ListContacts { reply } => {
-                let res: Result<Vec<Node>> = Ok(
-                    self.session
-                        .list_contacts()
-                        .into_iter()
-                        .cloned()
-                        .collect(),
-                );
+                let res: Result<Vec<Node>> =
+                    Ok(self.session.list_contacts().into_iter().cloned().collect());
                 let _ = reply.send(res);
             }
             SessionCommand::GetNodeByHandle { handle, reply } => {
@@ -729,7 +729,9 @@ impl SessionActor {
                     self.session.get_node_by_handle(&node_handle),
                     self.session.get_node_by_handle(&ancestor_handle),
                 ) {
-                    (Some(node), Some(ancestor)) => Ok(self.session.node_has_ancestor(node, ancestor)),
+                    (Some(node), Some(ancestor)) => {
+                        Ok(self.session.node_has_ancestor(node, ancestor))
+                    }
                     _ => Ok(false),
                 };
                 let _ = reply.send(res);
@@ -748,10 +750,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session
-                                    .stat(&path_clone)
-                                    .cloned()
-                                    .ok_or(err),
+                                Err(err) => session.stat(&path_clone).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -900,10 +899,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session
-                                    .stat(&target_path)
-                                    .cloned()
-                                    .ok_or(err),
+                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -920,7 +916,10 @@ impl SessionActor {
             } => {
                 let prev = self.session.defer_seqtag_wait;
                 self.session.defer_seqtag_wait = true;
-                let res = self.session.upload_from_bytes(&data, &filename, &remote).await;
+                let res = self
+                    .session
+                    .upload_from_bytes(&data, &filename, &remote)
+                    .await;
                 self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
@@ -931,10 +930,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session
-                                    .stat(&target_path)
-                                    .cloned()
-                                    .ok_or(err),
+                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -966,10 +962,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session
-                                    .stat(&target_path)
-                                    .cloned()
-                                    .ok_or(err),
+                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -996,10 +989,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session
-                                    .stat(&target_path)
-                                    .cloned()
-                                    .ok_or(err),
+                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),

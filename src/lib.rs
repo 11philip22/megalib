@@ -87,11 +87,6 @@ pub use public::{
     parse_folder_link, parse_mega_link,
 };
 pub use session::{
-    RegistrationState,
-    SessionHandle,
-    AccountInfo,
-    SessionBlob,
-    FolderSessionBlob,
-    register,
+    AccountInfo, FolderSessionBlob, RegistrationState, SessionBlob, SessionHandle, register,
     verify_registration,
 };
