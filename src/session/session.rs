@@ -66,6 +66,10 @@ pub(crate) struct Session {
     pub(crate) user_attr_cache: HashMap<String, Vec<u8>>,
     /// Cached user attribute versions for upv (e.g. ^!keys version).
     pub(crate) user_attr_versions: HashMap<String, String>,
+    /// Last persisted ^!keys blob (base64url), to avoid redundant updates.
+    pub(crate) last_keys_blob_b64: Option<String>,
+    /// Prevent re-entrant ^!keys persistence attempts.
+    pub(crate) keys_persist_inflight: bool,
     /// Last completed token for pending keys feed (pk command)
     pub(crate) pending_keys_token: Option<String>,
     /// Flag set when a ^!keys downgrade is detected
@@ -144,6 +148,8 @@ impl Session {
             manual_verification: false,
             user_attr_cache,
             user_attr_versions,
+            last_keys_blob_b64: None,
+            keys_persist_inflight: false,
             pending_keys_token: None,
             keys_downgrade_detected: false,
             scsn,
@@ -305,7 +311,10 @@ impl Session {
 
         if !commands.is_empty() {
             let resp = self.api.request_batch(commands).await?;
-            Self::validate_upv_batch(resp)?;
+            Self::validate_upv_batch(resp.clone())?;
+            if let Some(ver) = Self::extract_attr_version(&resp, "^!keys") {
+                self.user_attr_versions.insert("^!keys".to_string(), ver);
+            }
         }
 
         // Cache the attributes we just set so we don't immediately re-fetch via uga.
@@ -316,7 +325,8 @@ impl Session {
         if let Some(usk) = generated_usk {
             self.user_attr_cache.insert("*~usk".to_string(), usk);
         }
-        self.user_attr_cache.insert("^!keys".to_string(), keys_blob);
+        self.user_attr_cache.insert("^!keys".to_string(), keys_blob.clone());
+        self.last_keys_blob_b64 = Some(base64url_encode(&keys_blob));
         self.user_attr_cache
             .insert("+puEd255".to_string(), pu_ed);
         self.user_attr_cache
@@ -1645,48 +1655,50 @@ impl Session {
     }
 
     /// Set a private user attribute (e.g. "^!keys") with a base64url-encoded value.
-    /// The server uses versioning; we default to "0" on first set. If the server
-    /// returns -8 (version clash), retry once with version "1", then treat as success.
+    /// The server uses versioning; pass the latest version token when updating.
     pub async fn set_private_attribute(
         &mut self,
         attr: &str,
         value_b64: &str,
-        version: Option<i64>,
+        version: Option<String>,
     ) -> Result<()> {
-        // First attempt with provided or default "0".
-        let first_ver = version.unwrap_or(0);
-        let mut resp = self
+        let resp = self
             .api_mut()
-            .set_private_attribute(attr, value_b64, Some(first_ver))
-            .await;
+            .set_private_attribute(attr, value_b64, version.as_deref())
+            .await?;
 
-        // On version clash, retry once with "1".
-        if matches!(resp, Err(MegaError::ApiError { code: -8, .. })) {
-            resp = self
-                .api_mut()
-                .set_private_attribute(attr, value_b64, Some(first_ver + 1))
-                .await;
+        if let Some(err) = resp.as_i64().filter(|v| *v < 0) {
+            let code = crate::api::client::ApiErrorCode::from(err);
+            return Err(MegaError::ApiError {
+                code: err as i32,
+                message: code.description().to_string(),
+            });
         }
 
-        // Treat -8 as success after retry.
-        match resp {
-            Err(MegaError::ApiError { code: -8, .. }) => return Ok(()),
-            Err(e) => return Err(e),
-            Ok(val) => {
-                if let Some(err) = val.as_i64().filter(|v| *v < 0) {
-                    if err == -8 {
-                        return Ok(());
-                    }
-                    let code = crate::api::client::ApiErrorCode::from(err);
-                    return Err(MegaError::ApiError {
-                        code: err as i32,
-                        message: code.description().to_string(),
-                    });
+        if let Some(ver) = Self::extract_attr_version(&resp, attr) {
+            self.user_attr_versions
+                .insert(attr.to_string(), ver);
+        }
+        if attr == "^!keys" {
+            self.last_keys_blob_b64 = Some(value_b64.to_string());
+        }
+        Ok(())
+    }
+
+    fn extract_attr_version(resp: &Value, attr: &str) -> Option<String> {
+        if let Some(obj) = resp.as_object() {
+            if let Some(v) = obj.get(attr).and_then(|v| v.as_str()) {
+                return Some(v.to_string());
+            }
+        }
+        if let Some(arr) = resp.as_array() {
+            for item in arr {
+                if let Some(v) = Self::extract_attr_version(item, attr) {
+                    return Some(v);
                 }
             }
         }
-
-        Ok(())
+        None
     }
 
     /// Replace authring Ed25519 blob (LTLV) and persist into ^!keys.
@@ -1752,6 +1764,7 @@ impl Session {
         let mut km = KeyManager::new();
         km.decode_container(&enc_keys, &self.master_key)?;
         if km.is_ready() {
+            self.last_keys_blob_b64 = Some(base64url_encode(&enc_keys));
             // populate share_keys map for quick lookup
             for sk in &km.share_keys {
                 let mut arr: [u8; 16] = [0u8; 16];
@@ -2152,6 +2165,8 @@ mod tests {
             manual_verification: false,
             user_attr_cache: HashMap::new(),
             user_attr_versions: HashMap::new(),
+            last_keys_blob_b64: None,
+            keys_persist_inflight: false,
             pending_keys_token: None,
             scsn: None,
             wsc_url: None,

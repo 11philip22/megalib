@@ -621,6 +621,7 @@ impl Session {
 
         let mut remote = KeyManager::new();
         remote.decode_container(&remote_blob, &self.master_key)?;
+        self.last_keys_blob_b64 = Some(base64url_encode(&remote_blob));
 
         // Reject downgrade explicitly
         if remote.generation < self.key_manager.generation {
@@ -656,58 +657,73 @@ impl Session {
                 "KeyManager not initialized; cannot persist ^!keys".to_string(),
             ));
         }
-
-        // Sync cached auth/backups/warnings before encoding
-        self.key_manager.auth_ed25519 = self.authring_ed.serialize_ltlv();
-        self.key_manager.auth_cu25519 = self.authring_cu.serialize_ltlv();
-        self.key_manager.backups = self.backups.clone();
-        self.key_manager.warnings = self.warnings.clone();
-        self.key_manager.manual_verification = self.manual_verification;
-        // ensure priv_rsa is in the container if session has one and km lacks it
-        if self.key_manager.priv_rsa.is_empty() && self.rsa_key().p.bits() > 0 {
-            let encoded = self.rsa_key().encode_private_key(&self.master_key);
-            self.key_manager.priv_rsa = encoded.into_bytes();
+        if self.keys_persist_inflight {
+            return Ok(());
         }
+        self.keys_persist_inflight = true;
 
-        let desired = self.key_manager.clone();
+        let result = async {
+            // Sync cached auth/backups/warnings before encoding
+            self.key_manager.auth_ed25519 = self.authring_ed.serialize_ltlv();
+            self.key_manager.auth_cu25519 = self.authring_cu.serialize_ltlv();
+            self.key_manager.backups = self.backups.clone();
+            self.key_manager.warnings = self.warnings.clone();
+            self.key_manager.manual_verification = self.manual_verification;
+            // ensure priv_rsa is in the container if session has one and km lacks it
+            if self.key_manager.priv_rsa.is_empty() && self.rsa_key().p.bits() > 0 {
+                let encoded = self.rsa_key().encode_private_key(&self.master_key);
+                self.key_manager.priv_rsa = encoded.into_bytes();
+            }
 
-        let mut attempts = 0;
-        loop {
-            let blob = self.key_manager.encode_container(&self.master_key)?;
-            let blob_b64 = base64url_encode(&blob);
-            match self
-                .api_mut()
-                .set_private_attribute("^!keys", &blob_b64, None)
-                .await
-            {
-                Ok(_) => {
-                    self.key_manager.generation = self.key_manager.generation.saturating_add(1);
-                    self.rebuild_share_key_cache();
+            let desired = self.key_manager.clone();
+
+            let mut attempts = 0;
+            loop {
+                let blob = self.key_manager.encode_container(&self.master_key)?;
+                let blob_b64 = base64url_encode(&blob);
+                if self.last_keys_blob_b64.as_deref() == Some(&blob_b64) {
                     return Ok(());
                 }
-                Err(MegaError::ApiError { code, .. })
-                    if attempts < 3 && (code == -8 || code == -3 || code == -11) =>
+                let version = self.user_attr_versions.get("^!keys").cloned();
+
+                match self
+                    .set_private_attribute("^!keys", &blob_b64, version)
+                    .await
                 {
-                    attempts += 1;
-                    // fetch remote and merge
-                    if let Some(remote_blob) = self.get_user_attribute_raw("^!keys").await? {
-                        let mut remote = KeyManager::new();
-                        if remote.decode_container(&remote_blob, &self.master_key).is_ok() {
-                            remote.merge_from(&desired);
-                            self.key_manager = remote;
-                            self.rebuild_share_key_cache();
-                            continue;
-                        }
+                    Ok(_) => {
+                        self.key_manager.generation =
+                            self.key_manager.generation.saturating_add(1);
+                        self.rebuild_share_key_cache();
+                        self.last_keys_blob_b64 = Some(blob_b64);
+                        return Ok(());
                     }
-                    // backoff and retry even if merge failed
-                    continue;
+                    Err(MegaError::ApiError { code, .. })
+                        if attempts < 3 && (code == -8 || code == -3 || code == -11) =>
+                    {
+                        attempts += 1;
+                        // fetch remote and merge
+                        if let Some(remote_blob) = self.get_user_attribute_raw("^!keys").await? {
+                            let mut remote = KeyManager::new();
+                            if remote.decode_container(&remote_blob, &self.master_key).is_ok() {
+                                remote.merge_from(&desired);
+                                self.key_manager = remote;
+                                self.rebuild_share_key_cache();
+                                continue;
+                            }
+                        }
+                        continue;
+                    }
+                    Err(MegaError::DowngradeDetected) => {
+                        self.keys_downgrade_detected = true;
+                        return Err(MegaError::DowngradeDetected);
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(MegaError::DowngradeDetected) => {
-                    self.keys_downgrade_detected = true;
-                    return Err(MegaError::DowngradeDetected);
-                }
-                Err(e) => return Err(e),
             }
         }
+        .await;
+
+        self.keys_persist_inflight = false;
+        result
     }
 }

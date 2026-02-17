@@ -703,18 +703,24 @@ impl ApiClient {
     /// Set a versioned private user attribute (upv), used for attributes like ^!keys.
     ///
     /// `attr` is the attribute name, `value` is already base64url-encoded.
-    /// `version` is the version number; SDK sends 0 on first set.
+    /// `version` is the version token; SDK sends 0 on first set.
     pub async fn set_private_attribute(
         &mut self,
         attr: &str,
         value: &str,
-        version: Option<i64>,
+        version: Option<&str>,
     ) -> Result<Value> {
-        let ver = version.unwrap_or(0);
         // One attribute per upv, matching SDK
         let mut obj = serde_json::Map::new();
         obj.insert("a".into(), serde_json::Value::from("upv"));
-        obj.insert(attr.into(), serde_json::json!([value, ver]));
+        let ver_value = match version {
+            Some(v) => serde_json::Value::from(v),
+            None => serde_json::Value::from(0),
+        };
+        obj.insert(
+            attr.into(),
+            serde_json::Value::Array(vec![serde_json::Value::from(value), ver_value]),
+        );
         self.request(serde_json::Value::Object(obj)).await
     }
 }

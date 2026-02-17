@@ -27,8 +27,8 @@ impl HttpClient {
             .map_err(|e| MegaError::CryptoError(format!("Invalid proxy: {}", e)))?;
 
         let client = Client::builder()
-            // .danger_accept_invalid_certs(true)
-            // .danger_accept_invalid_hostnames(true)
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
             .proxy(proxy)
             .timeout(Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::none())

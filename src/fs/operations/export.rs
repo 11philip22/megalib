@@ -82,13 +82,6 @@ impl Session {
             let zero = base64url_encode(&[0u8; 16]);
             let (ok, ha) = (zero.clone(), zero);
 
-            // Persist share key into ^!keys only for upgraded accounts.
-            if self.key_manager.is_ready() {
-                self.key_manager
-                    .add_share_key_with_flags(&handle, &share_key, true, true); // trusted + in_use
-                let _ = self.persist_keys_attribute().await;
-            }
-
             // Build cr similar to webclient:
             // cr[0] = [root handle]
             // cr[1] = [root handle, child1, child2, ...]
@@ -135,10 +128,21 @@ impl Session {
                 }
             }
 
+            // Persist share key into ^!keys only for upgraded accounts, once per export.
+            self.share_keys.insert(handle.clone(), share_key);
             if self.key_manager.is_ready() {
-                let _ = self.key_manager.set_share_key_in_use(&handle, true);
-                let _ = self.key_manager.set_share_key_trusted(&handle, true);
-                let _ = self.persist_keys_attribute().await;
+                let mut keys_changed = false;
+                let existing = self.key_manager.get_share_key_from_str(&handle);
+                if existing.map(|k| k != share_key).unwrap_or(true) {
+                    self.key_manager
+                        .add_share_key_with_flags(&handle, &share_key, true, true); // trusted + in_use
+                    keys_changed = true;
+                }
+                keys_changed |= self.key_manager.set_share_key_in_use(&handle, true);
+                keys_changed |= self.key_manager.set_share_key_trusted(&handle, true);
+                if keys_changed {
+                    let _ = self.persist_keys_attribute().await;
+                }
             }
 
             // eprintln!(
@@ -167,28 +171,11 @@ impl Session {
                 });
             }
 
-            let mut link_handle = parse_public_link_handle(&response)
+            let link_handle = parse_public_link_handle(&response)
                 .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?;
 
-            // Update the node with the link and remember share key for children
+            // Update the node with the link
             self.nodes[node_idx].link = Some(link_handle.clone());
-            // Exported link key is the share key (persist or reuse existing).
-            self.share_keys.insert(handle.clone(), share_key);
-            // Persist share key into ^!keys if available
-            if self.key_manager.is_ready() {
-                self.key_manager.add_share_key_from_str(&handle, &share_key);
-                let _ = self.persist_keys_attribute().await;
-            }
-
-            // Allow SC action packets to update the public link (SDK parity).
-            if self.scsn.is_some() {
-                let _ = self.poll_action_packets_once().await;
-                if let Some(node) = self.get_node_by_handle(&handle) {
-                    if let Some(ph) = node.link.as_deref() {
-                        link_handle = ph.to_string();
-                    }
-                }
-            }
 
             // Build folder URL
             let key_b64 = base64url_encode(&share_key);
@@ -209,19 +196,25 @@ impl Session {
                 .await?;
 
             // Response is the public link handle as a string
-            let mut link_handle = parse_public_link_handle(&response)
+            let link_handle = parse_public_link_handle(&response)
                 .ok_or_else(|| MegaError::Custom("Invalid export response".to_string()))?;
 
             // Update the node with the link
             self.nodes[node_idx].link = Some(link_handle.clone());
 
-            // Allow SC action packets to update the public link (SDK parity).
-            if self.scsn.is_some() {
-                let _ = self.poll_action_packets_once().await;
-                if let Some(node) = self.get_node_by_handle(&handle) {
-                    if let Some(ph) = node.link.as_deref() {
-                        link_handle = ph.to_string();
-                    }
+            // Optionally persist file key into ^!keys when upgraded (avoid redundant writes).
+            if self.key_manager.is_ready() {
+                let mut keys_changed = false;
+                let existing = self.key_manager.get_share_key_from_str(&handle);
+                if existing
+                    .map(|k| key.as_slice() != k.as_ref())
+                    .unwrap_or(true)
+                {
+                    self.key_manager.add_share_key_from_str(&handle, &key);
+                    keys_changed = true;
+                }
+                if keys_changed {
+                    let _ = self.persist_keys_attribute().await;
                 }
             }
 
