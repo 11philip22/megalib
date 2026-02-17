@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::io::Write;
 
 use futures::io::{AsyncRead, AsyncSeek};
 use tokio::sync::{mpsc, oneshot};
@@ -11,13 +12,15 @@ use tokio::time::{Instant, sleep};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, Quota};
 use crate::progress::ProgressCallback;
-use crate::session::session::Session;
+use crate::session::session::{FolderSessionBlob, Session, SessionBlob};
+use crate::crypto::{AuthState, Warnings};
 
 trait AsyncReadSeek: AsyncRead + AsyncSeek + Unpin + Send {}
 
 impl<T> AsyncReadSeek for T where T: AsyncRead + AsyncSeek + Unpin + Send {}
 
 type BoxedReader = Box<dyn AsyncReadSeek>;
+type BoxedWriter = Box<dyn Write + Send>;
 type SeqtagWaiter = Box<dyn FnOnce(&mut Session) + Send>;
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,12 @@ enum SessionCommand {
     AccountInfo {
         reply: oneshot::Sender<Result<AccountInfo>>,
     },
+    DumpSession {
+        reply: oneshot::Sender<Result<String>>,
+    },
+    DumpSessionBlob {
+        reply: oneshot::Sender<Result<Vec<u8>>>,
+    },
     Refresh {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -54,6 +63,18 @@ enum SessionCommand {
     },
     Nodes {
         reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    ListContacts {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    GetNodeByHandle {
+        handle: String,
+        reply: oneshot::Sender<Result<Option<Node>>>,
+    },
+    NodeHasAncestor {
+        node_handle: String,
+        ancestor_handle: String,
+        reply: oneshot::Sender<Result<bool>>,
     },
     Mkdir {
         path: String,
@@ -76,6 +97,10 @@ enum SessionCommand {
     Export {
         path: String,
         reply: oneshot::Sender<Result<String>>,
+    },
+    ExportMany {
+        paths: Vec<String>,
+        reply: oneshot::Sender<Result<Vec<(String, String)>>>,
     },
     ShareFolder {
         handle: String,
@@ -111,6 +136,12 @@ enum SessionCommand {
         path: PathBuf,
         reply: oneshot::Sender<Result<()>>,
     },
+    DownloadToWriter {
+        node: Node,
+        writer: BoxedWriter,
+        offset: u64,
+        reply: oneshot::Sender<Result<()>>,
+    },
     SetWorkers {
         workers: usize,
         reply: oneshot::Sender<Result<()>>,
@@ -118,6 +149,47 @@ enum SessionCommand {
     SetResume {
         enabled: bool,
         reply: oneshot::Sender<Result<()>>,
+    },
+    ClearStatus {
+        reply: oneshot::Sender<Result<()>>,
+    },
+    EnablePreviews {
+        enabled: bool,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetAuthringEd25519 {
+        blob: Vec<u8>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetAuthringCu25519 {
+        blob: Vec<u8>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetBackupsBlob {
+        blob: Vec<u8>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetWarnings {
+        warnings: Warnings,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetContactVerificationWarning {
+        enabled: bool,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetManualVerification {
+        enabled: bool,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    KeysDowngradeDetected {
+        reply: oneshot::Sender<Result<bool>>,
+    },
+    ContactVerificationWarning {
+        reply: oneshot::Sender<Result<bool>>,
+    },
+    AuthringState {
+        handle: String,
+        reply: oneshot::Sender<Result<(Option<AuthState>, Option<AuthState>)>>,
     },
     WatchStatus {
         callback: ProgressCallback,
@@ -145,8 +217,16 @@ struct SessionActor {
 }
 
 impl SessionHandle {
-    pub(crate) fn from_session(session: Session) -> Self {
-        SessionActor::spawn(session)
+    pub fn parse_session_blob(session_b64: &str) -> Result<SessionBlob> {
+        Session::parse_session_blob(session_b64)
+    }
+
+    pub fn parse_folder_session_blob(session_b64: &str) -> Result<FolderSessionBlob> {
+        Session::parse_folder_session_blob(session_b64)
+    }
+
+    pub fn dump_folder_session_blob(blob: &FolderSessionBlob) -> Result<String> {
+        Session::dump_folder_session_blob(blob)
     }
 
     pub async fn login(email: &str, password: &str) -> Result<Self> {
@@ -187,6 +267,16 @@ impl SessionHandle {
         self.request(|reply| SessionCommand::AccountInfo { reply }).await
     }
 
+    pub async fn dump_session(&self) -> Result<String> {
+        self.request(|reply| SessionCommand::DumpSession { reply })
+            .await
+    }
+
+    pub async fn dump_session_blob(&self) -> Result<Vec<u8>> {
+        self.request(|reply| SessionCommand::DumpSessionBlob { reply })
+            .await
+    }
+
     pub async fn refresh(&self) -> Result<()> {
         self.request(|reply| SessionCommand::Refresh { reply }).await
     }
@@ -214,6 +304,41 @@ impl SessionHandle {
 
     pub async fn nodes(&self) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::Nodes { reply }).await
+    }
+
+    pub async fn list_contacts(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::ListContacts { reply })
+            .await
+    }
+
+    pub async fn get_node_by_handle(&self, handle: &str) -> Result<Option<Node>> {
+        self.request(|reply| SessionCommand::GetNodeByHandle {
+            handle: handle.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn node_has_ancestor(&self, node: &Node, ancestor: &Node) -> Result<bool> {
+        self.request(|reply| SessionCommand::NodeHasAncestor {
+            node_handle: node.handle.clone(),
+            ancestor_handle: ancestor.handle.clone(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn node_has_ancestor_by_handle(
+        &self,
+        node_handle: &str,
+        ancestor_handle: &str,
+    ) -> Result<bool> {
+        self.request(|reply| SessionCommand::NodeHasAncestor {
+            node_handle: node_handle.to_string(),
+            ancestor_handle: ancestor_handle.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn mkdir(&self, path: &str) -> Result<Node> {
@@ -253,6 +378,14 @@ impl SessionHandle {
     pub async fn export(&self, path: &str) -> Result<String> {
         self.request(|reply| SessionCommand::Export {
             path: path.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn export_many(&self, paths: &[&str]) -> Result<Vec<(String, String)>> {
+        self.request(|reply| SessionCommand::ExportMany {
+            paths: paths.iter().map(|p| p.to_string()).collect(),
             reply,
         })
         .await
@@ -334,6 +467,25 @@ impl SessionHandle {
         .await
     }
 
+    pub async fn download_to_writer(&self, node: &Node, writer: BoxedWriter) -> Result<()> {
+        self.download_to_writer_with_offset(node, writer, 0).await
+    }
+
+    pub async fn download_to_writer_with_offset(
+        &self,
+        node: &Node,
+        writer: BoxedWriter,
+        offset: u64,
+    ) -> Result<()> {
+        self.request(|reply| SessionCommand::DownloadToWriter {
+            node: node.clone(),
+            writer,
+            offset,
+            reply,
+        })
+        .await
+    }
+
     pub async fn set_workers(&self, workers: usize) -> Result<()> {
         self.request(|reply| SessionCommand::SetWorkers { workers, reply })
             .await
@@ -342,6 +494,67 @@ impl SessionHandle {
     pub async fn set_resume(&self, enabled: bool) -> Result<()> {
         self.request(|reply| SessionCommand::SetResume { enabled, reply })
             .await
+    }
+
+    pub async fn clear_status(&self) -> Result<()> {
+        self.request(|reply| SessionCommand::ClearStatus { reply })
+            .await
+    }
+
+    pub async fn enable_previews(&self, enabled: bool) -> Result<()> {
+        self.request(|reply| SessionCommand::EnablePreviews { enabled, reply })
+            .await
+    }
+
+    pub async fn set_authring_ed25519(&self, blob: Vec<u8>) -> Result<()> {
+        self.request(|reply| SessionCommand::SetAuthringEd25519 { blob, reply })
+            .await
+    }
+
+    pub async fn set_authring_cu25519(&self, blob: Vec<u8>) -> Result<()> {
+        self.request(|reply| SessionCommand::SetAuthringCu25519 { blob, reply })
+            .await
+    }
+
+    pub async fn set_backups_blob(&self, blob: Vec<u8>) -> Result<()> {
+        self.request(|reply| SessionCommand::SetBackupsBlob { blob, reply })
+            .await
+    }
+
+    pub async fn set_warnings(&self, warnings: Warnings) -> Result<()> {
+        self.request(|reply| SessionCommand::SetWarnings { warnings, reply })
+            .await
+    }
+
+    pub async fn set_contact_verification_warning(&self, enabled: bool) -> Result<()> {
+        self.request(|reply| SessionCommand::SetContactVerificationWarning { enabled, reply })
+            .await
+    }
+
+    pub async fn set_manual_verification(&self, enabled: bool) -> Result<()> {
+        self.request(|reply| SessionCommand::SetManualVerification { enabled, reply })
+            .await
+    }
+
+    pub async fn keys_downgrade_detected(&self) -> Result<bool> {
+        self.request(|reply| SessionCommand::KeysDowngradeDetected { reply })
+            .await
+    }
+
+    pub async fn contact_verification_warning(&self) -> Result<bool> {
+        self.request(|reply| SessionCommand::ContactVerificationWarning { reply })
+            .await
+    }
+
+    pub async fn authring_state(
+        &self,
+        handle_b64: &str,
+    ) -> Result<(Option<AuthState>, Option<AuthState>)> {
+        self.request(|reply| SessionCommand::AuthringState {
+            handle: handle_b64.to_string(),
+            reply,
+        })
+        .await
     }
 
     pub async fn watch_status(&self, callback: ProgressCallback) -> Result<()> {
@@ -457,6 +670,14 @@ impl SessionActor {
                 };
                 let _ = reply.send(Ok(info));
             }
+            SessionCommand::DumpSession { reply } => {
+                let res = self.session.dump_session();
+                let _ = reply.send(res);
+            }
+            SessionCommand::DumpSessionBlob { reply } => {
+                let res = self.session.dump_session_blob();
+                let _ = reply.send(res);
+            }
             SessionCommand::Refresh { reply } => {
                 let res = self.session.refresh().await;
                 let _ = reply.send(res);
@@ -482,6 +703,35 @@ impl SessionActor {
             }
             SessionCommand::Nodes { reply } => {
                 let res: Result<Vec<Node>> = Ok(self.session.nodes().iter().cloned().collect());
+                let _ = reply.send(res);
+            }
+            SessionCommand::ListContacts { reply } => {
+                let res: Result<Vec<Node>> = Ok(
+                    self.session
+                        .list_contacts()
+                        .into_iter()
+                        .cloned()
+                        .collect(),
+                );
+                let _ = reply.send(res);
+            }
+            SessionCommand::GetNodeByHandle { handle, reply } => {
+                let res: Result<Option<Node>> =
+                    Ok(self.session.get_node_by_handle(&handle).cloned());
+                let _ = reply.send(res);
+            }
+            SessionCommand::NodeHasAncestor {
+                node_handle,
+                ancestor_handle,
+                reply,
+            } => {
+                let res = match (
+                    self.session.get_node_by_handle(&node_handle),
+                    self.session.get_node_by_handle(&ancestor_handle),
+                ) {
+                    (Some(node), Some(ancestor)) => Ok(self.session.node_has_ancestor(node, ancestor)),
+                    _ => Ok(false),
+                };
                 let _ = reply.send(res);
             }
             SessionCommand::Mkdir { path, reply } => {
@@ -576,6 +826,25 @@ impl SessionActor {
                 let prev = self.session.defer_seqtag_wait;
                 self.session.defer_seqtag_wait = true;
                 let res = self.session.export(&path).await;
+                self.session.defer_seqtag_wait = prev;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::ExportMany { paths, reply } => {
+                let prev = self.session.defer_seqtag_wait;
+                self.session.defer_seqtag_wait = true;
+                let path_refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+                let res = self.session.export_many(&path_refs).await;
                 self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
@@ -743,6 +1012,21 @@ impl SessionActor {
                 let res = self.session.download_to_file(&node, path).await;
                 let _ = reply.send(res);
             }
+            SessionCommand::DownloadToWriter {
+                node,
+                mut writer,
+                offset,
+                reply,
+            } => {
+                let res = if offset == 0 {
+                    self.session.download(&node, writer.as_mut()).await
+                } else {
+                    self.session
+                        .download_with_offset(&node, writer.as_mut(), offset)
+                        .await
+                };
+                let _ = reply.send(res);
+            }
             SessionCommand::SetWorkers { workers, reply } => {
                 self.session.set_workers(workers);
                 let _ = reply.send(Ok(()));
@@ -750,6 +1034,50 @@ impl SessionActor {
             SessionCommand::SetResume { enabled, reply } => {
                 self.session.set_resume(enabled);
                 let _ = reply.send(Ok(()));
+            }
+            SessionCommand::ClearStatus { reply } => {
+                self.session.clear_status();
+                let _ = reply.send(Ok(()));
+            }
+            SessionCommand::EnablePreviews { enabled, reply } => {
+                self.session.enable_previews(enabled);
+                let _ = reply.send(Ok(()));
+            }
+            SessionCommand::SetAuthringEd25519 { blob, reply } => {
+                let res = self.session.set_authring_ed25519(blob).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::SetAuthringCu25519 { blob, reply } => {
+                let res = self.session.set_authring_cu25519(blob).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::SetBackupsBlob { blob, reply } => {
+                let res = self.session.set_backups_blob(blob).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::SetWarnings { warnings, reply } => {
+                let res = self.session.set_warnings(warnings).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::SetContactVerificationWarning { enabled, reply } => {
+                let res = self.session.set_contact_verification_warning(enabled).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::SetManualVerification { enabled, reply } => {
+                let res = self.session.set_manual_verification(enabled).await;
+                let _ = reply.send(res);
+            }
+            SessionCommand::KeysDowngradeDetected { reply } => {
+                let res = Ok(self.session.keys_downgrade_detected());
+                let _ = reply.send(res);
+            }
+            SessionCommand::ContactVerificationWarning { reply } => {
+                let res = Ok(self.session.contact_verification_warning());
+                let _ = reply.send(res);
+            }
+            SessionCommand::AuthringState { handle, reply } => {
+                let res = Ok(self.session.authring_state(&handle));
+                let _ = reply.send(res);
             }
             SessionCommand::WatchStatus { callback, reply } => {
                 self.session.watch_status(callback);

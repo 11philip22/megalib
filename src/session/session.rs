@@ -19,7 +19,7 @@ use crate::crypto::keyring::{Keyring, encrypt_tlv_records};
 use crate::crypto::{AuthRing, AuthState, MegaRsaKey, make_random_key, parse_raw_private_key};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, NodeType};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 /// MEGA user session.
 ///
@@ -606,31 +606,31 @@ impl Session {
         Ok((alerts, lsn))
     }
 
-    /// Run a lightweight action-packet loop with exponential backoff.
-    ///
-    /// The `should_stop` predicate is evaluated after each poll to allow
-    /// embedding applications to terminate the loop.
-    pub(crate) async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
-    where
-        F: FnMut() -> bool,
-    {
-        let mut delay_ms = 1_000u64;
-        let max_delay = 60_000u64;
+    // /// Run a lightweight action-packet loop with exponential backoff.
+    // ///
+    // /// The `should_stop` predicate is evaluated after each poll to allow
+    // /// embedding applications to terminate the loop.
+    // pub(crate) async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
+    // where
+    //     F: FnMut() -> bool,
+    // {
+    //     let mut delay_ms = 1_000u64;
+    //     let max_delay = 60_000u64;
 
-        while !should_stop() {
-            match self.poll_action_packets_once().await {
-                Ok(_) => {
-                    delay_ms = 1_000;
-                }
-                Err(MegaError::ServerBusy) | Err(MegaError::InvalidResponse) => {
-                    delay_ms = (delay_ms * 2).min(max_delay);
-                }
-                Err(e) => return Err(e),
-            }
-            sleep(Duration::from_millis(delay_ms)).await;
-        }
-        Ok(())
-    }
+    //     while !should_stop() {
+    //         match self.poll_action_packets_once().await {
+    //             Ok(_) => {
+    //                 delay_ms = 1_000;
+    //             }
+    //             Err(MegaError::ServerBusy) | Err(MegaError::InvalidResponse) => {
+    //                 delay_ms = (delay_ms * 2).min(max_delay);
+    //             }
+    //             Err(e) => return Err(e),
+    //         }
+    //         sleep(Duration::from_millis(delay_ms)).await;
+    //     }
+    //     Ok(())
+    // }
 
     async fn dispatch_action_packets(&mut self, packets: &[Value]) -> Result<bool> {
         let mut changed_handles = Vec::new();
@@ -1364,11 +1364,6 @@ impl Session {
     /// Get all nodes in the session cache.
     pub fn nodes(&self) -> &[crate::fs::Node] {
         &self.nodes
-    }
-
-    /// Spawn a background actor that owns this session and polls SC automatically.
-    pub(crate) fn spawn_actor(self) -> crate::session::actor::SessionHandle {
-        crate::session::actor::SessionHandle::from_session(self)
     }
 
     /// Save session to a file for later restoration.

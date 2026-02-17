@@ -514,22 +514,22 @@ impl Session {
             .collect()
     }
 
-    /// Return descendant node handles for a given share root by walking the cached node tree.
-    pub fn share_descendants(&self, share_handle: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut stack = vec![share_handle.to_string()];
-        while let Some(parent) = stack.pop() {
-            for n in &self.nodes {
-                if let Some(p) = &n.parent_handle {
-                    if p == &parent {
-                        out.push(n.handle.clone());
-                        stack.push(n.handle.clone());
-                    }
-                }
-            }
-        }
-        out
-    }
+    // /// Return descendant node handles for a given share root by walking the cached node tree.
+    // pub fn share_descendants(&self, share_handle: &str) -> Vec<String> {
+    //     let mut out = Vec::new();
+    //     let mut stack = vec![share_handle.to_string()];
+    //     while let Some(parent) = stack.pop() {
+    //         for n in &self.nodes {
+    //             if let Some(p) = &n.parent_handle {
+    //                 if p == &parent {
+    //                     out.push(n.handle.clone());
+    //                     stack.push(n.handle.clone());
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     out
+    // }
 
     /// Handles of share keys whose nodes are no longer present (potential removals).
     pub fn share_removals(&self) -> Vec<String> {

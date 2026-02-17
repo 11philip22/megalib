@@ -10,4 +10,5 @@ mod auth;
 pub use registration::{RegistrationState, register, verify_registration};
 pub use keys::ContactPublicKeys;
 pub use actor::{SessionHandle, AccountInfo};
+pub use session::{SessionBlob, FolderSessionBlob};
 pub(crate) use session::Session;

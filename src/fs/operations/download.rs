@@ -18,7 +18,11 @@ impl Session {
     /// # Arguments
     /// * `node` - The file node to download
     /// * `writer` - The writer to write decrypted data to
-    pub async fn download<W: std::io::Write>(&mut self, node: &Node, writer: &mut W) -> Result<()> {
+    pub async fn download<W: std::io::Write + ?Sized>(
+        &mut self,
+        node: &Node,
+        writer: &mut W,
+    ) -> Result<()> {
         self.download_with_offset(node, writer, 0).await
     }
 
@@ -60,7 +64,7 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn download_with_offset<W: std::io::Write>(
+    pub async fn download_with_offset<W: std::io::Write + ?Sized>(
         &mut self,
         node: &Node,
         writer: &mut W,
