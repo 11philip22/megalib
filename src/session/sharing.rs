@@ -3,8 +3,8 @@
 use serde_json::json;
 
 use crate::base64::base64url_encode;
-use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::crypto::MegaRsaKey;
+use crate::crypto::aes::aes128_ecb_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::NodeType;
 use crate::session::Session;
@@ -199,5 +199,4 @@ impl Session {
 
         Some(json!([cr_nodes, cr_items, cr_triplets]))
     }
-
 }

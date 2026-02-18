@@ -12,8 +12,8 @@ use crate::crypto::{
 };
 use crate::error::{MegaError, Result};
 
-use super::device_id::device_id_hash;
 use super::core::Session;
+use super::device_id::device_id_hash;
 
 #[derive(Debug, Clone, Copy)]
 enum UpgradeOutcome {

@@ -11,7 +11,23 @@ use crate::crypto::rsa::read_mpi;
 use crate::crypto::{MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt};
 use crate::error::{MegaError, Result};
 
-/// Derive key using PBKDF2-SHA512 (login variant 2).
+/// Derive the login key using PBKDF2-SHA512 (variant 2).
+///
+/// This follows MEGA's v2 login flow and returns the 32-byte derived key.
+///
+/// # Errors
+/// Returns [`crate::MegaError::CryptoError`] if PBKDF2 fails.
+///
+/// # Examples
+/// ```
+/// use megalib::crypto::derive_key_v2;
+///
+/// # fn example() -> megalib::Result<()> {
+/// let key = derive_key_v2("password", b"salt")?;
+/// assert_eq!(key.len(), 32);
+/// # Ok(())
+/// # }
+/// ```
 pub fn derive_key_v2(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     let mut key = [0u8; 32];
     pbkdf2::<Hmac<Sha512>>(password.as_bytes(), salt, 100_000, &mut key)
@@ -20,12 +36,51 @@ pub fn derive_key_v2(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-/// Encrypt a key to base64 using AES-128-ECB.
+/// Encrypt a 16-byte key using AES-128-ECB.
+///
+/// The returned bytes are raw ciphertext and are typically encoded with
+/// MEGA's URL-safe base64 before transmission or storage.
+///
+/// # Examples
+/// ```
+/// use megalib::base64::base64url_encode;
+/// use megalib::crypto::{decrypt_key, encrypt_key};
+///
+/// # fn example() -> megalib::Result<()> {
+/// let key = [1u8; 16];
+/// let password_key = [2u8; 16];
+/// let encrypted = encrypt_key(&key, &password_key);
+/// let b64 = base64url_encode(&encrypted);
+/// let decrypted = decrypt_key(&b64, &password_key)?;
+/// assert_eq!(decrypted, key);
+/// # Ok(())
+/// # }
+/// ```
 pub fn encrypt_key(key_to_encrypt: &[u8; 16], password_key: &[u8; 16]) -> Vec<u8> {
     aes128_ecb_encrypt(key_to_encrypt, password_key)
 }
 
-/// Decrypt a key from base64 using AES-128-ECB.
+/// Decrypt a 16-byte key from MEGA's base64 encoding.
+///
+/// # Errors
+/// Returns an error if the input is not valid base64 or does not decode to
+/// exactly 16 bytes.
+///
+/// # Examples
+/// ```
+/// use megalib::base64::base64url_encode;
+/// use megalib::crypto::{decrypt_key, encrypt_key};
+///
+/// # fn example() -> megalib::Result<()> {
+/// let key = [3u8; 16];
+/// let password_key = [4u8; 16];
+/// let encrypted = encrypt_key(&key, &password_key);
+/// let b64 = base64url_encode(&encrypted);
+/// let decrypted = decrypt_key(&b64, &password_key)?;
+/// assert_eq!(decrypted, key);
+/// # Ok(())
+/// # }
+/// ```
 pub fn decrypt_key(b64: &str, password_key: &[u8; 16]) -> Result<[u8; 16]> {
     let data = base64url_decode(b64)?;
     if data.len() != 16 {
@@ -38,7 +93,25 @@ pub fn decrypt_key(b64: &str, password_key: &[u8; 16]) -> Result<[u8; 16]> {
     Ok(key)
 }
 
-/// Decrypt RSA private key from base64.
+/// Decrypt an RSA private key from MEGA's base64 format.
+///
+/// The input is expected to be the AES-ECB encrypted MPI blob stored in user
+/// attributes.
+///
+/// # Errors
+/// Returns an error if decoding or MPI parsing fails.
+///
+/// # Examples
+/// ```no_run
+/// use megalib::crypto::decrypt_private_key;
+///
+/// # fn example() -> megalib::Result<()> {
+/// let encrypted_b64 = "BASE64_PRIVATE_KEY";
+/// let master_key = [0u8; 16];
+/// let _key = decrypt_private_key(encrypted_b64, &master_key)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn decrypt_private_key(b64: &str, master_key: &[u8; 16]) -> Result<MegaRsaKey> {
     let encrypted = base64url_decode(b64)?;
     let decrypted = aes128_ecb_decrypt(&encrypted, master_key);
@@ -58,7 +131,23 @@ pub fn decrypt_private_key(b64: &str, master_key: &[u8; 16]) -> Result<MegaRsaKe
     Ok(MegaRsaKey { p, q, d, u, m, e })
 }
 
-/// Parse an unencrypted RSA private key blob stored inside ^!keys (MPI p||q||d||u).
+/// Parse an unencrypted RSA private key blob stored inside ^!keys.
+///
+/// The blob must contain MPI-encoded `p`, `q`, `d`, and `u` in order.
+///
+/// # Errors
+/// Returns an error if the blob is truncated or MPI parsing fails.
+///
+/// # Examples
+/// ```no_run
+/// use megalib::crypto::parse_raw_private_key;
+///
+/// # fn example() -> megalib::Result<()> {
+/// let blob = vec![0u8; 512];
+/// let _key = parse_raw_private_key(&blob)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn parse_raw_private_key(blob: &[u8]) -> Result<MegaRsaKey> {
     let mut pos = 0;
     let p = read_mpi(blob, &mut pos).map_err(MegaError::CryptoError)?;
@@ -70,7 +159,21 @@ pub fn parse_raw_private_key(blob: &[u8]) -> Result<MegaRsaKey> {
     Ok(MegaRsaKey { p, q, d, u, m, e })
 }
 
-/// Decrypt session ID using RSA.
+/// Decrypt a session ID using an RSA private key.
+///
+/// # Errors
+/// Returns an error if the session blob is malformed or RSA decryption fails.
+///
+/// # Examples
+/// ```no_run
+/// use megalib::crypto::{decrypt_session_id, MegaRsaKey};
+///
+/// # fn example(rsa_key: &MegaRsaKey) -> megalib::Result<()> {
+/// let encrypted = "BASE64_SESSION_ID";
+/// let _sid = decrypt_session_id(encrypted, rsa_key)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn decrypt_session_id(csid_b64: &str, rsa_key: &MegaRsaKey) -> Result<String> {
     let data = base64url_decode(csid_b64)?;
 

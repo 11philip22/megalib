@@ -10,8 +10,8 @@ use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::aes128_ecb_decrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::Node;
-use crate::session::core::Contact;
 use crate::session::Session;
+use crate::session::core::Contact;
 
 impl Session {
     /// Poll the SC channel once and dispatch action packets.
@@ -881,5 +881,4 @@ impl Session {
 
         Ok(Some((user, ed, cu, verified, Some(contact))))
     }
-
 }

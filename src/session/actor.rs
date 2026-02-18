@@ -23,14 +23,37 @@ type BoxedReader = Box<dyn AsyncReadSeek>;
 type BoxedWriter = Box<dyn Write + Send>;
 type SeqtagWaiter = Box<dyn FnOnce(&mut Session) + Send>;
 
+/// Account metadata for the current session.
+///
+/// Returned by [`SessionHandle::account_info`], this captures the server-reported
+/// identity and the active session id.
 #[derive(Debug, Clone)]
 pub struct AccountInfo {
+    /// Account email address.
     pub email: String,
+    /// Display name, if set.
     pub name: Option<String>,
+    /// User handle (base64url).
     pub user_handle: String,
+    /// Active session identifier.
     pub session_id: String,
 }
 
+/// Handle to a background MEGA session actor.
+///
+/// This type is cheap to clone and forwards requests to a task that maintains
+/// session state and polling.
+///
+/// # Examples
+/// ```no_run
+/// use megalib::SessionHandle;
+///
+/// # async fn example() -> megalib::Result<()> {
+/// let session = SessionHandle::login("user@example.com", "password").await?;
+/// # let _ = session;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct SessionHandle {
     tx: mpsc::Sender<SessionCommand>,
@@ -217,33 +240,163 @@ struct SessionActor {
 }
 
 impl SessionHandle {
+    /// Parse a base64-encoded session blob.
+    ///
+    /// Use this to inspect or persist SDK-compatible session blobs without creating
+    /// a live session.
+    ///
+    /// # Errors
+    /// Returns an error if the blob is malformed or uses an unsupported format.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # fn example() -> megalib::Result<()> {
+    /// let blob = "BASE64_BLOB";
+    /// let parsed = SessionHandle::parse_session_blob(blob)?;
+    /// # let _ = parsed;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn parse_session_blob(session_b64: &str) -> Result<SessionBlob> {
         Session::parse_session_blob(session_b64)
     }
 
+    /// Parse a base64-encoded folder session blob.
+    ///
+    /// This is used for SDK-compatible public folder sessions.
+    ///
+    /// # Errors
+    /// Returns an error if the blob is malformed or uses an unsupported format.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # fn example() -> megalib::Result<()> {
+    /// let blob = "BASE64_BLOB";
+    /// let parsed = SessionHandle::parse_folder_session_blob(blob)?;
+    /// # let _ = parsed;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn parse_folder_session_blob(session_b64: &str) -> Result<FolderSessionBlob> {
         Session::parse_folder_session_blob(session_b64)
     }
 
+    /// Serialize a folder session blob into its base64 form.
+    ///
+    /// This is the inverse of [`SessionHandle::parse_folder_session_blob`].
+    ///
+    /// # Errors
+    /// Returns an error if the blob cannot be encoded.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::{SessionHandle, FolderSessionBlob};
+    ///
+    /// # fn example(blob: &FolderSessionBlob) -> megalib::Result<()> {
+    /// let encoded = SessionHandle::dump_folder_session_blob(blob)?;
+    /// # let _ = encoded;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn dump_folder_session_blob(blob: &FolderSessionBlob) -> Result<String> {
         Session::dump_folder_session_blob(blob)
     }
 
+    /// Log in with an email address and password.
+    ///
+    /// On success this spawns a background actor for polling and returns a
+    /// [`SessionHandle`].
+    ///
+    /// # Errors
+    /// Returns an error if authentication or network requests fail.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// # let _ = session;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn login(email: &str, password: &str) -> Result<Self> {
         let session = Session::login(email, password).await?;
         Ok(SessionActor::spawn(session))
     }
 
+    /// Log in using an HTTP/SOCKS proxy.
+    ///
+    /// The proxy string is passed through to the underlying HTTP client.
+    ///
+    /// # Errors
+    /// Returns an error if the proxy is invalid or authentication fails.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login_with_proxy(
+    ///     "user@example.com",
+    ///     "password",
+    ///     "http://proxy:8080",
+    /// ).await?;
+    /// # let _ = session;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn login_with_proxy(email: &str, password: &str, proxy: &str) -> Result<Self> {
         let session = Session::login_with_proxy(email, password, proxy).await?;
         Ok(SessionActor::spawn(session))
     }
 
+    /// Load a saved session from disk.
+    ///
+    /// Returns `Ok(None)` when the file does not exist or the stored session can
+    /// not be restored.
+    ///
+    /// # Errors
+    /// Returns an error on read failures or invalid file contents.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// if let Some(session) = SessionHandle::load("session.txt").await? {
+    ///     session.refresh().await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Option<Self>> {
         let session = Session::load(path).await?;
         Ok(session.map(SessionActor::spawn))
     }
 
+    /// Load a saved session from disk using a proxy.
+    ///
+    /// Returns `Ok(None)` when the file does not exist or the stored session can
+    /// not be restored.
+    ///
+    /// # Errors
+    /// Returns an error on read failures or invalid file contents.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::load_with_proxy("session.txt", "http://proxy:8080").await?;
+    /// # let _ = session;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn load_with_proxy<P: AsRef<std::path::Path>>(
         path: P,
         proxy: &str,
@@ -266,26 +419,114 @@ impl SessionHandle {
             .map_err(|_| MegaError::Custom("Session actor stopped".to_string()))?
     }
 
+    /// Fetch account metadata for the current session.
+    ///
+    /// This returns the cached identity information from the session actor.
+    ///
+    /// # Errors
+    /// Returns an error if the session actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let info = session.account_info().await?;
+    /// println!("{}", info.email);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn account_info(&self) -> Result<AccountInfo> {
         self.request(|reply| SessionCommand::AccountInfo { reply })
             .await
     }
 
+    /// Export the current session as a base64 string.
+    ///
+    /// The returned value can be saved and later passed to `load`.
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot be serialized or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let token = session.dump_session().await?;
+    /// # let _ = token;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn dump_session(&self) -> Result<String> {
         self.request(|reply| SessionCommand::DumpSession { reply })
             .await
     }
 
+    /// Export the current session as a raw blob.
+    ///
+    /// This is useful for SDK-compatible persistence formats.
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot be serialized or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let blob = session.dump_session_blob().await?;
+    /// # let _ = blob;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn dump_session_blob(&self) -> Result<Vec<u8>> {
         self.request(|reply| SessionCommand::DumpSessionBlob { reply })
             .await
     }
 
+    /// Refresh the remote node tree and caches.
+    ///
+    /// Call this after login and after remote changes to keep path-based operations
+    /// accurate.
+    ///
+    /// # Errors
+    /// Returns an error if the refresh request fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn refresh(&self) -> Result<()> {
         self.request(|reply| SessionCommand::Refresh { reply })
             .await
     }
 
+    /// Fetch the current storage quota.
+    ///
+    /// # Errors
+    /// Returns an error if the quota request fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let quota = session.quota().await?;
+    /// println!("{}", quota.used);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn quota(&self) -> Result<Quota> {
         self.request(|reply| SessionCommand::Quota { reply }).await
     }
@@ -313,15 +554,71 @@ impl SessionHandle {
         .await
     }
 
+    /// Return the cached node list.
+    ///
+    /// Call [`SessionHandle::refresh`] to synchronize with the server first.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let nodes = session.nodes().await?;
+    /// # let _ = nodes;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn nodes(&self) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::Nodes { reply }).await
     }
 
+    /// List cached contact nodes.
+    ///
+    /// Call [`SessionHandle::refresh`] to synchronize contact data.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let contacts = session.list_contacts().await?;
+    /// # let _ = contacts;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list_contacts(&self) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::ListContacts { reply })
             .await
     }
 
+    /// Look up a cached node by its handle.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// if let Some(node) = session.get_node_by_handle("HANDLE").await? {
+    ///     println!("{}", node.name);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_node_by_handle(&self, handle: &str) -> Result<Option<Node>> {
         self.request(|reply| SessionCommand::GetNodeByHandle {
             handle: handle.to_string(),
@@ -330,6 +627,27 @@ impl SessionHandle {
         .await
     }
 
+    /// Check whether a node has the given ancestor.
+    ///
+    /// This uses the cached node tree; call [`SessionHandle::refresh`] to update it.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let nodes = session.nodes().await?;
+    /// if let (Some(node), Some(ancestor)) = (nodes.get(0), nodes.get(1)) {
+    ///     let _ = session.node_has_ancestor(node, ancestor).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn node_has_ancestor(&self, node: &Node, ancestor: &Node) -> Result<bool> {
         self.request(|reply| SessionCommand::NodeHasAncestor {
             node_handle: node.handle.clone(),
@@ -339,6 +657,25 @@ impl SessionHandle {
         .await
     }
 
+    /// Check whether a node has the given ancestor by handle.
+    ///
+    /// This uses the cached node tree; call [`SessionHandle::refresh`] to update it.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// let ok = session.node_has_ancestor_by_handle("NODE", "ANCESTOR").await?;
+    /// # let _ = ok;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn node_has_ancestor_by_handle(
         &self,
         node_handle: &str,
@@ -435,9 +772,10 @@ impl SessionHandle {
     ///
     /// Requires `refresh()` to populate the path cache.
     pub async fn share_folder(&self, path: &str, email: &str, level: i32) -> Result<()> {
-        let node = self.stat(path).await?.ok_or_else(|| {
-            MegaError::Custom(format!("Folder not found: {}", path))
-        })?;
+        let node = self
+            .stat(path)
+            .await?
+            .ok_or_else(|| MegaError::Custom(format!("Folder not found: {}", path)))?;
         if !node.is_folder() {
             return Err(MegaError::Custom("Can only share folders".to_string()));
         }
@@ -509,6 +847,24 @@ impl SessionHandle {
         .await
     }
 
+    /// Download a node to a local file path.
+    ///
+    /// # Errors
+    /// Returns an error if the download fails or the destination cannot be written.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// if let Some(node) = session.stat("/Root/file.txt").await? {
+    ///     session.download_to_file(&node, "file.txt").await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn download_to_file<P: AsRef<std::path::Path>>(
         &self,
         node: &Node,
@@ -522,10 +878,50 @@ impl SessionHandle {
         .await
     }
 
+    /// Download a node into a writer.
+    ///
+    /// # Errors
+    /// Returns an error if the download fails or writing to the sink fails.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// if let Some(node) = session.stat("/Root/file.txt").await? {
+    ///     let writer = Box::new(std::io::Cursor::new(Vec::new()));
+    ///     session.download_to_writer(&node, writer).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn download_to_writer(&self, node: &Node, writer: BoxedWriter) -> Result<()> {
         self.download_to_writer_with_offset(node, writer, 0).await
     }
 
+    /// Download a node into a writer starting at a byte offset.
+    ///
+    /// This is useful for resumable downloads.
+    ///
+    /// # Errors
+    /// Returns an error if the download fails or writing to the sink fails.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// if let Some(node) = session.stat("/Root/file.txt").await? {
+    ///     let writer = Box::new(std::io::Cursor::new(Vec::new()));
+    ///     session.download_to_writer_with_offset(&node, writer, 0).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn download_to_writer_with_offset(
         &self,
         node: &Node,
@@ -541,66 +937,269 @@ impl SessionHandle {
         .await
     }
 
+    /// Set the number of concurrent transfer workers.
+    ///
+    /// Higher values can improve throughput for large transfers.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_workers(4).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_workers(&self, workers: usize) -> Result<()> {
         self.request(|reply| SessionCommand::SetWorkers { workers, reply })
             .await
     }
 
+    /// Enable or disable resumable transfers.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_resume(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_resume(&self, enabled: bool) -> Result<()> {
         self.request(|reply| SessionCommand::SetResume { enabled, reply })
             .await
     }
 
+    /// Clear any registered transfer progress callback.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.clear_status().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn clear_status(&self) -> Result<()> {
         self.request(|reply| SessionCommand::ClearStatus { reply })
             .await
     }
 
+    /// Enable or disable preview thumbnail generation for uploads.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.enable_previews(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn enable_previews(&self, enabled: bool) -> Result<()> {
         self.request(|reply| SessionCommand::EnablePreviews { enabled, reply })
             .await
     }
 
+    /// Replace the Ed25519 authring blob and persist it.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_authring_ed25519(Vec::new()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_authring_ed25519(&self, blob: Vec<u8>) -> Result<()> {
         self.request(|reply| SessionCommand::SetAuthringEd25519 { blob, reply })
             .await
     }
 
+    /// Replace the Cu25519 authring blob and persist it.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_authring_cu25519(Vec::new()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_authring_cu25519(&self, blob: Vec<u8>) -> Result<()> {
         self.request(|reply| SessionCommand::SetAuthringCu25519 { blob, reply })
             .await
     }
 
+    /// Replace the backups blob and persist it.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_backups_blob(Vec::new()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_backups_blob(&self, blob: Vec<u8>) -> Result<()> {
         self.request(|reply| SessionCommand::SetBackupsBlob { blob, reply })
             .await
     }
 
+    /// Replace the warnings map and persist it.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    /// use megalib::crypto::Warnings;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_warnings(Warnings::default()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_warnings(&self, warnings: Warnings) -> Result<()> {
         self.request(|reply| SessionCommand::SetWarnings { warnings, reply })
             .await
     }
 
+    /// Enable or disable the contact verification warning flag.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_contact_verification_warning(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_contact_verification_warning(&self, enabled: bool) -> Result<()> {
         self.request(|reply| SessionCommand::SetContactVerificationWarning { enabled, reply })
             .await
     }
 
+    /// Enable or disable manual verification gating for share keys.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.set_manual_verification(true).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_manual_verification(&self, enabled: bool) -> Result<()> {
         self.request(|reply| SessionCommand::SetManualVerification { enabled, reply })
             .await
     }
 
+    /// Check whether a ^!keys downgrade was detected.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let flagged = session.keys_downgrade_detected().await?;
+    /// # let _ = flagged;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn keys_downgrade_detected(&self) -> Result<bool> {
         self.request(|reply| SessionCommand::KeysDowngradeDetected { reply })
             .await
     }
 
+    /// Check whether the contact verification warning flag is set.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let enabled = session.contact_verification_warning().await?;
+    /// # let _ = enabled;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn contact_verification_warning(&self) -> Result<bool> {
         self.request(|reply| SessionCommand::ContactVerificationWarning { reply })
             .await
     }
 
+    /// Look up authring state for a contact handle.
+    ///
+    /// Returns a tuple of `(ed25519_state, cu25519_state)`.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let states = session.authring_state("BASE64_HANDLE").await?;
+    /// # let _ = states;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn authring_state(
         &self,
         handle_b64: &str,
@@ -612,11 +1211,47 @@ impl SessionHandle {
         .await
     }
 
+    /// Register a transfer progress callback.
+    ///
+    /// The callback receives [`crate::progress::TransferProgress`] updates and
+    /// should return `true` to continue or `false` to cancel.
+    ///
+    /// # Errors
+    /// Returns an error if the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    /// use megalib::make_progress_bar;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.watch_status(make_progress_bar()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn watch_status(&self, callback: ProgressCallback) -> Result<()> {
         self.request(|reply| SessionCommand::WatchStatus { callback, reply })
             .await
     }
 
+    /// Change the account password.
+    ///
+    /// This re-encrypts the master key with a new password-derived key.
+    ///
+    /// # Errors
+    /// Returns an error if the update request fails or the actor has stopped.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "old_password").await?;
+    /// session.change_password("new_password").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn change_password(&self, new_password: &str) -> Result<()> {
         self.request(|reply| SessionCommand::ChangePassword {
             new_password: new_password.to_string(),
@@ -625,6 +1260,23 @@ impl SessionHandle {
         .await
     }
 
+    /// Save the current session to disk.
+    ///
+    /// The saved file can be restored with [`SessionHandle::load`].
+    ///
+    /// # Errors
+    /// Returns an error if the session cannot be serialized or written.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.save("session.txt").await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         self.request(|reply| SessionCommand::Save {
             path: path.as_ref().to_path_buf(),
@@ -633,6 +1285,20 @@ impl SessionHandle {
         .await
     }
 
+    /// Shut down the background session actor.
+    ///
+    /// Pending requests will be dropped after shutdown completes.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use megalib::SessionHandle;
+    ///
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.shutdown().await;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(SessionCommand::Shutdown { reply: tx }).await;

@@ -36,10 +36,15 @@ const TAG_WARNINGS: u8 = 96;
 const HEADER_BYTE0: u8 = 20;
 const HEADER_BYTE1: u8 = 0;
 const GCM_IV_LEN: usize = 12;
+/// Share key flag indicating a trusted key.
 pub const SHAREKEY_FLAG_TRUSTED: u8 = 1 << 0;
+/// Share key flag indicating the key is actively in use.
 pub const SHAREKEY_FLAG_IN_USE: u8 = 1 << 1;
 
-/// Share key flags are not used in this simplified implementation (set to 0).
+/// Share key entry for a node handle.
+///
+/// `handle` is the 6-byte node handle, `key` is the 16-byte share key, and
+/// `flags` stores `SHAREKEY_FLAG_*` bits.
 #[derive(Debug, Clone)]
 pub struct ShareKeyEntry {
     pub handle: [u8; 6],
@@ -47,7 +52,9 @@ pub struct ShareKeyEntry {
     pub flags: u8,
 }
 
-/// Pending outshare entry: folder handle + uid (user handle 8 bytes or email).
+/// Pending outgoing share entry.
+///
+/// Stores the target folder handle and recipient identifier.
 #[derive(Debug, Clone)]
 pub struct PendingOutEntry {
     pub node_handle: [u8; 6],
@@ -55,12 +62,17 @@ pub struct PendingOutEntry {
 }
 
 #[derive(Debug, Clone)]
+/// Identifier for a pending share recipient.
 pub enum PendingUid {
+    /// Pending share for a user handle (8 bytes).
     UserHandle([u8; 8]),
+    /// Pending share for an email address.
     Email(String),
 }
 
-/// Pending inshare: map key (string handle) to (user handle, encrypted share key).
+/// Pending incoming share entry.
+///
+/// Maps a node handle to the sender handle and the encrypted share key payload.
 #[derive(Debug, Clone)]
 pub struct PendingInEntry {
     pub node_handle_b64: String,
@@ -68,11 +80,33 @@ pub struct PendingInEntry {
     pub share_key: Vec<u8>,
 }
 
-/// Minimal warnings/authrings/backups are carried as raw blobs (LTLV for warnings).
+/// Warnings map carried inside ^!keys.
+///
+/// Entries are stored as `(tag, value)` pairs. Helpers focus on the `cv` tag
+/// (contact verification requirement).
+///
+/// # Examples
+/// ```
+/// use megalib::crypto::Warnings;
+///
+/// let mut warnings = Warnings::default();
+/// warnings.set_cv(true);
+/// assert!(warnings.cv_enabled());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct Warnings(pub Vec<(String, Vec<u8>)>);
 
 impl Warnings {
+    /// Set the contact verification warning (`cv`) flag.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::Warnings;
+    ///
+    /// let mut warnings = Warnings::default();
+    /// warnings.set_cv(true);
+    /// assert!(warnings.cv_enabled());
+    /// ```
     pub fn set_cv(&mut self, enabled: bool) {
         let val = if enabled {
             b"1".to_vec()
@@ -86,6 +120,16 @@ impl Warnings {
         }
     }
 
+    /// Check whether the contact verification warning is enabled.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::Warnings;
+    ///
+    /// let mut warnings = Warnings::default();
+    /// warnings.set_cv(false);
+    /// assert!(!warnings.cv_enabled());
+    /// ```
     pub fn cv_enabled(&self) -> bool {
         self.0
             .iter()
@@ -95,6 +139,10 @@ impl Warnings {
     }
 }
 
+/// In-memory representation of the ^!keys container.
+///
+/// This struct stores key material, authrings, share keys, and related metadata
+/// needed to serialize or update MEGA's ^!keys attribute.
 #[derive(Debug, Clone, Default)]
 pub struct KeyManager {
     pub version: u8,
@@ -167,6 +215,18 @@ impl KeyManager {
         }
         Self::serialize_ltlv_map(map)
     }
+    /// Create a new key manager with default metadata.
+    ///
+    /// This sets `version = 1`, `generation = 0`, and clears the manual
+    /// verification flag.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let km = KeyManager::new();
+    /// assert!(!km.is_ready());
+    /// ```
     pub fn new() -> Self {
         let mut km = KeyManager::default();
         km.version = 1;
@@ -175,16 +235,52 @@ impl KeyManager {
         km
     }
 
+    /// Check whether private Ed25519 and Cu25519 keys are present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// assert!(!km.is_ready());
+    /// km.set_priv_keys(&[1u8; 32], &[2u8; 32]);
+    /// assert!(km.is_ready());
+    /// ```
     pub fn is_ready(&self) -> bool {
         !self.priv_ed25519.is_empty() && !self.priv_cu25519.is_empty()
     }
 
+    /// Store Ed25519 and Cu25519 private keys.
+    ///
+    /// The input slices must be 32 bytes each.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_priv_keys(&[1u8; 32], &[2u8; 32]);
+    /// assert!(km.is_ready());
+    /// ```
     pub fn set_priv_keys(&mut self, ed: &[u8], cu: &[u8]) {
         self.priv_ed25519 = ed.to_vec();
         self.priv_cu25519 = cu.to_vec();
     }
 
     /// Insert or update a share key with explicit flag bits.
+    ///
+    /// Invalid handles or keys are ignored.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[0u8; 6]);
+    /// km.add_share_key_with_flags(&handle, &[7u8; 16], true, false);
+    /// assert!(km.is_share_key_trusted(&handle));
+    /// ```
     pub fn add_share_key_with_flags(
         &mut self,
         handle_b64: &str,
@@ -225,14 +321,56 @@ impl KeyManager {
         });
     }
 
+    /// Insert or update a share key using a base64url handle.
+    ///
+    /// The handle must decode to 6 bytes and the key must be 16 bytes.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[0u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[1u8; 16]);
+    /// assert!(km.get_share_key_from_str(&handle).is_some());
+    /// ```
     pub fn add_share_key_from_str(&mut self, handle_b64: &str, key: &[u8]) {
         self.add_share_key_with_flags(handle_b64, key, false, false);
     }
 
+    /// Insert or update a share key using owned handle and key data.
+    ///
+    /// Invalid handles or keys are ignored.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[2u8; 6]);
+    /// km.add_share_key(handle.clone(), vec![9u8; 16]);
+    /// assert!(km.get_share_key_from_str(&handle).is_some());
+    /// ```
     pub fn add_share_key(&mut self, handle_b64: String, key: Vec<u8>) {
         self.add_share_key_with_flags(&handle_b64, &key, false, false);
     }
 
+    /// Return the raw flag bits for a share key.
+    ///
+    /// Returns `None` if the handle is invalid or not present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[3u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[1u8; 16]);
+    /// assert!(km.share_key_flags(&handle).is_some());
+    /// ```
     pub fn share_key_flags(&self, handle_b64: &str) -> Option<u8> {
         let decoded = Self::decode_handle(handle_b64)?;
         self.share_keys
@@ -241,36 +379,119 @@ impl KeyManager {
             .map(|e| e.flags)
     }
 
+    /// Check whether a share key is marked trusted.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[4u8; 6]);
+    /// km.add_share_key_with_flags(&handle, &[2u8; 16], true, false);
+    /// assert!(km.is_share_key_trusted(&handle));
+    /// ```
     pub fn is_share_key_trusted(&self, handle_b64: &str) -> bool {
         self.share_key_flags(handle_b64)
             .map(|f| f & SHAREKEY_FLAG_TRUSTED != 0)
             .unwrap_or(false)
     }
 
+    /// Check whether a share key is marked in use.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[5u8; 6]);
+    /// km.add_share_key_with_flags(&handle, &[3u8; 16], false, true);
+    /// assert!(km.is_share_key_in_use(&handle));
+    /// ```
     pub fn is_share_key_in_use(&self, handle_b64: &str) -> bool {
         self.share_key_flags(handle_b64)
             .map(|f| f & SHAREKEY_FLAG_IN_USE != 0)
             .unwrap_or(false)
     }
 
+    /// Set or clear the IN_USE flag for a share key.
+    ///
+    /// Returns `false` if the handle is not present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[6u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[4u8; 16]);
+    /// assert!(km.set_share_key_in_use(&handle, true));
+    /// assert!(km.is_share_key_in_use(&handle));
+    /// ```
     pub fn set_share_key_in_use(&mut self, handle_b64: &str, in_use: bool) -> bool {
         self.set_share_key_flag(handle_b64, SHAREKEY_FLAG_IN_USE, in_use)
     }
 
+    /// Set or clear the TRUSTED flag for a share key.
+    ///
+    /// Returns `false` if the handle is not present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[7u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[5u8; 16]);
+    /// assert!(km.set_share_key_trusted(&handle, true));
+    /// assert!(km.is_share_key_trusted(&handle));
+    /// ```
     pub fn set_share_key_trusted(&mut self, handle_b64: &str, trusted: bool) -> bool {
         self.set_share_key_flag(handle_b64, SHAREKEY_FLAG_TRUSTED, trusted)
     }
 
-    /// Contact verification gating (manual verification feature flag)
+    /// Enable or disable manual verification gating.
+    ///
+    /// When enabled, contacts must be manually verified before share-key exchange.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_manual_verification(true);
+    /// assert!(km.manual_verification());
+    /// ```
     pub fn set_manual_verification(&mut self, enabled: bool) {
         self.manual_verification = enabled;
     }
 
+    /// Check whether manual verification gating is enabled.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let km = KeyManager::new();
+    /// assert!(!km.manual_verification());
+    /// ```
     pub fn manual_verification(&self) -> bool {
         self.manual_verification
     }
 
-    /// Warning flag "cv" (contact verification required) mirrors SDK behavior.
+    /// Update the contact verification warning flag (`cv`).
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_contact_verification_warning(true);
+    /// assert!(km.contact_verification_warning());
+    /// ```
     pub fn set_contact_verification_warning(&mut self, enabled: bool) {
         let val = if enabled {
             b"1".to_vec()
@@ -284,6 +505,16 @@ impl KeyManager {
         }
     }
 
+    /// Check whether the contact verification warning flag is set.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_contact_verification_warning(false);
+    /// assert!(!km.contact_verification_warning());
+    /// ```
     pub fn contact_verification_warning(&self) -> bool {
         self.warnings
             .0
@@ -293,27 +524,107 @@ impl KeyManager {
             .unwrap_or(false)
     }
 
-    /// Set raw backups blob.
+    /// Set the raw backups blob.
+    ///
+    /// The blob is stored verbatim and emitted into the `^!keys` container
+    /// when calling [`KeyManager::encode_container`].
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_backups(vec![1, 2, 3]);
+    /// ```
     pub fn set_backups(&mut self, blob: Vec<u8>) {
         self.backups = blob;
     }
 
+    /// Replace the Ed25519 authring blob.
+    ///
+    /// The blob is stored verbatim and should use the same LTLV encoding as
+    /// [`crate::crypto::AuthRing::serialize_ltlv`]. No validation is performed here.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::{AuthRing, KeyManager};
+    ///
+    /// let handle = base64url_encode(&[1u8; 8]);
+    /// let mut ring = AuthRing::default();
+    /// ring.update(&handle, b"public-key", true);
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_authring_ed25519(ring.serialize_ltlv());
+    /// ```
     pub fn set_authring_ed25519(&mut self, blob: Vec<u8>) {
         self.auth_ed25519 = blob;
     }
 
+    /// Replace the Cu25519 authring blob.
+    ///
+    /// The blob is stored verbatim and should use the same LTLV encoding as
+    /// [`crate::crypto::AuthRing::serialize_ltlv`]. No validation is performed here.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::{AuthRing, KeyManager};
+    ///
+    /// let handle = base64url_encode(&[2u8; 8]);
+    /// let mut ring = AuthRing::default();
+    /// ring.update(&handle, b"cu25519-key", false);
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_authring_cu25519(ring.serialize_ltlv());
+    /// ```
     pub fn set_authring_cu25519(&mut self, blob: Vec<u8>) {
         self.auth_cu25519 = blob;
     }
 
+    /// Borrow the warnings map.
+    ///
+    /// The warnings map is serialized into the `^!keys` container. Use
+    /// [`Warnings::set_cv`] to toggle the contact verification flag.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let km = KeyManager::new();
+    /// assert!(!km.warnings().cv_enabled());
+    /// ```
     pub fn warnings(&self) -> &Warnings {
         &self.warnings
     }
 
+    /// Replace the warnings map.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::{KeyManager, Warnings};
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.set_warnings(Warnings::default());
+    /// ```
     pub fn set_warnings(&mut self, warnings: Warnings) {
         self.warnings = warnings;
     }
 
+    /// Get a share key for a handle encoded as base64url.
+    ///
+    /// Returns `None` if the handle is invalid or not present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[8u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[6u8; 16]);
+    /// assert!(km.get_share_key_from_str(&handle).is_some());
+    /// ```
     pub fn get_share_key_from_str(&self, handle_b64: &str) -> Option<[u8; 16]> {
         let decoded = base64url_decode(handle_b64).ok()?;
         if decoded.len() != 6 {
@@ -327,6 +638,19 @@ impl KeyManager {
         None
     }
 
+    /// Add a pending outgoing share for an email recipient.
+    ///
+    /// Invalid emails or duplicate entries are ignored.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[9u8; 6]);
+    /// km.add_pending_out_email(&handle, "user@example.com");
+    /// ```
     pub fn add_pending_out_email(&mut self, handle_b64: &str, email: &str) {
         if email.is_empty() || email.len() >= 256 {
             return;
@@ -348,6 +672,19 @@ impl KeyManager {
         });
     }
 
+    /// Add a pending outgoing share for a user handle.
+    ///
+    /// Duplicate entries are ignored.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[10u8; 6]);
+    /// km.add_pending_out_user_handle(&handle, &[1u8; 8]);
+    /// ```
     pub fn add_pending_out_user_handle(&mut self, handle_b64: &str, user_handle: &[u8; 8]) {
         let Some(handle) = Self::decode_handle(handle_b64) else {
             return;
@@ -366,6 +703,21 @@ impl KeyManager {
         });
     }
 
+    /// Remove a pending outgoing share entry.
+    ///
+    /// Returns `true` if an entry was removed.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::{KeyManager, PendingUid};
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[11u8; 6]);
+    /// km.add_pending_out_email(&handle, "user@example.com");
+    /// let removed = km.remove_pending_out(&handle, &PendingUid::Email("user@example.com".into()));
+    /// assert!(removed);
+    /// ```
     pub fn remove_pending_out(&mut self, handle_b64: &str, uid: &PendingUid) -> bool {
         let Some(handle) = Self::decode_handle(handle_b64) else {
             return false;
@@ -376,6 +728,17 @@ impl KeyManager {
         before != self.pending_out.len()
     }
 
+    /// Add a pending incoming share entry.
+    ///
+    /// Empty share keys and duplicates are ignored.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.add_pending_in("HANDLE", &[2u8; 8], vec![0u8; 16]);
+    /// ```
     pub fn add_pending_in(&mut self, handle_b64: &str, user_handle: &[u8; 8], share_key: Vec<u8>) {
         if share_key.is_empty() {
             return;
@@ -394,6 +757,18 @@ impl KeyManager {
         });
     }
 
+    /// Remove a pending incoming share entry.
+    ///
+    /// Returns `true` if an entry was removed.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// km.add_pending_in("HANDLE", &[3u8; 8], vec![1u8; 16]);
+    /// assert!(km.remove_pending_in("HANDLE", &[3u8; 8]));
+    /// ```
     pub fn remove_pending_in(&mut self, handle_b64: &str, user_handle: &[u8; 8]) -> bool {
         let before = self.pending_in.len();
         self.pending_in
@@ -401,7 +776,24 @@ impl KeyManager {
         before != self.pending_in.len()
     }
 
-    /// Clear the IN_USE flag for any share key not present in the provided handle set.
+    /// Clear the IN_USE flag for share keys not present in the provided handle set.
+    ///
+    /// Returns `true` if any flags were changed.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::collections::HashSet;
+    ///
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[12u8; 6]);
+    /// km.add_share_key_with_flags(&handle, &[1u8; 16], false, true);
+    ///
+    /// let keep = HashSet::new();
+    /// assert!(km.clear_in_use_not_in(&keep));
+    /// ```
     pub fn clear_in_use_not_in(&mut self, handles_b64: &HashSet<String>) -> bool {
         let mut changed = false;
         for sk in &mut self.share_keys {
@@ -414,7 +806,24 @@ impl KeyManager {
         changed
     }
 
-    /// Clear the TRUSTED flag for any share key not present in the provided handle set.
+    /// Clear the TRUSTED flag for share keys not present in the provided handle set.
+    ///
+    /// Returns `true` if any flags were changed.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::collections::HashSet;
+    ///
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[13u8; 6]);
+    /// km.add_share_key_with_flags(&handle, &[2u8; 16], true, false);
+    ///
+    /// let keep = HashSet::new();
+    /// assert!(km.clear_trusted_not_in(&keep));
+    /// ```
     pub fn clear_trusted_not_in(&mut self, handles_b64: &HashSet<String>) -> bool {
         let mut changed = false;
         for sk in &mut self.share_keys {
@@ -457,6 +866,19 @@ impl KeyManager {
     }
 
     /// Remove a share key entry (and associated flags) by handle.
+    ///
+    /// Returns `false` if the handle is invalid or not present.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut km = KeyManager::new();
+    /// let handle = base64url_encode(&[14u8; 6]);
+    /// km.add_share_key_from_str(&handle, &[1u8; 16]);
+    /// assert!(km.remove_share_key(&handle));
+    /// ```
     pub fn remove_share_key(&mut self, handle_b64: &str) -> bool {
         if let Some(handle) = Self::decode_handle(handle_b64) {
             let before = self.share_keys.len();
@@ -477,7 +899,27 @@ impl KeyManager {
         }
         changed
     }
-    /// Encode to LTLV then AES-GCM encrypt with master key. Returns final ^!keys blob.
+    /// Encode the key manager into an encrypted `^!keys` container.
+    ///
+    /// The state is serialized to LTLV and encrypted with AES-128-GCM using a
+    /// key derived from `master_key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored RSA private key is shorter than 512 bytes,
+    /// or if encryption fails.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let master = [0u8; 16];
+    /// let mut km = KeyManager::new();
+    /// km.set_priv_keys(&[1u8; 32], &[2u8; 32]);
+    ///
+    /// let blob = km.encode_container(&master).expect("encode");
+    /// assert!(blob.len() > 2);
+    /// ```
     pub fn encode_container(&self, master_key: &[u8; 16]) -> Result<Vec<u8>> {
         if !self.priv_rsa.is_empty() && self.priv_rsa.len() < 512 {
             return Err(MegaError::Custom(
@@ -504,7 +946,30 @@ impl KeyManager {
         Ok(out)
     }
 
-    /// Decode ^!keys blob: check header, decrypt GCM, parse LTLV.
+    /// Decode and apply an encrypted `^!keys` container.
+    ///
+    /// The blob is validated, decrypted with AES-128-GCM, and parsed as LTLV.
+    /// On success the current state is replaced. If the incoming generation is
+    /// older than the current generation, the decode is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the blob is malformed, decryption fails, the LTLV
+    /// payload is invalid, or a generation downgrade is detected.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let master = [0u8; 16];
+    /// let mut km = KeyManager::new();
+    /// km.set_priv_keys(&[1u8; 32], &[2u8; 32]);
+    /// let blob = km.encode_container(&master).expect("encode");
+    ///
+    /// let mut decoded = KeyManager::new();
+    /// decoded.decode_container(&blob, &master).expect("decode");
+    /// assert!(decoded.is_ready());
+    /// ```
     pub fn decode_container(&mut self, data: &[u8], master_key: &[u8; 16]) -> Result<()> {
         if data.len() < 2 + GCM_IV_LEN + 16 {
             return Err(MegaError::InvalidResponse);
@@ -892,7 +1357,26 @@ impl KeyManager {
         Ok(out)
     }
 
-    /// Merge another KeyManager into this one, preserving existing keys and unioning new entries.
+    /// Merge another key manager into this one, preserving existing entries.
+    ///
+    /// Share keys and pending shares are unioned, while metadata fields are only
+    /// copied when the current value is empty or zero. Authrings are merged by
+    /// unioning entries, and warnings preserve existing tags.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::KeyManager;
+    ///
+    /// let mut current = KeyManager::new();
+    /// let mut incoming = KeyManager::new();
+    ///
+    /// let handle = base64url_encode(&[15u8; 6]);
+    /// incoming.add_share_key_from_str(&handle, &[9u8; 16]);
+    ///
+    /// current.merge_from(&incoming);
+    /// assert!(current.get_share_key_from_str(&handle).is_some());
+    /// ```
     pub fn merge_from(&mut self, other: &KeyManager) {
         // Merge share keys (overwrite key+flags if handle matches, OR together flags).
         for entry in &other.share_keys {

@@ -30,6 +30,7 @@ const ENC_GCM_10_08: u8 = 0x11;
 const TLV_KEY_ED25519: &str = "prEd255";
 const TLV_KEY_CU25519: &str = "prCu255";
 
+/// Decoded keyring contents for the `*keyring` user attribute.
 #[derive(Debug, Clone, Default)]
 pub struct Keyring {
     /// Ed25519 private seed (32 bytes)
@@ -45,6 +46,30 @@ enum EncMode {
 
 impl Keyring {
     /// Decrypt and parse a keyring buffer using the master key.
+    ///
+    /// The buffer is expected to follow the `*keyring` attribute format with an
+    /// `encSetting` byte, IV, and ciphertext/tag payload. Supported encodings
+    /// include the AES-GCM/CCM variants used by the SDK.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the encoding is unsupported, the payload is malformed,
+    /// decryption fails, or required key records are missing.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::Keyring;
+    ///
+    /// let master = [7u8; 16];
+    /// let keyring = Keyring {
+    ///     ed25519: Some(vec![1u8; 32]),
+    ///     cu25519: Some(vec![2u8; 32]),
+    /// };
+    /// let enc = keyring.to_encrypted(&master).expect("encrypt");
+    ///
+    /// let decoded = Keyring::from_encrypted(&enc, &master).expect("decrypt");
+    /// assert_eq!(decoded.ed25519.unwrap(), vec![1u8; 32]);
+    /// ```
     pub fn from_encrypted(data: &[u8], master_key: &[u8; 16]) -> Result<Self> {
         if data.len() < 1 + 10 + 8 {
             return Err(MegaError::InvalidResponse);
@@ -146,6 +171,27 @@ impl Keyring {
     }
 
     /// Encrypt this keyring into the attribute format using the master key.
+    ///
+    /// This always emits the AES-GCM encoding (`encSetting = 0x10`) with a
+    /// 12-byte IV and 16-byte authentication tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if required keys are missing, the key lengths are not
+    /// 32 bytes, or encryption fails.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::Keyring;
+    ///
+    /// let master = [7u8; 16];
+    /// let keyring = Keyring {
+    ///     ed25519: Some(vec![1u8; 32]),
+    ///     cu25519: Some(vec![2u8; 32]),
+    /// };
+    /// let enc = keyring.to_encrypted(&master).expect("encrypt");
+    /// assert_eq!(enc[0], 0x10);
+    /// ```
     pub fn to_encrypted(&self, master_key: &[u8; 16]) -> Result<Vec<u8>> {
         let ed = self
             .ed25519
