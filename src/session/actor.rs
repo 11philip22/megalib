@@ -13,7 +13,7 @@ use crate::crypto::{AuthState, Warnings};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, Quota};
 use crate::progress::ProgressCallback;
-use crate::session::session::{FolderSessionBlob, Session, SessionBlob};
+use crate::session::core::{FolderSessionBlob, Session, SessionBlob};
 
 trait AsyncReadSeek: AsyncRead + AsyncSeek + Unpin + Send {}
 

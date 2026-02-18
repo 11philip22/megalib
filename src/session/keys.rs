@@ -16,7 +16,7 @@ use crate::crypto::key_manager::{KeyManager, PendingUid};
 use crate::crypto::{AuthRing, AuthState};
 use crate::error::{MegaError, Result};
 use crate::session::Session;
-use crate::session::session::Contact;
+use crate::session::core::Contact;
 
 /// Contact public keys and verification status (subset of SDK contact info).
 #[derive(Debug, Clone)]
