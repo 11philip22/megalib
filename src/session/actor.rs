@@ -420,7 +420,8 @@ impl SessionHandle {
         .await
     }
 
-    pub async fn share_folder(&self, handle: &str, email: &str, level: i32) -> Result<()> {
+    /// Share a folder by handle.
+    pub async fn share_folder_handle(&self, handle: &str, email: &str, level: i32) -> Result<()> {
         self.request(|reply| SessionCommand::ShareFolder {
             handle: handle.to_string(),
             email: email.to_string(),
@@ -428,6 +429,19 @@ impl SessionHandle {
             reply,
         })
         .await
+    }
+
+    /// Share a folder by path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
+    pub async fn share_folder(&self, path: &str, email: &str, level: i32) -> Result<()> {
+        let node = self.stat(path).await?.ok_or_else(|| {
+            MegaError::Custom(format!("Folder not found: {}", path))
+        })?;
+        if !node.is_folder() {
+            return Err(MegaError::Custom("Can only share folders".to_string()));
+        }
+        self.share_folder_handle(&node.handle, email, level).await
     }
 
     /// Upload a local file into a remote parent path.

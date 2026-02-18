@@ -45,7 +45,7 @@ This library provides a clean, asynchronous Rust interface for interacting with 
   - Check write permissions
 
 - **Sharing & Contacts**:
-  - Share folders with other users (`share_folder`)
+- Share folders with other users by path (`share_folder`)
   - List contacts (`list_contacts`)
   - Access incoming shared folders
 
