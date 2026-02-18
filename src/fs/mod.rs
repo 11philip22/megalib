@@ -1,4 +1,7 @@
 //! Filesystem operations module.
+//!
+//! Most filesystem behavior is implemented as `impl Session` in `fs/operations/*`
+//! and surfaced via `Session`/`SessionHandle` methods (e.g., list/stat/upload).
 
 pub(crate) mod node;
 mod operations;
