@@ -71,6 +71,7 @@ async fn main() -> megalib::Result<()> {
     let session = SessionHandle::login("user@example.com", "password").await?;
     session.refresh().await?;
 
+    // Cloud Drive paths are rooted at /Root
     for node in session.list("/Root", false).await? {
         println!("{} ({} bytes)", node.name, node.size);
     }

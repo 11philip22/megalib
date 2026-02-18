@@ -1,13 +1,13 @@
 //! Example: List files in MEGA account
 //!
 //! Usage:
-//!   cargo run --example ls -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] [--path /path]
+//!   cargo run --example ls -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] [--path /Root/path]
 
 mod cli;
 
 use cli::{ArgParser, credentials_from_parser, usage_and_exit};
 
-const USAGE: &str = "Usage: cargo run --example ls -- --email EMAIL --password PASSWORD [--proxy PROXY] [--path PATH]";
+const USAGE: &str = "Usage: cargo run --example ls -- --email EMAIL --password PASSWORD [--proxy PROXY] [--path /Root/path]";
 
 #[tokio::main]
 async fn main() {

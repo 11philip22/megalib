@@ -9,8 +9,10 @@ impl Session {
     /// List files in a directory.
     ///
     /// # Arguments
-    /// * `path` - The path to list (e.g., "/", "/Documents")
+    /// * `path` - The path to list (e.g., "/Root", "/Root/Documents")
     /// * `recursive` - If true, list all descendants recursively
+    ///
+    /// The Cloud Drive root is `/Root`.
     ///
     /// # Returns
     /// Vector of nodes matching the path

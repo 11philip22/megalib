@@ -1,14 +1,14 @@
 //! Example: Get information about a file or folder
 //!
 //! Usage:
-//!   cargo run --example stat -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] --path /path/to/node
+//!   cargo run --example stat -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] --path /Root/path/to/node
 
 mod cli;
 
 use cli::{ArgParser, credentials_from_parser, usage_and_exit};
 use std::process;
 
-const USAGE: &str = "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD [--proxy PROXY] --path PATH";
+const USAGE: &str = "Usage: cargo run --example stat -- --email EMAIL --password PASSWORD [--proxy PROXY] --path /Root/path";
 
 #[tokio::main]
 async fn main() {

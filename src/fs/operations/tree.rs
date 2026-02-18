@@ -16,6 +16,7 @@ impl Session {
     /// This fetches all nodes (SDK-style `f`), share keys, and public links, then decrypts
     /// attributes and rebuilds cached paths.
     /// Must be called before using `list()`, `stat()`, etc.
+    /// Cloud Drive paths are rooted at `/Root`.
     ///
     /// # Example
     /// ```no_run
@@ -23,7 +24,7 @@ impl Session {
     /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     /// session.refresh().await?;
-    /// let nodes = session.list("/", false)?;
+    /// let nodes = session.list("/Root", false)?;
     /// # Ok(())
     /// # }
     /// ```

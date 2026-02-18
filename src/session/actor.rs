@@ -290,6 +290,9 @@ impl SessionHandle {
         self.request(|reply| SessionCommand::Quota { reply }).await
     }
 
+    /// List files in a directory by path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn list(&self, path: &str, recursive: bool) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::List {
             path: path.to_string(),
@@ -299,6 +302,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Get a node by path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn stat(&self, path: &str) -> Result<Option<Node>> {
         self.request(|reply| SessionCommand::Stat {
             path: path.to_string(),
@@ -346,6 +352,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Create a folder at the given path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn mkdir(&self, path: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::Mkdir {
             path: path.to_string(),
@@ -354,6 +363,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Move a node to a new parent path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn mv(&self, source: &str, dest: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Mv {
             source: source.to_string(),
@@ -363,6 +375,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Rename a node at the given path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn rename(&self, path: &str, new_name: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Rename {
             path: path.to_string(),
@@ -372,6 +387,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Remove a node at the given path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn rm(&self, path: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Rm {
             path: path.to_string(),
@@ -380,6 +398,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Export a node by path to create a public link.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn export(&self, path: &str) -> Result<String> {
         self.request(|reply| SessionCommand::Export {
             path: path.to_string(),
@@ -388,6 +409,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Export multiple nodes by path to create public links.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn export_many(&self, paths: &[&str]) -> Result<Vec<(String, String)>> {
         self.request(|reply| SessionCommand::ExportMany {
             paths: paths.iter().map(|p| p.to_string()).collect(),
@@ -406,6 +430,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload a local file into a remote parent path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn upload(&self, local: &str, remote: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::Upload {
             local: local.to_string(),
@@ -415,6 +442,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload raw bytes into a remote parent path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn upload_from_bytes(
         &self,
         data: &[u8],
@@ -430,6 +460,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload a reader into a remote parent path.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn upload_from_reader<R>(
         &self,
         reader: R,
@@ -450,6 +483,9 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload a local file into a remote parent path with resume support.
+    ///
+    /// Requires `refresh()` to populate the path cache.
     pub async fn upload_resumable(&self, local: &str, remote_parent: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::UploadResumable {
             local: local.to_string(),

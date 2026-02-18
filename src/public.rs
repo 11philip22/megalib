@@ -417,14 +417,17 @@ pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let folder = open_folder("https://mega.nz/folder/ABC123#key").await?;
+/// let root = folder.nodes().first().expect("Empty folder");
+/// let root_path = root.path().unwrap_or(root.name.as_str());
 ///
-/// // List all files
-/// for node in folder.list("/", true) {
+/// // List all files (paths are rooted at the shared folder name)
+/// for node in folder.list(root_path, true) {
 ///     println!("{} ({} bytes)", node.name, node.size);
 /// }
 ///
 /// // Download a specific file
-/// if let Some(node) = folder.stat("/Photos/vacation.jpg") {
+/// let photo_path = format!("{}/Photos/vacation.jpg", root_path);
+/// if let Some(node) = folder.stat(&photo_path) {
 ///     let mut file = std::fs::File::create("vacation.jpg")?;
 ///     folder.download(node, &mut file).await?;
 /// }

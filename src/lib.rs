@@ -21,6 +21,10 @@
 //!   - Parse and download files from public MEGA links.
 //!   - Open and browse public folders (`open_folder`) without login.
 //!
+//! Path-based operations (`list`, `stat`, `mkdir`, `export`, uploads, etc.) rely on
+//! the cached node tree, so call `SessionHandle::refresh()` after login and after
+//! remote changes to keep paths accurate.
+//!
 //! ## Example: Basic Usage
 //!
 //! ```no_run
@@ -30,8 +34,8 @@
 //! // Login
 //! let session = SessionHandle::login("user@example.com", "password").await?;
 //!
-//! // List files in root
-//! let files = session.list("/", false).await?;
+//! // List files in root (Cloud Drive root is /Root)
+//! let files = session.list("/Root", false).await?;
 //! for file in files {
 //!     println!("{} ({} bytes)", file.name, file.size);
 //! }

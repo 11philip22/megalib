@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     println!("Looking for: {}", remote_path);
     // Find the node
     // Simple path lookup based on full path matching (which needs build_node_paths logic internally or manually traversing)
-    // Note: SessionHandle::stat expects a full path.
+    // Note: SessionHandle::stat expects a full path like "/Root/..."
 
     let node = session
         .stat(&remote_path)
