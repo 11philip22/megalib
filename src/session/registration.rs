@@ -4,15 +4,12 @@
 //! 1. Call `register()` with email, password, and name - this sends a verification email
 //! 2. Call `verify_registration()` with the state from step 1 and the signup key from the email
 
-use rand::RngCore;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::api::ApiClient;
 use crate::base64::{base64url_decode, base64url_encode};
-use crate::crypto::{
-    MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt, aes128_ecb_encrypt_block,
-    make_password_key, make_random_key, make_username_hash,
-};
+use crate::crypto::{aes128_ecb_encrypt, aes128_ecb_encrypt_block, derive_key_v2, make_random_key};
 use crate::error::{MegaError, Result};
 
 /// State preserved between registration steps.
@@ -20,67 +17,102 @@ use crate::error::{MegaError, Result};
 /// This must be saved after `register()` and passed to `verify_registration()`.
 #[derive(Debug, Clone)]
 pub struct RegistrationState {
-    /// Temporary user handle assigned by MEGA
-    pub user_handle: String,
-    /// Password-derived key (16 bytes)
-    pub password_key: [u8; 16],
-    /// Challenge for email verification (16 bytes)
-    pub challenge: [u8; 16],
+    /// Session key for resuming the signup process.
+    ///
+    /// Format: `base64(user_handle)#base64(derived_key[0..16])`
+    pub session_key: String,
 }
 
 impl RegistrationState {
     /// Serialize state for storage between steps.
     ///
-    /// Format: `base64(password_key):base64(challenge):user_handle`
+    /// Format: `base64(user_handle)#base64(key)`
     pub fn serialize(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            base64url_encode(&self.password_key),
-            base64url_encode(&self.challenge),
-            self.user_handle
-        )
+        self.session_key.clone()
     }
 
     /// Deserialize state from string.
     pub fn deserialize(s: &str) -> Result<Self> {
-        let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() != 3 {
+        let parts: Vec<&str> = s.split('#').collect();
+        if parts.len() != 2 {
             return Err(MegaError::InvalidState(
-                "Expected format: pk:challenge:handle".to_string(),
+                "Expected format: handle#key".to_string(),
             ));
         }
 
-        let password_key_bytes = base64url_decode(parts[0])?;
-        let challenge_bytes = base64url_decode(parts[1])?;
-
-        if password_key_bytes.len() != 16 {
+        let handle_bytes = base64url_decode(parts[0])?;
+        if handle_bytes.len() != 8 {
             return Err(MegaError::InvalidState(
-                "Password key must be 16 bytes".to_string(),
-            ));
-        }
-        if challenge_bytes.len() != 16 {
-            return Err(MegaError::InvalidState(
-                "Challenge must be 16 bytes".to_string(),
+                "User handle must be 8 bytes".to_string(),
             ));
         }
 
-        let mut password_key = [0u8; 16];
-        let mut challenge = [0u8; 16];
-        password_key.copy_from_slice(&password_key_bytes);
-        challenge.copy_from_slice(&challenge_bytes);
+        let key_bytes = base64url_decode(parts[1])?;
+        if key_bytes.len() != 16 {
+            return Err(MegaError::InvalidState(
+                "Resume key must be 16 bytes".to_string(),
+            ));
+        }
 
         Ok(Self {
-            user_handle: parts[2].to_string(),
-            password_key,
-            challenge,
+            session_key: s.to_string(),
         })
     }
 }
 
+fn build_signup_payload_v2(
+    password: &str,
+    master_key: &[u8; 16],
+) -> Result<(String, String, String, [u8; 32])> {
+    let client_random = make_random_key();
+    let mut buffer = b"mega.nz".to_vec();
+    buffer.resize(200, b'P');
+    buffer.extend_from_slice(&client_random);
+    let salt = Sha256::digest(&buffer);
+
+    let derived = derive_key_v2(password, salt.as_slice())?;
+    let password_key: [u8; 16] = derived[..16].try_into().unwrap();
+    let auth_key = &derived[16..32];
+
+    let encrypted_master_key = aes128_ecb_encrypt(master_key, &password_key);
+
+    let mut hasher = Sha256::new();
+    hasher.update(auth_key);
+    let hashed = hasher.finalize();
+    let hak = &hashed[..16];
+
+    Ok((
+        base64url_encode(&client_random),
+        base64url_encode(&encrypted_master_key),
+        base64url_encode(hak),
+        derived,
+    ))
+}
+
+fn extract_confirm_code(signup_key: &str) -> Result<Vec<u8>> {
+    let fragment = if let Some(pos) = signup_key.find("confirm") {
+        &signup_key[pos + "confirm".len()..]
+    } else {
+        signup_key
+    };
+
+    let decoded = base64url_decode(fragment)?;
+    if !decoded
+        .windows(b"ConfirmCodeV2".len())
+        .any(|window| window == b"ConfirmCodeV2")
+    {
+        return Err(MegaError::Custom("Invalid confirmation link".to_string()));
+    }
+
+    Ok(decoded)
+}
+
 /// Step 1: Initiate account registration.
 ///
-/// This creates an anonymous user account and sends a verification email.
-/// The returned `RegistrationState` must be preserved and used in `verify_registration()`.
+/// This creates an anonymous user account and sends a verification email using
+/// the v2 signup flow (`uc2`).
+/// The returned `RegistrationState` contains the session key required to resume
+/// the signup process if needed.
 ///
 /// # Arguments
 /// * `email` - Email address for the new account
@@ -90,7 +122,7 @@ impl RegistrationState {
 /// * `proxy` - Optional proxy URL
 ///
 /// # Returns
-/// `RegistrationState` that must be passed to `verify_registration()`
+/// `RegistrationState` that can be used to resume the process if needed
 ///
 /// # Example
 /// ```no_run
@@ -99,7 +131,7 @@ impl RegistrationState {
 /// # async fn example() -> megalib::error::Result<()> {
 /// let state = register("user@example.com", "SecurePassword123", "John Doe", None).await?;
 /// println!("Check your email and run verify_registration with the link");
-/// println!("State to save: {}", state.serialize());
+/// println!("State to save (session key): {}", state.serialize());
 /// # Ok(())
 /// # }
 /// ```
@@ -114,19 +146,19 @@ pub async fn register(
         None => ApiClient::new(),
     };
 
-    // 1. Generate cryptographic keys
+    // 1. Generate cryptographic keys (ephemeral account)
     let master_key = make_random_key();
-    let password_key = make_password_key(password);
-    let ssc = make_random_key(); // Session self-challenge
+    let ephemeral_key = make_random_key();
 
-    // 2. Create ts = ssc || AES(ssc, master_key)
+    // ts = ssc || AES(ssc, master_key)
+    let ssc = make_random_key();
     let encrypted_ssc = aes128_ecb_encrypt_block(&ssc, &master_key);
     let mut ts_data = [0u8; 32];
     ts_data[..16].copy_from_slice(&ssc);
     ts_data[16..].copy_from_slice(&encrypted_ssc);
 
-    // 3. Create anonymous user: up(k=encrypted_master_key, ts=ts_data)
-    let encrypted_master_key = aes128_ecb_encrypt(&master_key, &password_key);
+    // 2. Create anonymous user: up(k=encrypted_master_key, ts=ts_data)
+    let encrypted_master_key = aes128_ecb_encrypt(&master_key, &ephemeral_key);
     let response = api
         .request(json!({
             "a": "up",
@@ -135,12 +167,16 @@ pub async fn register(
         }))
         .await?;
 
-    let user_handle = response
+    let arr = response.as_array().ok_or(MegaError::InvalidResponse)?;
+    if arr.len() < 2 {
+        return Err(MegaError::InvalidResponse);
+    }
+    let user_handle = arr[1]
         .as_str()
         .ok_or(MegaError::InvalidResponse)?
         .to_string();
 
-    // 4. Login as anonymous user: us(user=user_handle)
+    // 3. Login as anonymous user: us(user=user_handle)
     let response = api
         .request(json!({
             "a": "us",
@@ -153,50 +189,36 @@ pub async fn register(
         .ok_or(MegaError::InvalidResponse)?;
     api.set_session_id(tsid.to_string());
 
-    // 5. Get user info (required step)
+    // 4. Get user info (required by some clients)
     api.request(json!({"a": "ug"})).await?;
 
-    // 6. Set user name: up(name=name)
+    // 5. Request signup link: uc2(n=name, m=email, crv, hak, k, v=2)
+    let (crv, emk, hak, derived_key) = build_signup_payload_v2(password, &master_key)?;
     api.request(json!({
-        "a": "up",
-        "name": name
-    }))
-    .await?;
-
-    // 7. Request signup link: uc(c=encrypted_challenge, n=name, m=email)
-    // c_data = master_key || challenge
-    let mut challenge = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut challenge[..4]);
-    rand::thread_rng().fill_bytes(&mut challenge[12..]);
-
-    let mut c_data = [0u8; 32];
-    c_data[..16].copy_from_slice(&master_key);
-    c_data[16..].copy_from_slice(&challenge);
-
-    let encrypted_c = aes128_ecb_encrypt(&c_data, &password_key);
-
-    api.request(json!({
-        "a": "uc",
-        "c": base64url_encode(&encrypted_c),
+        "a": "uc2",
         "n": base64url_encode(name.as_bytes()),
-        "m": base64url_encode(email.as_bytes())
+        "m": base64url_encode(email.as_bytes()),
+        "crv": crv,
+        "hak": hak,
+        "k": emk,
+        "v": 2
     }))
     .await?;
 
-    Ok(RegistrationState {
-        user_handle,
-        password_key,
-        challenge,
-    })
+    let session_key = format!("{}#{}", user_handle, base64url_encode(&derived_key[..16]));
+
+    Ok(RegistrationState { session_key })
 }
 
 /// Step 2: Complete registration with verification link.
 ///
-/// This verifies the email address and sets up the RSA keys for the account.
+/// This verifies the email address using the v2 signup flow (`ud2`).
+/// The session key in `RegistrationState` is kept for compatibility but is not
+/// required for confirmation.
 ///
 /// # Arguments
 /// * `state` - The `RegistrationState` from `register()`
-/// * `signup_key` - The signup key from the verification email link
+/// * `signup_key` - Confirmation link (full URL) or base64 fragment from the email
 /// * `proxy` - Optional proxy URL
 ///
 /// # Example
@@ -205,14 +227,14 @@ pub async fn register(
 ///
 /// # async fn example() -> megalib::error::Result<()> {
 /// let state = RegistrationState::deserialize("...")?;
-/// let signup_key = "..."; // From email link
+/// let signup_key = "https://mega.app/#confirm..."; // From email link
 /// verify_registration(&state, signup_key, None).await?;
 /// println!("Account registered successfully!");
 /// # Ok(())
 /// # }
 /// ```
 pub async fn verify_registration(
-    state: &RegistrationState,
+    _state: &RegistrationState,
     signup_key: &str,
     proxy: Option<&str>,
 ) -> Result<()> {
@@ -221,96 +243,34 @@ pub async fn verify_registration(
         None => ApiClient::new(),
     };
 
-    // 1. Generate RSA keypair
-    let rsa_key = MegaRsaKey::generate()
-        .map_err(|e| MegaError::CryptoError(format!("RSA generation: {}", e)))?;
+    // 1. Normalize and decode the confirmation code
+    let code = extract_confirm_code(signup_key)?;
 
-    // 2. Login as anonymous user: us(user=user_handle)
+    // 2. Verify signup: ud2(c=code)
+    // Returns: [email, name, handle, version]
     let response = api
         .request(json!({
-            "a": "us",
-            "user": &state.user_handle
+            "a": "ud2",
+            "c": base64url_encode(&code)
         }))
         .await?;
 
-    let tsid = response["tsid"]
-        .as_str()
-        .ok_or(MegaError::InvalidResponse)?;
-    api.set_session_id(tsid.to_string());
-
-    // 3. Verify signup: ud(c=signup_key)
-    // Returns: [email, name, handle, encrypted_master_key, encrypted_challenge]
-    let response = api
-        .request(json!({
-            "a": "ud",
-            "c": signup_key
-        }))
-        .await?;
-
-    let arr = response.as_array().ok_or(MegaError::InvalidResponse)?;
-    if arr.len() != 5 {
+    let wrapper = response.as_array().ok_or(MegaError::InvalidResponse)?;
+    if wrapper.len() != 2 || !wrapper[0].is_string() {
+        return Err(MegaError::InvalidResponse);
+    }
+    let payload = wrapper[1].as_array().ok_or(MegaError::InvalidResponse)?;
+    if payload.len() != 4 {
         return Err(MegaError::InvalidResponse);
     }
 
-    let b64_email = arr[0].as_str().ok_or(MegaError::InvalidResponse)?;
-    let _b64_name = arr[1].as_str().ok_or(MegaError::InvalidResponse)?;
-    let _handle = arr[2].as_str().ok_or(MegaError::InvalidResponse)?;
-    let b64_master_key = arr[3].as_str().ok_or(MegaError::InvalidResponse)?;
-    let b64_challenge = arr[4].as_str().ok_or(MegaError::InvalidResponse)?;
-
-    // 4. Decrypt and verify
-    let email_bytes = base64url_decode(b64_email)?;
-    let email = String::from_utf8(email_bytes).map_err(|_| MegaError::InvalidResponse)?;
-
-    let encrypted_master_key = base64url_decode(b64_master_key)?;
-    let encrypted_challenge = base64url_decode(b64_challenge)?;
-
-    let master_key = aes128_ecb_decrypt(&encrypted_master_key, &state.password_key);
-    let challenge = aes128_ecb_decrypt(&encrypted_challenge, &state.password_key);
-
-    // Verify challenge matches
-    if challenge != state.challenge {
-        return Err(MegaError::InvalidChallenge);
+    let _b64_email = payload[0].as_str().ok_or(MegaError::InvalidResponse)?;
+    let _b64_name = payload[1].as_str().ok_or(MegaError::InvalidResponse)?;
+    let _handle = payload[2].as_str().ok_or(MegaError::InvalidResponse)?;
+    let version = payload[3].as_i64().ok_or(MegaError::InvalidResponse)?;
+    if version != 2 {
+        return Err(MegaError::InvalidResponse);
     }
-
-    // 5. Create username hash
-    let email_lower = email.to_lowercase();
-    let uh = make_username_hash(&email_lower, &state.password_key);
-    let uh_b64 = base64url_encode(&uh);
-
-    // 6. Save credentials: up(c=signup_key, uh=username_hash)
-    api.request(json!({
-        "a": "up",
-        "c": signup_key,
-        "uh": uh_b64
-    }))
-    .await?;
-
-    // 7. Re-login with email: us(user=email, uh=username_hash)
-    let response = api
-        .request(json!({
-            "a": "us",
-            "user": email_lower,
-            "uh": uh_b64
-        }))
-        .await?;
-
-    let tsid = response["tsid"]
-        .as_str()
-        .ok_or(MegaError::InvalidResponse)?;
-    api.set_session_id(tsid.to_string());
-
-    // 8. Set RSA keypair: up(pubk=public_key, privk=encrypted_private_key)
-    let master_key_arr: [u8; 16] = master_key
-        .try_into()
-        .map_err(|_| MegaError::InvalidResponse)?;
-
-    api.request(json!({
-        "a": "up",
-        "pubk": rsa_key.encode_public_key(),
-        "privk": rsa_key.encode_private_key(&master_key_arr)
-    }))
-    .await?;
 
     Ok(())
 }
@@ -321,24 +281,29 @@ mod tests {
 
     #[test]
     fn test_state_serialization_roundtrip() {
+        let handle = [1u8; 8];
+        let key = [2u8; 16];
+        let session_key = format!(
+            "{}#{}",
+            base64url_encode(&handle),
+            base64url_encode(&key)
+        );
         let state = RegistrationState {
-            user_handle: "test_handle_123".to_string(),
-            password_key: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-            challenge: [16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+            session_key,
         };
 
         let serialized = state.serialize();
         let deserialized = RegistrationState::deserialize(&serialized).unwrap();
 
-        assert_eq!(deserialized.user_handle, state.user_handle);
-        assert_eq!(deserialized.password_key, state.password_key);
-        assert_eq!(deserialized.challenge, state.challenge);
+        assert_eq!(deserialized.session_key, state.session_key);
     }
 
     #[test]
     fn test_state_deserialization_invalid() {
+        assert!(RegistrationState::deserialize("").is_err());
         assert!(RegistrationState::deserialize("invalid").is_err());
         assert!(RegistrationState::deserialize("a:b").is_err());
         assert!(RegistrationState::deserialize("a:b:c:d").is_err());
+        assert!(RegistrationState::deserialize("abcd#efgh").is_err());
     }
 }

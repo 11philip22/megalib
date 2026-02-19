@@ -1,13 +1,21 @@
 //! Example: Verify MEGA account registration
 //!
 //! Usage:
-//!   cargo run --example verify -- --state "STATE_FROM_STEP_1" --link "SIGNUP_KEY_FROM_EMAIL"
+//!   cargo run --example verify -- --state "SESSION_KEY_FROM_STEP_1" --link "CONFIRMATION_LINK_OR_FRAGMENT"
 
 use megalib::{RegistrationState, verify_registration};
 use std::env;
+use tracing_subscriber::{EnvFilter, fmt};
+
+fn init_tracing() {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
 
 #[tokio::main]
 async fn main() {
+    init_tracing();
     let args: Vec<String> = env::args().collect();
 
     // Parse arguments
@@ -32,19 +40,16 @@ async fn main() {
     }
 
     let state_str = state_str.expect("--state is required");
-    let link = link.expect("--link is required (the signup key from the email)");
+    let link = link.expect("--link is required (confirmation link or fragment from the email)");
 
     // Parse state
     let state = RegistrationState::deserialize(&state_str).expect("Invalid state format");
 
-    // Extract signup key from link if it's a full URL
-    let signup_key = extract_signup_key(&link);
-
     println!("Verifying registration...");
-    println!("User handle: {}", state.user_handle);
+    println!("Session key: {}", state.session_key);
     println!();
 
-    match verify_registration(&state, &signup_key, None).await {
+    match verify_registration(&state, &link, None).await {
         Ok(()) => {
             println!("✅ Account registered successfully!");
             println!();
@@ -57,19 +62,4 @@ async fn main() {
     }
 }
 
-/// Extract the signup key from a MEGA confirmation link
-fn extract_signup_key(link: &str) -> String {
-    // Handle full URL: https://mega.nz/#confirm<KEY>
-    if link.starts_with("https://mega") {
-        if let Some(pos) = link.find("#confirm") {
-            return link[pos + 8..].to_string();
-        }
-        // New format: https://mega.nz/confirm<KEY>
-        if let Some(pos) = link.find("/confirm") {
-            return link[pos + 8..].to_string();
-        }
-    }
-
-    // Assume it's already just the key
-    link.to_string()
-}
+// Link parsing is handled by verify_registration (SDK-compatible).

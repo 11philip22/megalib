@@ -7,12 +7,20 @@ mod cli;
 
 use cli::{ArgParser, usage_and_exit};
 use megalib::register;
+use tracing_subscriber::{EnvFilter, fmt};
 
 const USAGE: &str =
     "Usage: cargo run --example register -- --email EMAIL --password PASSWORD --name \"Your Name\"";
 
+fn init_tracing() {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("megalib=debug"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
 #[tokio::main]
 async fn main() {
+    init_tracing();
     let mut parser = ArgParser::new(USAGE);
     let email = parser
         .take_value(&["--email", "-e"])
@@ -38,14 +46,14 @@ async fn main() {
             println!();
             println!("Check your email ({}) for the verification link.", email);
             println!();
-            println!("Save this state for step 2:");
+            println!("Save this session key for step 2:");
             println!("----------------------------------------");
             println!("{}", state.serialize());
             println!("----------------------------------------");
             println!();
             println!("After receiving the email, run:");
             println!(
-                "  cargo run --example verify -- --state \"{}\" --link \"SIGNUP_KEY_FROM_EMAIL\"",
+                "  cargo run --example verify -- --state \"{}\" --link \"CONFIRMATION_LINK_OR_FRAGMENT\"",
                 state.serialize()
             );
         }
