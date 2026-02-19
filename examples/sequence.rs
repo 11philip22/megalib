@@ -2,6 +2,7 @@ mod cli;
 
 use cli::parse_credentials;
 use megalib::SessionHandle;
+use megalib::make_progress_bar;
 use megalib::api::ApiErrorCode;
 use megalib::error::{MegaError, Result};
 use std::io::{self, Write};
@@ -33,14 +34,12 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "/Root/lol2".to_string());
     let local1 = creds
         .positionals
-        // .get(2)
-        .get(1)
+        .get(2)
         .cloned()
         .unwrap_or_else(|| "./Cargo.toml".to_string());
     let local2 = creds
         .positionals
-        // .get(3)
-        .get(2)
+        .get(3)
         .cloned()
         .unwrap_or_else(|| "./Cargo.lock".to_string());
 
@@ -48,6 +47,8 @@ async fn main() -> Result<()> {
     let session = creds.login().await?;
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
+
+    session.watch_status(make_progress_bar()).await?;
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
