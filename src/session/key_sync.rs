@@ -668,7 +668,7 @@ impl Session {
             self.key_manager.warnings = self.warnings.clone();
             self.key_manager.manual_verification = self.manual_verification;
             // ensure priv_rsa is in the container if session has one and km lacks it
-            if self.key_manager.priv_rsa.is_empty() && self.rsa_key().p.bits() > 0 {
+            if self.key_manager.priv_rsa.is_empty() && self.has_valid_rsa_key() {
                 let encoded = self.rsa_key().encode_private_key(&self.master_key);
                 self.key_manager.priv_rsa = encoded.into_bytes();
             }

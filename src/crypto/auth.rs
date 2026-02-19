@@ -8,7 +8,7 @@ use sha2::Sha512;
 
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::rsa::read_mpi;
-use crate::crypto::{MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt};
+use crate::crypto::{MegaRsaKey, aes128_ecb_decrypt, aes128_ecb_encrypt, aes128_ecb_encrypt_block};
 use crate::error::{MegaError, Result};
 
 /// Derive the login key using PBKDF2-SHA512 (variant 2).
@@ -159,6 +159,25 @@ pub fn parse_raw_private_key(blob: &[u8]) -> Result<MegaRsaKey> {
     Ok(MegaRsaKey { p, q, d, u, m, e })
 }
 
+/// Validate a `tsid` challenge exactly like SDK `checktsid`.
+///
+/// The decoded session id must be 43 bytes. The first 16 bytes are encrypted
+/// with the master key; the result must equal the last 16 bytes.
+pub fn verify_tsid(tsid_b64: &str, master_key: &[u8; 16]) -> Result<bool> {
+    const SID_LEN: usize = 43;
+    const CHALLENGE_LEN: usize = 16;
+
+    let sid = base64url_decode(tsid_b64)?;
+    if sid.len() != SID_LEN {
+        return Ok(false);
+    }
+
+    let mut challenge = [0u8; CHALLENGE_LEN];
+    challenge.copy_from_slice(&sid[..CHALLENGE_LEN]);
+    let encrypted = aes128_ecb_encrypt_block(&challenge, master_key);
+    Ok(encrypted.as_slice() == &sid[SID_LEN - CHALLENGE_LEN..])
+}
+
 /// Decrypt a session ID using an RSA private key.
 ///
 /// # Errors
@@ -250,5 +269,22 @@ mod tests {
 
         let decrypted = decrypt_key(&b64, &password_key).expect("Decryption failed");
         assert_eq!(decrypted, key_to_encrypt);
+    }
+
+    #[test]
+    fn test_verify_tsid() {
+        let master_key = [7u8; 16];
+        let mut sid = [0u8; 43];
+        sid[..16].copy_from_slice(&[9u8; 16]);
+        sid[16..27].copy_from_slice(&[1u8; 11]);
+        let tail = aes128_ecb_encrypt_block(&[9u8; 16], &master_key);
+        sid[27..].copy_from_slice(&tail);
+
+        let tsid = base64url_encode(&sid);
+        assert!(verify_tsid(&tsid, &master_key).expect("verify tsid"));
+
+        sid[42] ^= 1;
+        let bad_tsid = base64url_encode(&sid);
+        assert!(!verify_tsid(&bad_tsid, &master_key).expect("verify bad tsid"));
     }
 }

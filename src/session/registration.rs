@@ -283,14 +283,8 @@ mod tests {
     fn test_state_serialization_roundtrip() {
         let handle = [1u8; 8];
         let key = [2u8; 16];
-        let session_key = format!(
-            "{}#{}",
-            base64url_encode(&handle),
-            base64url_encode(&key)
-        );
-        let state = RegistrationState {
-            session_key,
-        };
+        let session_key = format!("{}#{}", base64url_encode(&handle), base64url_encode(&key));
+        let state = RegistrationState { session_key };
 
         let serialized = state.serialize();
         let deserialized = RegistrationState::deserialize(&serialized).unwrap();

@@ -2,9 +2,9 @@ mod cli;
 
 use cli::parse_credentials;
 use megalib::SessionHandle;
-use megalib::make_progress_bar;
 use megalib::api::ApiErrorCode;
 use megalib::error::{MegaError, Result};
+use megalib::make_progress_bar;
 use std::io::{self, Write};
 use tracing_subscriber::{EnvFilter, fmt};
 

@@ -30,6 +30,21 @@ pub struct MegaRsaKey {
 }
 
 impl MegaRsaKey {
+    /// Returns true when this looks like a real RSA private key.
+    ///
+    /// This guards against placeholder/sentinel values.
+    pub fn is_valid_private_key(&self) -> bool {
+        self.e == BigUint::from(3u32)
+            && !self.p.is_zero()
+            && !self.q.is_zero()
+            && !self.d.is_zero()
+            && !self.u.is_zero()
+            && !self.m.is_zero()
+            && self.m == (&self.p * &self.q)
+            && self.p.bits() >= 512
+            && self.q.bits() >= 512
+    }
+
     /// Generate a new 2048-bit RSA key with e=3.
     ///
     /// MEGA uses the non-standard public exponent e=3 (RSA_3).
@@ -148,7 +163,7 @@ impl MegaRsaKey {
     /// # Returns
     /// Decrypted data as bytes, or None if decryption fails.
     pub fn decrypt(&self, ciphertext: &[u8]) -> Option<Vec<u8>> {
-        if ciphertext.is_empty() {
+        if ciphertext.is_empty() || !self.is_valid_private_key() {
             return None;
         }
 

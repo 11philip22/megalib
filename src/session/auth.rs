@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ApiErrorCode};
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::aes128_ecb_decrypt_block;
 use crate::crypto::{
-    MegaRsaKey, decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
-    make_password_key, make_random_key, make_username_hash,
+    decrypt_key, decrypt_private_key, decrypt_session_id, derive_key_v2, encrypt_key,
+    make_password_key, make_random_key, make_username_hash, verify_tsid,
 };
 use crate::error::{MegaError, Result};
 
@@ -126,12 +126,6 @@ impl Session {
             .ok_or(MegaError::InvalidResponse)?;
         let master_key = decrypt_key(k_b64, &password_key)?;
 
-        // Step 5: Decrypt RSA private key
-        let privk_b64 = login_response["privk"]
-            .as_str()
-            .ok_or(MegaError::InvalidResponse)?;
-        let rsa_key = decrypt_private_key(privk_b64, &master_key)?;
-
         let session_key = match login_response.get("sek").and_then(|v| v.as_str()) {
             Some(sek_b64) => {
                 let decoded = base64url_decode(sek_b64)?;
@@ -145,14 +139,29 @@ impl Session {
             None => None,
         };
 
-        // Step 6: Decrypt session ID with RSA
-        let csid_b64 = login_response["csid"]
-            .as_str()
-            .ok_or(MegaError::InvalidResponse)?;
-        let session_id = decrypt_session_id(csid_b64, &rsa_key)?;
-
-        // Set session ID for future requests
-        api.set_session_id(session_id.clone());
+        // Step 5: Session bootstrap follows SDK branching:
+        // if `tsid` exists, validate challenge and use it directly;
+        // otherwise require RSA `privk` + `csid`.
+        let (session_id, rsa_key) =
+            if let Some(tsid) = login_response.get("tsid").and_then(|v| v.as_str()) {
+                if !verify_tsid(tsid, &master_key)? {
+                    return Err(Self::invalid_tsid_error());
+                }
+                let sid = tsid.to_string();
+                api.set_session_id(sid.clone());
+                (sid, Self::empty_rsa_key())
+            } else {
+                let privk_b64 = login_response["privk"]
+                    .as_str()
+                    .ok_or(MegaError::InvalidResponse)?;
+                let rsa_key = decrypt_private_key(privk_b64, &master_key)?;
+                let csid_b64 = login_response["csid"]
+                    .as_str()
+                    .ok_or(MegaError::InvalidResponse)?;
+                let session_id = decrypt_session_id(csid_b64, &rsa_key)?;
+                api.set_session_id(session_id.clone());
+                (session_id, rsa_key)
+            };
 
         let mut upgrade_outcome = UpgradeOutcome::NotNeeded;
         if login_variant == 1 {
@@ -217,7 +226,10 @@ impl Session {
                 UpgradeOutcome::Upgraded | UpgradeOutcome::AlreadyUpgraded
             );
 
-        if account_is_v2 && !session.user_attr_cache.contains_key("^!keys") {
+        if account_is_v2
+            && session.has_valid_rsa_key()
+            && !session.user_attr_cache.contains_key("^!keys")
+        {
             let _ = session.attach_account_keys_if_missing().await;
         }
 
@@ -294,6 +306,13 @@ impl Session {
         }
 
         versions
+    }
+
+    fn invalid_tsid_error() -> MegaError {
+        MegaError::ApiError {
+            code: ApiErrorCode::NotExist as i32,
+            message: ApiErrorCode::NotExist.description().to_string(),
+        }
     }
 
     fn build_upgrade_payload(
@@ -458,17 +477,13 @@ impl Session {
         {
             decrypt_private_key(privk_b64, &master_key)?
         } else {
-            MegaRsaKey {
-                p: num_bigint::BigUint::from(2u32),
-                q: num_bigint::BigUint::from(3u32),
-                d: num_bigint::BigUint::from(1u32),
-                u: num_bigint::BigUint::from(1u32),
-                m: num_bigint::BigUint::from(6u32),
-                e: num_bigint::BigUint::from(3u32),
-            }
+            Self::empty_rsa_key()
         };
 
         if let Some(tsid) = login_response.get("tsid").and_then(|v| v.as_str()) {
+            if !verify_tsid(tsid, &master_key)? {
+                return Err(Self::invalid_tsid_error());
+            }
             session_id = tsid.to_string();
             api.set_session_id(session_id.clone());
         }
@@ -503,7 +518,10 @@ impl Session {
         );
 
         let account_is_v2 = user_info.get("aav").and_then(|v| v.as_i64()) == Some(2);
-        if account_is_v2 && !session.user_attr_cache.contains_key("^!keys") {
+        if account_is_v2
+            && session.has_valid_rsa_key()
+            && !session.user_attr_cache.contains_key("^!keys")
+        {
             let _ = session.attach_account_keys_if_missing().await;
         }
 

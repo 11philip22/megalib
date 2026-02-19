@@ -198,6 +198,11 @@ impl Session {
     }
 
     pub(super) async fn attach_account_keys_if_missing(&mut self) -> Result<()> {
+        if !self.has_valid_rsa_key() {
+            return Err(MegaError::Custom(
+                "Cannot attach account keys without a valid RSA key".to_string(),
+            ));
+        }
         if self.get_user_attribute_raw("^!keys").await?.is_some() {
             return Ok(());
         }
@@ -371,6 +376,23 @@ impl Session {
     /// Get the RSA private key (for decrypting share keys from other users).
     pub(crate) fn rsa_key(&self) -> &MegaRsaKey {
         &self.rsa_key
+    }
+
+    /// Returns true if a real RSA private key is currently available.
+    pub(crate) fn has_valid_rsa_key(&self) -> bool {
+        self.rsa_key.is_valid_private_key()
+    }
+
+    /// Construct an empty/sentinel RSA key when login path has no RSA material.
+    pub(crate) fn empty_rsa_key() -> MegaRsaKey {
+        MegaRsaKey {
+            p: num_bigint::BigUint::from(0u32),
+            q: num_bigint::BigUint::from(0u32),
+            d: num_bigint::BigUint::from(0u32),
+            u: num_bigint::BigUint::from(0u32),
+            m: num_bigint::BigUint::from(0u32),
+            e: num_bigint::BigUint::from(3u32),
+        }
     }
 
     /// Get mutable reference to the API client.
