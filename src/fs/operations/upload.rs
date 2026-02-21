@@ -33,6 +33,7 @@ impl Session {
     ///
     /// # Returns
     /// Handle string like "0*ABC123" that can be added to file's `fa` field.
+    #[cfg(feature = "preview")]
     pub async fn upload_node_attribute(
         &mut self,
         data: &[u8],
@@ -623,22 +624,29 @@ impl Session {
             ));
         }
 
-        // Generate preview if enabled
+        // Generate preview if enabled and the preview feature is compiled in.
         let file_attr = if self.previews_enabled() {
-            if let Some(thumbnail_result) = crate::preview::generate_thumbnail(&path) {
-                match thumbnail_result {
-                    Ok(thumbnail_data) => {
-                        match self
-                            .upload_node_attribute(&thumbnail_data, "0", &file_key)
-                            .await
-                        {
-                            Ok(handle) => Some(handle),
-                            Err(_) => None,
+            #[cfg(feature = "preview")]
+            {
+                if let Some(thumbnail_result) = crate::preview::generate_thumbnail(path) {
+                    match thumbnail_result {
+                        Ok(thumbnail_data) => {
+                            match self
+                                .upload_node_attribute(&thumbnail_data, "0", &file_key)
+                                .await
+                            {
+                                Ok(handle) => Some(handle),
+                                Err(_) => None,
+                            }
                         }
+                        Err(_) => None,
                     }
-                    Err(_) => None,
+                } else {
+                    None
                 }
-            } else {
+            }
+            #[cfg(not(feature = "preview"))]
+            {
                 None
             }
         } else {

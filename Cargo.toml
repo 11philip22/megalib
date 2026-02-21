@@ -9,6 +9,10 @@ documentation = "https://docs.rs/megalib"
 keywords = ["mega", "meganz", "cloud-storage", "file-transfer"]
 categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
 
+[features]
+default = []
+preview = ["dep:image"]
+
 [dependencies]
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "socks"] }
@@ -44,7 +48,7 @@ hex = "0.4.3"
 futures = "0.3"
 tracing = "0.1"
 
-image = "0.25.9"
+image = { version = "0.25.9", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

@@ -529,6 +529,8 @@ impl Session {
     /// When enabled, thumbnails will be generated for supported image and video
     /// files and uploaded alongside the file.
     ///
+    /// Note: Preview generation requires the crate `preview` feature.
+    ///
     /// # Example
     /// ```no_run
     /// # use megalib::Session;

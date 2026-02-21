@@ -1001,6 +1001,8 @@ impl SessionHandle {
 
     /// Enable or disable preview thumbnail generation for uploads.
     ///
+    /// Note: Preview generation requires the crate `preview` feature.
+    ///
     /// # Errors
     /// Returns an error if the actor has stopped.
     ///
