@@ -1,10 +1,11 @@
 mod cli;
 
 use cli::parse_credentials;
+use indicatif::{ProgressBar, ProgressStyle};
 use megalib::SessionHandle;
 use megalib::api::ApiErrorCode;
 use megalib::error::{MegaError, Result};
-use megalib::make_progress_bar;
+use megalib::progress::TransferProgress;
 use std::io::{self, Write};
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -48,7 +49,47 @@ async fn main() -> Result<()> {
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
-    session.watch_status(make_progress_bar()).await?;
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
+    )
+    .unwrap_or_else(|_| ProgressStyle::default_bar())
+    .progress_chars("=>-");
+    let mut current_file = String::new();
+    let mut current_bar: Option<ProgressBar> = None;
+    session
+        .watch_status(Box::new(move |progress: &TransferProgress| {
+            if current_bar.is_none() || progress.filename != current_file {
+                if let Some(previous_bar) = current_bar.take() {
+                    previous_bar.finish_and_clear();
+                }
+
+                current_file = progress.filename.clone();
+                let bar_len = progress.total.max(1);
+                let bar = ProgressBar::new(bar_len);
+                bar.set_style(style.clone());
+                bar.set_message(current_file.clone());
+                current_bar = Some(bar);
+            }
+
+            if let Some(bar) = current_bar.as_ref().cloned() {
+                if progress.total > 0 {
+                    bar.set_length(progress.total);
+                    bar.set_position(progress.done.min(progress.total));
+                } else {
+                    bar.set_length(progress.done.max(1));
+                    bar.set_position(progress.done);
+                }
+
+                if progress.is_complete() {
+                    bar.finish_with_message(format!("{} complete", progress.filename));
+                    current_bar = None;
+                    current_file.clear();
+                }
+            }
+
+            true
+        }))
+        .await?;
 
     println!("Refreshing filesystem...");
     session.refresh().await?;

@@ -1222,11 +1222,13 @@ impl SessionHandle {
     /// # Examples
     /// ```no_run
     /// use megalib::SessionHandle;
-    /// use megalib::make_progress_bar;
     ///
     /// # async fn example() -> megalib::Result<()> {
     /// let session = SessionHandle::login("user@example.com", "password").await?;
-    /// session.watch_status(make_progress_bar()).await?;
+    /// session.watch_status(Box::new(|progress| {
+    ///     println!("{}% complete", progress.percent() as u32);
+    ///     true
+    /// })).await?;
     /// # Ok(())
     /// # }
     /// ```

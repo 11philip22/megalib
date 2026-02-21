@@ -85,7 +85,7 @@ pub mod session;
 // Re-export commonly used types
 pub use error::{MegaError, Result};
 pub use fs::{Node, NodeType, Quota};
-pub use progress::{ProgressCallback, TransferProgress, make_progress_bar};
+pub use progress::{ProgressCallback, TransferProgress};
 pub use public::{
     PublicFile, PublicFolder, download_public_file, get_public_file_info, open_folder,
     parse_folder_link, parse_mega_link,

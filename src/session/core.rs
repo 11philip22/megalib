@@ -393,8 +393,9 @@ impl Session {
         }
 
         if !self.has_valid_rsa_key() {
-            let rsa_key = MegaRsaKey::generate()
-                .map_err(|e| MegaError::CryptoError(format!("Failed to generate RSA keypair: {e}")))?;
+            let rsa_key = MegaRsaKey::generate().map_err(|e| {
+                MegaError::CryptoError(format!("Failed to generate RSA keypair: {e}"))
+            })?;
             self.upload_rsa_keypair(&rsa_key).await?;
             self.rsa_key = rsa_key;
         }
@@ -497,10 +498,7 @@ impl Session {
     /// # async fn example() -> megalib::error::Result<()> {
     /// let mut session = Session::login("user@example.com", "password").await?;
     ///
-    /// // Use built-in progress bar
-    /// session.watch_status(megalib::make_progress_bar());
-    ///
-    /// // Or custom callback
+    /// // Register a custom callback
     /// session.watch_status(Box::new(|progress| {
     ///     println!("{}% complete", progress.percent() as u32);
     ///     true // continue transfer

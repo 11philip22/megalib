@@ -6,8 +6,9 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
+use indicatif::{ProgressBar, ProgressStyle};
 use megalib::error::Result;
-use megalib::make_progress_bar;
+use megalib::progress::TransferProgress;
 
 const USAGE: &str = "Usage: cargo run --example download -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
 
@@ -24,8 +25,6 @@ async fn main() -> Result<()> {
     let session = creds.login().await?;
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
-
-    session.watch_status(make_progress_bar()).await?;
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
@@ -44,6 +43,37 @@ async fn main() -> Result<()> {
         .clone();
 
     println!("Found node: {} ({} bytes)", node.name, node.size);
+
+    let progress_bar = ProgressBar::new(node.size);
+    progress_bar.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-"),
+    );
+    progress_bar.set_message(node.name.clone());
+    let progress_bar_for_cb = progress_bar.clone();
+    let mut finished = false;
+    session
+        .watch_status(Box::new(move |progress: &TransferProgress| {
+            if progress.total > 0 {
+                progress_bar_for_cb.set_length(progress.total);
+                progress_bar_for_cb.set_position(progress.done.min(progress.total));
+            } else {
+                progress_bar_for_cb.set_length(progress.done.max(1));
+                progress_bar_for_cb.set_position(progress.done);
+            }
+            progress_bar_for_cb.set_message(progress.filename.clone());
+
+            if progress.is_complete() && !finished {
+                finished = true;
+                progress_bar_for_cb.finish_with_message(format!("{} complete", progress.filename));
+            }
+
+            true
+        }))
+        .await?;
 
     println!("Downloading to: {}", local_path);
     session.download_to_file(&node, &local_path).await?;

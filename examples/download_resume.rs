@@ -14,6 +14,7 @@
 mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
+use indicatif::{ProgressBar, ProgressStyle};
 use megalib::error::Result;
 use megalib::progress::TransferProgress;
 
@@ -55,19 +56,32 @@ async fn main() -> Result<()> {
     println!("Resume enabled: downloads will continue from partial files");
 
     // Set up progress callback
-    let file_name = node.name.clone();
+    let progress_bar = ProgressBar::new(node.size);
+    progress_bar.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-"),
+    );
+    progress_bar.set_message(node.name.clone());
+    let progress_bar_for_cb = progress_bar.clone();
+    let mut finished = false;
     session
         .watch_status(Box::new(move |progress: &TransferProgress| {
-            let percent = progress.percent();
-            let done_mb = progress.done as f64 / 1_000_000.0;
-            let total_mb = progress.total as f64 / 1_000_000.0;
+            if progress.total > 0 {
+                progress_bar_for_cb.set_length(progress.total);
+                progress_bar_for_cb.set_position(progress.done.min(progress.total));
+            } else {
+                progress_bar_for_cb.set_length(progress.done.max(1));
+                progress_bar_for_cb.set_position(progress.done);
+            }
+            progress_bar_for_cb.set_message(progress.filename.clone());
 
-            print!(
-                "\r[{:>6.2}%] {:.2} MB / {:.2} MB - {}",
-                percent, done_mb, total_mb, file_name
-            );
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
+            if progress.is_complete() && !finished {
+                finished = true;
+                progress_bar_for_cb.finish_with_message(format!("{} complete", progress.filename));
+            }
 
             true // Continue download
         }))
@@ -90,7 +104,7 @@ async fn main() -> Result<()> {
     println!("Downloading to: {}", local_path);
     session.download_to_file(&node, &local_path).await?;
 
-    println!("\nDownload complete!");
+    println!("Download complete!");
 
     Ok(())
 }
