@@ -113,10 +113,6 @@ impl ApiClient {
                 None => format!("{}?id={}", API_URL, self.request_id),
             };
             url.push_str("&v=3");
-            // Browser adds bc=1 on share calls; include it for s2 to match behavior.
-            if action_name == "s2" {
-                url.push_str("&bc=1");
-            }
             let attempt = attempts + 1;
             let request_id = self.request_id;
             let start = Instant::now();

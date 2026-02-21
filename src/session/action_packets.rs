@@ -452,30 +452,39 @@ impl Session {
 
         let outbound = owner == Some(self.user_handle.as_str());
         let mut changed = false;
+        // SDK parity: once ^!keys is active, outbound share APs carry dummy ok/ha values.
+        // Do not ingest outbound share keys from action packets in secured mode.
+        let ignore_outbound_share_key_material = outbound && self.key_manager.is_ready();
 
         let mut share_key: Option<[u8; 16]> = None;
 
-        if outbound {
+        if outbound && !ignore_outbound_share_key_material {
             if let Some(ok_str) = ok_b64 {
                 if let Ok(enc) = base64url_decode(ok_str) {
                     let dec = aes128_ecb_decrypt(&enc, &self.master_key);
                     if dec.len() >= 16 {
                         let mut key = [0u8; 16];
                         key.copy_from_slice(&dec[..16]);
-                        share_key = Some(key);
+                        // Defensive guard against dummy outbound key material.
+                        if key != [0u8; 16] {
+                            share_key = Some(key);
+                        }
                     }
                 }
             }
         }
 
-        if share_key.is_none() {
+        if share_key.is_none() && !ignore_outbound_share_key_material {
             if let Some(k_str) = k_b64 {
                 if let Ok(enc) = base64url_decode(k_str) {
                     if let Some(dec) = self.rsa_key().decrypt(&enc) {
                         if dec.len() >= 16 {
                             let mut key = [0u8; 16];
                             key.copy_from_slice(&dec[..16]);
-                            share_key = Some(key);
+                            // Defensive guard against dummy outbound key material.
+                            if !outbound || key != [0u8; 16] {
+                                share_key = Some(key);
+                            }
                         }
                     } else if !outbound && self.key_manager.is_ready() {
                         if let Some(owner_b64) = owner {

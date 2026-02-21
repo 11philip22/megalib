@@ -358,6 +358,68 @@ impl Session {
         Ok(())
     }
 
+    async fn upload_rsa_keypair(&mut self, rsa_key: &MegaRsaKey) -> Result<()> {
+        let privk = rsa_key.encode_private_key(&self.master_key);
+        let pubk = rsa_key.encode_public_key();
+        let response = self
+            .api_mut()
+            .request(json!({
+                "a": "up",
+                "privk": privk,
+                "pubk": pubk
+            }))
+            .await?;
+
+        if let Some(err) = response.as_i64().filter(|v| *v < 0) {
+            let code = crate::api::ApiErrorCode::from(err);
+            return Err(MegaError::ApiError {
+                code: err as i32,
+                message: code.description().to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Initialize account crypto attributes in the same order as the SDK:
+    /// 1) Ensure RSA keypair exists on the account (`up` with `privk/pubk`)
+    /// 2) Ensure upgraded key attributes exist (`*keyring`, `^!keys`, signatures via `upv`)
+    pub(super) async fn initialize_account_keys(&mut self) -> Result<()> {
+        if self.key_manager.is_ready() {
+            return Ok(());
+        }
+        if self.load_keys_attribute().await? {
+            return Ok(());
+        }
+
+        if !self.has_valid_rsa_key() {
+            let rsa_key = MegaRsaKey::generate()
+                .map_err(|e| MegaError::CryptoError(format!("Failed to generate RSA keypair: {e}")))?;
+            self.upload_rsa_keypair(&rsa_key).await?;
+            self.rsa_key = rsa_key;
+        }
+
+        self.attach_account_keys_if_missing().await?;
+
+        if self.key_manager.is_ready() || self.load_keys_attribute().await? {
+            return Ok(());
+        }
+
+        Err(MegaError::Custom(
+            "Request incomplete: account keys are not initialized".to_string(),
+        ))
+    }
+
+    /// Strict preflight for share/export flows.
+    /// Unlike `ensure_keys_attribute`, this must fail if account keys are still incomplete.
+    pub(crate) async fn ensure_share_keys_ready(&mut self) -> Result<()> {
+        if self.key_manager.is_ready() || self.load_keys_attribute().await? {
+            return Ok(());
+        }
+
+        self.initialize_account_keys().await
+    }
+
     /// Get the current session ID.
     pub fn session_id(&self) -> &str {
         &self.session_id

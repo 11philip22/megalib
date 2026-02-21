@@ -33,8 +33,8 @@ impl Session {
     /// # }
     /// ```
     pub async fn export(&mut self, path: &str) -> Result<String> {
-        // Ensure upgraded keys are present before sharing/exporting.
-        self.ensure_keys_attribute().await?;
+        // SDK parity: refuse share/export until account key material is fully initialized.
+        self.ensure_share_keys_ready().await?;
 
         // Find the node
         let normalized_path = normalize_path(path);
@@ -54,19 +54,11 @@ impl Session {
             // First set the share: {a: "s2", n: handle, s: [{u: "EXP", r: 0}]}
             // Then get the link handle: {a: "l", n: handle}
 
-            // Collect this folder and all descendants so we can include their keys in `cr`.
-            let mut share_nodes: Vec<(String, Vec<u8>)> = Vec::new();
-            share_nodes.push((handle.clone(), key.clone()));
-            let mut stack = vec![handle.clone()];
-            while let Some(parent) = stack.pop() {
-                for n in &self.nodes {
-                    if let Some(p) = &n.parent_handle {
-                        if p == &parent {
-                            stack.push(n.handle.clone());
-                            share_nodes.push((n.handle.clone(), n.key.clone()));
-                        }
-                    }
-                }
+            // Collect this folder subtree in SDK CR order:
+            // descendants first, root last.
+            let mut share_nodes = self.collect_share_nodes_bottom_up(&handle);
+            if share_nodes.is_empty() {
+                share_nodes.push((handle.clone(), key.clone()));
             }
             // Reuse existing share key if we already have one; otherwise generate new.
             let share_key = if let Some((_, k)) = self.find_share_for_handle(&handle) {
@@ -82,9 +74,9 @@ impl Session {
             let zero = base64url_encode(&[0u8; 16]);
             let (ok, ha) = (zero.clone(), zero);
 
-            // Build cr similar to webclient:
+            // Build CR in SDK-compatible order:
             // cr[0] = [root handle]
-            // cr[1] = [root handle, child1, child2, ...]
+            // cr[1] = [descendants..., root handle]
             // cr[2] = [0, idx, enc_key_for_handle] per entry (idx into cr[1])
             let cr = self.build_cr_for_nodes(&handle, &share_key, &share_nodes);
 
@@ -93,8 +85,7 @@ impl Session {
                 "n": handle,
                 "s": [{"u": "EXP", "r": 0}],
                 "ok": ok,
-                "ha": ha,
-                "i": self.session_id()
+                "ha": ha
             });
             if let Some(cr_value) = cr {
                 request["cr"] = cr_value;
@@ -102,6 +93,12 @@ impl Session {
 
             // s2 can return -3 transiently or -8 if share already exists.
             let mut share_resp = self.api_mut().request(request.clone()).await;
+            if matches!(share_resp, Err(MegaError::ApiError { code: -11, .. })) {
+                // Access violation for fresh accounts usually means keys weren't fully initialized yet.
+                self.ensure_share_keys_ready().await?;
+                let _ = self.refresh().await;
+                share_resp = self.api_mut().request(request.clone()).await;
+            }
             if matches!(share_resp, Err(MegaError::ApiError { code: -3, .. })) {
                 // Backoff once and retry after refresh.
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;

@@ -35,7 +35,7 @@ impl Session {
     /// * `email` - Email of the user to share with
     /// * `level` - Access level (0=Read-only, 1=Read/Write, 2=Full Access)
     pub async fn share_folder(&mut self, node_handle: &str, email: &str, level: i32) -> Result<()> {
-        self.ensure_keys_attribute().await?;
+        self.ensure_share_keys_ready().await?;
 
         // 1. Find the node to get its key - clone it to release borrow
         let node_key = {
@@ -63,18 +63,10 @@ impl Session {
         let key_b64 = base64url_encode(&encrypted_key);
 
         // Build CR (share mapping) so descendants are decryptable by the recipient.
-        let mut share_nodes: Vec<(String, Vec<u8>)> = Vec::new();
-        share_nodes.push((node_handle.to_string(), node_key.clone()));
-        let mut stack = vec![node_handle.to_string()];
-        while let Some(parent) = stack.pop() {
-            for n in &self.nodes {
-                if let Some(p) = &n.parent_handle {
-                    if p == &parent {
-                        stack.push(n.handle.clone());
-                        share_nodes.push((n.handle.clone(), n.key.clone()));
-                    }
-                }
-            }
+        // Keep SDK ordering: children first, root last.
+        let mut share_nodes = self.collect_share_nodes_bottom_up(node_handle);
+        if share_nodes.is_empty() {
+            share_nodes.push((node_handle.to_string(), node_key.clone()));
         }
 
         let share_key: [u8; 16] = if node_key.len() >= 16 {
@@ -103,15 +95,20 @@ impl Session {
                 "u": email,
                 "l": level
             }],
-            "ok": key_b64,
-            "i": self.session_id()
+            "ok": key_b64
         });
 
         if let Some(cr_value) = cr {
             request["cr"] = cr_value;
         }
 
-        let response = self.api.request(request).await?;
+        let mut response = self.api.request(request.clone()).await;
+        if matches!(response, Err(MegaError::ApiError { code: -11, .. })) {
+            self.ensure_share_keys_ready().await?;
+            let _ = self.refresh().await;
+            response = self.api.request(request).await;
+        }
+        let response = response?;
 
         // Check for error code
         if let Some(err_code) = response.as_i64() {
@@ -163,6 +160,35 @@ impl Session {
         }
 
         None
+    }
+
+    /// Collect a subtree's nodes in SDK-compatible CR order:
+    /// descendants first, root last (post-order traversal).
+    pub(crate) fn collect_share_nodes_bottom_up(
+        &self,
+        root_handle: &str,
+    ) -> Vec<(String, Vec<u8>)> {
+        fn walk(session: &Session, handle: &str, out: &mut Vec<(String, Vec<u8>)>) {
+            let children: Vec<String> = session
+                .nodes
+                .iter()
+                .filter_map(|n| {
+                    (n.parent_handle.as_deref() == Some(handle)).then(|| n.handle.clone())
+                })
+                .collect();
+
+            for child in children {
+                walk(session, &child, out);
+            }
+
+            if let Some(node) = session.nodes.iter().find(|n| n.handle == handle) {
+                out.push((node.handle.clone(), node.key.clone()));
+            }
+        }
+
+        let mut out = Vec::new();
+        walk(self, root_handle, &mut out);
+        out
     }
 
     /// Build a CR payload mapping a share to node keys for new nodes.

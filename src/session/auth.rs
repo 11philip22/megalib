@@ -226,11 +226,8 @@ impl Session {
                 UpgradeOutcome::Upgraded | UpgradeOutcome::AlreadyUpgraded
             );
 
-        if account_is_v2
-            && session.has_valid_rsa_key()
-            && !session.user_attr_cache.contains_key("^!keys")
-        {
-            let _ = session.attach_account_keys_if_missing().await;
+        if account_is_v2 {
+            let _ = session.initialize_account_keys().await;
         }
 
         // On login, attempt to load ^!keys and process pending promotions.
@@ -518,11 +515,8 @@ impl Session {
         );
 
         let account_is_v2 = user_info.get("aav").and_then(|v| v.as_i64()) == Some(2);
-        if account_is_v2
-            && session.has_valid_rsa_key()
-            && !session.user_attr_cache.contains_key("^!keys")
-        {
-            let _ = session.attach_account_keys_if_missing().await;
+        if account_is_v2 {
+            let _ = session.initialize_account_keys().await;
         }
 
         let _ = session.load_keys_attribute().await;
