@@ -16,6 +16,7 @@
 //! ```
 
 use std::io::Write;
+use std::time::Instant;
 
 /// Progress information for uploads and downloads.
 ///
@@ -76,12 +77,33 @@ impl TransferProgress {
 /// - Return `false` to abort the transfer.
 pub type ProgressCallback = Box<dyn FnMut(&TransferProgress) -> bool + Send>;
 
+fn format_bytes_per_second(bytes_per_second: f64) -> String {
+    if !bytes_per_second.is_finite() || bytes_per_second <= 0.0 {
+        return "0 B/s".to_string();
+    }
+
+    const UNITS: [&str; 5] = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
+    let mut value = bytes_per_second;
+    let mut unit_idx = 0usize;
+
+    while value >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 {
+        format!("{:.0} {}", value, UNITS[unit_idx])
+    } else {
+        format!("{:.2} {}", value, UNITS[unit_idx])
+    }
+}
+
 /// Create a simple CLI progress bar callback.
 ///
 /// This function returns a closure that prints a text-based progress bar to stdout.
 /// It uses `\r` (carriage return) to animate the bar on a single line.
 ///
-/// Output format: `[====      ] 40.0% filename.txt - 400/1000 bytes`
+/// Output format: `[====      ] 40.0% filename.txt - 400/1000 bytes @ 2.10 MB/s`
 ///
 /// # Example
 /// ```no_run
@@ -94,20 +116,36 @@ pub type ProgressCallback = Box<dyn FnMut(&TransferProgress) -> bool + Send>;
 /// # }
 /// ```
 pub fn make_progress_bar() -> ProgressCallback {
-    Box::new(|progress: &TransferProgress| {
+    let mut previous_sample: Option<(Instant, u64)> = None;
+    let mut speed_bps = 0.0f64;
+
+    Box::new(move |progress: &TransferProgress| {
         let percent = progress.percent();
         let bar_width = 40;
         let filled = (percent / 100.0 * bar_width as f64) as usize;
         let empty = bar_width - filled;
+        let now = Instant::now();
+
+        if let Some((previous_time, previous_done)) = previous_sample {
+            let elapsed = now.duration_since(previous_time).as_secs_f64();
+            if elapsed >= 0.1 {
+                let delta_bytes = progress.done.saturating_sub(previous_done);
+                speed_bps = delta_bytes as f64 / elapsed;
+                previous_sample = Some((now, progress.done));
+            }
+        } else {
+            previous_sample = Some((now, progress.done));
+        }
 
         print!(
-            "\r[{}{}] {:.1}% {} - {}/{} bytes",
+            "\r[{}{}] {:.1}% {} - {}/{} bytes @ {}",
             "=".repeat(filled),
             " ".repeat(empty),
             percent,
             progress.filename,
             progress.done,
-            progress.total
+            progress.total,
+            format_bytes_per_second(speed_bps)
         );
 
         if progress.is_complete() {

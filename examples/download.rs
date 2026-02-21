@@ -7,6 +7,7 @@ mod cli;
 
 use cli::{parse_credentials, usage_and_exit};
 use megalib::error::Result;
+use megalib::make_progress_bar;
 
 const USAGE: &str = "Usage: cargo run --example download -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
 
@@ -23,6 +24,8 @@ async fn main() -> Result<()> {
     let session = creds.login().await?;
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
+
+    session.watch_status(make_progress_bar()).await?;
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
