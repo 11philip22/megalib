@@ -18,6 +18,7 @@ use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::fs::upload_state::UploadState;
 use crate::fs::upload_state::calculate_file_hash;
+use crate::http::RequestKind;
 use crate::session::Session;
 
 impl Session {
@@ -68,14 +69,10 @@ impl Session {
         let encrypted = aes128_cbc_encrypt(&padded, node_key);
 
         // Upload encrypted data
-        let client = reqwest::Client::new();
-        let upload_response = client
-            .post(upload_url)
-            .header("Content-Type", "application/octet-stream")
-            .body(encrypted)
-            .send()
-            .await
-            .map_err(MegaError::RequestError)?;
+        let http = self.api_mut().http_client();
+        let upload_response = http
+            .post_binary(upload_url, encrypted, RequestKind::TransferUpload)
+            .await?;
 
         if !upload_response.status().is_success() {
             return Err(MegaError::Custom(format!(
@@ -496,6 +493,7 @@ impl Session {
 
         let path_buf = path.to_path_buf();
         let workers = self.workers();
+        let transfer_http = self.api_mut().http_client();
 
         let mut stream = stream::iter(chunks)
             .map(|(_index, chunk_offset, chunk_size)| {
@@ -504,6 +502,7 @@ impl Session {
                 let nonce = nonce;
                 let upload_url = upload_url.clone();
                 let file_name_clone = file_name.clone();
+                let transfer_http = transfer_http.clone();
 
                 async move {
                     // Open file for this chunk
@@ -535,13 +534,9 @@ impl Session {
                     let checksum = upload_checksum(&encrypted_chunk);
                     let chunk_url = format!("{}/{}?d={}", upload_url, chunk_offset, checksum);
 
-                    let client = reqwest::Client::new();
-                    let response = client
-                        .post(&chunk_url)
-                        .body(encrypted_chunk)
-                        .send()
-                        .await
-                        .map_err(MegaError::RequestError)?;
+                    let response = transfer_http
+                        .post_binary(&chunk_url, encrypted_chunk, RequestKind::TransferUpload)
+                        .await?;
 
                     if !response.status().is_success() {
                         return Err(MegaError::Custom(format!(
@@ -692,6 +687,7 @@ impl Session {
         let mut offset: u64 = 0;
         let mut chunk_index: usize = 0;
         let mut upload_handle = String::new();
+        let transfer_http = self.api_mut().http_client();
 
         // Sequential upload - read chunks one at a time from the stream
         while offset < file_size {
@@ -716,13 +712,9 @@ impl Session {
             let checksum = upload_checksum(&encrypted_chunk);
             let chunk_url = format!("{}/{}?d={}", upload_url, offset, checksum);
 
-            let client = reqwest::Client::new();
-            let response = client
-                .post(&chunk_url)
-                .body(encrypted_chunk)
-                .send()
-                .await
-                .map_err(MegaError::RequestError)?;
+            let response = transfer_http
+                .post_binary(&chunk_url, encrypted_chunk, RequestKind::TransferUpload)
+                .await?;
 
             if !response.status().is_success() {
                 return Err(MegaError::Custom(format!(

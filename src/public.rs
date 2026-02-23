@@ -13,6 +13,7 @@ use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::{aes128_cbc_decrypt, aes128_ctr_decrypt, aes128_ecb_decrypt};
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType};
+use crate::http::{HttpClient, RequestKind};
 
 /// Information about a public file from a MEGA link.
 #[derive(Debug, Clone)]
@@ -189,12 +190,10 @@ pub async fn download_public_file_data<W: Write>(info: &PublicFile, writer: &mut
     nonce.copy_from_slice(&info.key[16..24]);
 
     // Download and decrypt
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&info.download_url)
-        .send()
-        .await
-        .map_err(MegaError::RequestError)?;
+    let http = HttpClient::new();
+    let response = http
+        .get(&info.download_url, RequestKind::PublicTransfer, None)
+        .await?;
 
     if !response.status().is_success() {
         return Err(MegaError::Custom(format!(
@@ -340,12 +339,8 @@ impl PublicFolder {
         nonce.copy_from_slice(&k[16..24]);
 
         // Download and decrypt
-        let client = reqwest::Client::new();
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(MegaError::RequestError)?;
+        let http = HttpClient::new();
+        let response = http.get(url, RequestKind::PublicTransfer, None).await?;
 
         let mut offset = 0u64;
         let mut stream = response.bytes_stream();
@@ -460,16 +455,8 @@ pub async fn open_folder(url: &str) -> Result<PublicFolder> {
 
     let body = serde_json::to_string(&vec![json!({"a": "f", "c": 1, "r": 1})])?;
 
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .send()
-        .await
-        .map_err(MegaError::RequestError)?;
-
-    let response_text = response.text().await.map_err(MegaError::RequestError)?;
+    let http = HttpClient::new();
+    let response_text = http.post_json(&url, &body, RequestKind::PublicApi).await?;
     let response: Value = serde_json::from_str(&response_text)?;
 
     // Extract first response from array

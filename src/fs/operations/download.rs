@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::crypto::aes::aes128_ctr_decrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType};
+use crate::http::RequestKind;
 use crate::session::Session;
 
 impl Session {
@@ -93,6 +94,7 @@ impl Session {
             .get("g")
             .and_then(|v| v.as_str())
             .ok_or_else(|| MegaError::Custom("Failed to get download URL".to_string()))?;
+        let transfer_http = self.api_mut().http_client();
 
         // 3. Prepare decryption
         let k = &node.key;
@@ -116,12 +118,17 @@ impl Session {
 
         // If sequential (workers = 1), just stream the response body as before
         if self.workers() <= 1 {
-            let client = reqwest::Client::new();
-            let mut request = client.get(url);
-            if offset > 0 {
-                request = request.header("Range", format!("bytes={}-", offset));
-            }
-            let response = request.send().await.map_err(MegaError::RequestError)?;
+            let response = transfer_http
+                .get(
+                    url,
+                    RequestKind::TransferDownload,
+                    if offset > 0 {
+                        Some((offset, None))
+                    } else {
+                        None
+                    },
+                )
+                .await?;
 
             let status = response.status();
             if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -180,16 +187,16 @@ impl Session {
                 let chunk_url = url.clone();
                 let aes_key = aes_key;
                 let nonce = nonce;
+                let transfer_http = transfer_http.clone();
 
                 async move {
-                    let client = reqwest::Client::new();
-                    let response = client
-                        .get(&chunk_url)
-                        // Range is inclusive end-byte
-                        .header("Range", format!("bytes={}-{}", start, end - 1))
-                        .send()
-                        .await
-                        .map_err(MegaError::RequestError)?;
+                    let response = transfer_http
+                        .get(
+                            &chunk_url,
+                            RequestKind::TransferDownload,
+                            Some((start, Some(end - 1))),
+                        )
+                        .await?;
 
                     if !response.status().is_success()
                         && response.status() != reqwest::StatusCode::PARTIAL_CONTENT

@@ -2,7 +2,7 @@
 
 use super::ApiErrorCode;
 use crate::error::{MegaError, Result};
-use crate::http::HttpClient;
+use crate::http::{HttpClient, RequestKind};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
@@ -116,38 +116,42 @@ impl ApiClient {
             let attempt = attempts + 1;
             let request_id = self.request_id;
             let start = Instant::now();
-            let response_text =
-                match timeout(Duration::from_secs(20), self.http.post(&url, &body)).await {
-                    Ok(Ok(text)) => text,
-                    Ok(Err(err)) => {
-                        let elapsed_ms = start.elapsed().as_millis() as u64;
-                        trace!(
-                            request_id,
-                            attempt,
-                            url = %url,
-                            body_bytes = body.len(),
-                            body = %body,
-                            elapsed_ms,
-                            error = %err,
-                            "api request"
-                        );
-                        return Err(err);
-                    }
-                    Err(_) => {
-                        let elapsed_ms = start.elapsed().as_millis() as u64;
-                        trace!(
-                            request_id,
-                            attempt,
-                            url = %url,
-                            body_bytes = body.len(),
-                            body = %body,
-                            elapsed_ms,
-                            error = "timeout",
-                            "api request"
-                        );
-                        return Err(MegaError::Custom("HTTP request timed out".to_string()));
-                    }
-                };
+            let response_text = match timeout(
+                Duration::from_secs(20),
+                self.http.post_json(&url, &body, RequestKind::ApiJson),
+            )
+            .await
+            {
+                Ok(Ok(text)) => text,
+                Ok(Err(err)) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        elapsed_ms,
+                        error = %err,
+                        "api request"
+                    );
+                    return Err(err);
+                }
+                Err(_) => {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        elapsed_ms,
+                        error = "timeout",
+                        "api request"
+                    );
+                    return Err(MegaError::Custom("HTTP request timed out".to_string()));
+                }
+            };
 
             let elapsed_ms = start.elapsed().as_millis() as u64;
             let response_bytes = response_text.len();
@@ -382,7 +386,7 @@ impl ApiClient {
         url.push_str("&sid=");
         url.push_str(sid);
 
-        let response_text = self.http.post(&url, "").await?;
+        let response_text = self.http.post_json(&url, "", RequestKind::ScPoll).await?;
         let resp: Value =
             serde_json::from_str(&response_text).map_err(|_| MegaError::InvalidResponse)?;
 
@@ -427,7 +431,7 @@ impl ApiClient {
             .as_deref()
             .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
         let url = format!("{}&sid={}", SC_ALERTS_URL, sid);
-        let response_text = self.http.post(&url, "").await?;
+        let response_text = self.http.post_json(&url, "", RequestKind::ScPoll).await?;
         let resp: Value =
             serde_json::from_str(&response_text).map_err(|_| MegaError::InvalidResponse)?;
 
@@ -492,7 +496,7 @@ impl ApiClient {
             sleep(Duration::from_millis(20)).await;
 
             let start = Instant::now();
-            let response_text = match self.http.post(&url, &body).await {
+            let response_text = match self.http.post_json(&url, &body, RequestKind::ApiJson).await {
                 Ok(text) => text,
                 Err(err) => {
                     let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -626,6 +630,11 @@ impl ApiClient {
             serde_json::Value::Array(vec![serde_json::Value::from(value), ver_value]),
         );
         self.request(serde_json::Value::Object(obj)).await
+    }
+
+    /// Access the shared HTTP transport used by this API client.
+    pub(crate) fn http_client(&self) -> HttpClient {
+        self.http.clone()
     }
 }
 

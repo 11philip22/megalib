@@ -4,8 +4,55 @@ use crate::error::{MegaError, Result};
 use reqwest::Client;
 use std::time::Duration;
 
+/// Transport request classes, used to apply request-specific HTTP policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind {
+    ApiJson,
+    ScPoll,
+    TransferUpload,
+    TransferDownload,
+    PublicApi,
+    PublicTransfer,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RequestPolicy {
+    timeout: Duration,
+    follow_redirects: bool,
+    max_redirects: usize,
+}
+
+impl RequestPolicy {
+    fn for_kind(kind: RequestKind) -> Self {
+        match kind {
+            RequestKind::ApiJson => Self {
+                timeout: Duration::from_secs(20),
+                follow_redirects: true,
+                max_redirects: 10,
+            },
+            RequestKind::ScPoll => Self {
+                timeout: Duration::from_secs(25),
+                follow_redirects: true,
+                max_redirects: 10,
+            },
+            RequestKind::TransferUpload
+            | RequestKind::TransferDownload
+            | RequestKind::PublicTransfer => Self {
+                timeout: Duration::from_secs(120),
+                follow_redirects: true,
+                max_redirects: 10,
+            },
+            RequestKind::PublicApi => Self {
+                timeout: Duration::from_secs(30),
+                follow_redirects: true,
+                max_redirects: 10,
+            },
+        }
+    }
+}
+
 /// HTTP client for making requests to MEGA servers.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HttpClient {
     client: Client,
 }
@@ -15,6 +62,7 @@ impl HttpClient {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("Failed to build reqwest client"),
         }
@@ -30,7 +78,6 @@ impl HttpClient {
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
             .proxy(proxy)
-            .timeout(Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| MegaError::CryptoError(format!("Failed to build client: {}", e)))?;
@@ -38,27 +85,31 @@ impl HttpClient {
         Ok(Self { client })
     }
 
-    /// Make a POST request with JSON body.
-    ///
-    /// # Arguments
-    /// * `url` - URL to post to
-    /// * `body` - JSON body as string
-    ///
-    /// # Returns
-    /// Response body as string
-    pub async fn post(&self, url: &str, body: &str) -> Result<String> {
+    async fn send_with_policy(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<Vec<u8>>,
+        headers: &[(&str, String)],
+        kind: RequestKind,
+    ) -> Result<reqwest::Response> {
+        let policy = RequestPolicy::for_kind(kind);
         let mut current = url.to_string();
-        for _ in 0..10 {
-            let response = self
+        for _ in 0..=policy.max_redirects {
+            let mut request = self
                 .client
-                .post(&current)
-                .header("Content-Type", "application/json")
-                .body(body.to_string())
-                .send()
-                .await?;
+                .request(method.clone(), &current)
+                .timeout(policy.timeout);
+            for (name, value) in headers {
+                request = request.header(*name, value);
+            }
+            if let Some(payload) = &body {
+                request = request.body(payload.clone());
+            }
+            let response = request.send().await?;
 
             let status = response.status();
-            if status.is_redirection() {
+            if status.is_redirection() && policy.follow_redirects {
                 if let Some(loc) = response.headers().get(reqwest::header::LOCATION) {
                     if let Ok(loc_str) = loc.to_str() {
                         let next =
@@ -78,14 +129,68 @@ impl HttpClient {
                 return Err(MegaError::HttpError(status.as_u16()));
             }
 
-            if !status.is_success() {
-                return Err(MegaError::HttpError(status.as_u16()));
-            }
-
-            return Ok(response.text().await?);
+            return Ok(response);
         }
 
         Err(MegaError::Custom("Too many redirects".to_string()))
+    }
+
+    /// Make a POST request with JSON body.
+    pub async fn post_json(&self, url: &str, body: &str, kind: RequestKind) -> Result<String> {
+        let response = self
+            .send_with_policy(
+                reqwest::Method::POST,
+                url,
+                Some(body.as_bytes().to_vec()),
+                &[("Content-Type", "application/json".to_string())],
+                kind,
+            )
+            .await?;
+        if !response.status().is_success() {
+            return Err(MegaError::HttpError(response.status().as_u16()));
+        }
+        Ok(response.text().await?)
+    }
+
+    /// Make a POST request with binary body.
+    pub async fn post_binary(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        kind: RequestKind,
+    ) -> Result<reqwest::Response> {
+        self.send_with_policy(
+            reqwest::Method::POST,
+            url,
+            Some(body),
+            &[("Content-Type", "application/octet-stream".to_string())],
+            kind,
+        )
+        .await
+    }
+
+    /// Make a GET request, optionally with an HTTP byte range.
+    pub async fn get(
+        &self,
+        url: &str,
+        kind: RequestKind,
+        range: Option<(u64, Option<u64>)>,
+    ) -> Result<reqwest::Response> {
+        let mut headers: Vec<(&str, String)> = Vec::new();
+        if let Some((start, end)) = range {
+            let range_value = match end {
+                Some(end_inclusive) => format!("bytes={}-{}", start, end_inclusive),
+                None => format!("bytes={}-", start),
+            };
+            headers.push(("Range", range_value));
+        }
+        self.send_with_policy(reqwest::Method::GET, url, None, &headers, kind)
+            .await
+    }
+
+    /// Backward-compatible API helper.
+    pub async fn post(&self, url: &str, body: &str) -> Result<String> {
+        self.post_json(url, body, RequestKind::ApiJson).await
     }
 }
 
