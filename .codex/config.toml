@@ -1,0 +1,3 @@
+[mcp_servers.agentic_codebase]
+command = "acb-mcp"
+args = []

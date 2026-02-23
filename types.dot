@@ -1,0 +1,175 @@
+digraph {
+
+    graph [
+        label="megalib",
+        labelloc=t,
+
+        pad=0.4,
+
+        // Consider rendering the graph using a different layout algorithm, such as:
+        // [dot, neato, twopi, circo, fdp, sfdp]
+        layout=neato,
+        overlap=false,
+        splines="line",
+        rankdir=LR,
+
+        fontname="Helvetica", 
+        fontsize="36",
+    ];
+
+    node [
+        fontname="monospace",
+        fontsize="10",
+        shape="record",
+        style="filled",
+    ];
+
+    edge [
+        fontname="monospace",
+        fontsize="10",
+    ];
+
+    "megalib" [label="crate|megalib", fillcolor="#5397c8"]; // "crate" node
+    "megalib::api::client::ApiClient" [label="pub struct|api::client::ApiClient", fillcolor="#81c169"]; // "struct" node
+    "megalib::api::error::ApiErrorCode" [label="pub enum|api::error::ApiErrorCode", fillcolor="#81c169"]; // "enum" node
+    "megalib::crypto::authring::AuthEntry" [label="pub struct|crypto::authring::AuthEntry", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::authring::AuthRing" [label="pub struct|crypto::authring::AuthRing", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::authring::AuthState" [label="pub enum|crypto::authring::AuthState", fillcolor="#81c169"]; // "enum" node
+    "megalib::crypto::key_manager::KeyManager" [label="pub struct|crypto::key_manager::KeyManager", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::key_manager::PendingInEntry" [label="pub struct|crypto::key_manager::PendingInEntry", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::key_manager::PendingOutEntry" [label="pub struct|crypto::key_manager::PendingOutEntry", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::key_manager::PendingUid" [label="pub enum|crypto::key_manager::PendingUid", fillcolor="#81c169"]; // "enum" node
+    "megalib::crypto::key_manager::ShareKeyEntry" [label="pub struct|crypto::key_manager::ShareKeyEntry", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::key_manager::Warnings" [label="pub struct|crypto::key_manager::Warnings", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::keyring::EncMode" [label="pub(self) enum|crypto::keyring::EncMode", fillcolor="#db5367"]; // "enum" node
+    "megalib::crypto::keyring::Keyring" [label="pub struct|crypto::keyring::Keyring", fillcolor="#81c169"]; // "struct" node
+    "megalib::crypto::rsa::MegaRsaKey" [label="pub struct|crypto::rsa::MegaRsaKey", fillcolor="#81c169"]; // "struct" node
+    "megalib::error::MegaError" [label="pub enum|error::MegaError", fillcolor="#81c169"]; // "enum" node
+    "megalib::error::Result" [label="pub type|error::Result", fillcolor="#81c169"]; // "type" node
+    "megalib::fs::node::Node" [label="pub struct|fs::node::Node", fillcolor="#81c169"]; // "struct" node
+    "megalib::fs::node::NodeType" [label="pub enum|fs::node::NodeType", fillcolor="#81c169"]; // "enum" node
+    "megalib::fs::node::Quota" [label="pub struct|fs::node::Quota", fillcolor="#81c169"]; // "struct" node
+    "megalib::fs::upload_state::UploadState" [label="pub struct|fs::upload_state::UploadState", fillcolor="#81c169"]; // "struct" node
+    "megalib::http::HttpClient" [label="pub struct|http::HttpClient", fillcolor="#81c169"]; // "struct" node
+    "megalib::http::RequestKind" [label="pub enum|http::RequestKind", fillcolor="#81c169"]; // "enum" node
+    "megalib::http::RequestPolicy" [label="pub(self) struct|http::RequestPolicy", fillcolor="#db5367"]; // "struct" node
+    "megalib::progress::ProgressCallback" [label="pub type|progress::ProgressCallback", fillcolor="#81c169"]; // "type" node
+    "megalib::progress::TransferProgress" [label="pub struct|progress::TransferProgress", fillcolor="#81c169"]; // "struct" node
+    "megalib::public::PublicFile" [label="pub struct|public::PublicFile", fillcolor="#81c169"]; // "struct" node
+    "megalib::public::PublicFolder" [label="pub struct|public::PublicFolder", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::actor::AccountInfo" [label="pub struct|session::actor::AccountInfo", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::actor::SessionActor" [label="pub(self) struct|session::actor::SessionActor", fillcolor="#db5367"]; // "struct" node
+    "megalib::session::actor::SessionCommand" [label="pub(self) enum|session::actor::SessionCommand", fillcolor="#db5367"]; // "enum" node
+    "megalib::session::actor::SessionHandle" [label="pub struct|session::actor::SessionHandle", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::auth::UpgradeOutcome" [label="pub(self) enum|session::auth::UpgradeOutcome", fillcolor="#db5367"]; // "enum" node
+    "megalib::session::core::Contact" [label="pub struct|session::core::Contact", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::core::FolderSessionBlob" [label="pub struct|session::core::FolderSessionBlob", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::core::Session" [label="pub(crate) struct|session::core::Session", fillcolor="#f8c04c"]; // "struct" node
+    "megalib::session::core::SessionBlob" [label="pub struct|session::core::SessionBlob", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::device_id::Timespec" [label="pub(self) struct|session::device_id::Timespec", fillcolor="#db5367"]; // "struct" node
+    "megalib::session::key_sync::ContactPublicKeys" [label="pub struct|session::key_sync::ContactPublicKeys", fillcolor="#81c169"]; // "struct" node
+    "megalib::session::registration::RegistrationState" [label="pub struct|session::registration::RegistrationState", fillcolor="#81c169"]; // "struct" node
+
+    "megalib" -> "megalib::api::client::ApiClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::api::error::ApiErrorCode" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::authring::AuthEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::authring::AuthRing" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::authring::AuthState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::KeyManager" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::PendingInEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::PendingOutEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::PendingUid" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::ShareKeyEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::keyring::EncMode" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::keyring::Keyring" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::crypto::rsa::MegaRsaKey" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::error::Result" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::fs::node::NodeType" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::fs::node::Quota" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::fs::upload_state::UploadState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::http::HttpClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::progress::ProgressCallback" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::progress::TransferProgress" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::public::PublicFile" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::public::PublicFolder" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::actor::AccountInfo" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::actor::SessionHandle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::core::Contact" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::core::FolderSessionBlob" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::core::Session" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::core::SessionBlob" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::device_id::Timespec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::key_sync::ContactPublicKeys" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib" -> "megalib::session::registration::RegistrationState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::api::client::ApiClient" -> "megalib::api::error::ApiErrorCode" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::api::client::ApiClient" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::api::client::ApiClient" -> "megalib::http::HttpClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::api::client::ApiClient" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::authring::AuthEntry" -> "megalib::crypto::authring::AuthState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::authring::AuthRing" -> "megalib::crypto::authring::AuthEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::authring::AuthRing" -> "megalib::crypto::authring::AuthState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::crypto::key_manager::PendingInEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::crypto::key_manager::PendingOutEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::crypto::key_manager::PendingUid" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::crypto::key_manager::ShareKeyEntry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::KeyManager" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::key_manager::PendingOutEntry" -> "megalib::crypto::key_manager::PendingUid" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::keyring::Keyring" -> "megalib::crypto::keyring::EncMode" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::crypto::keyring::Keyring" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::fs::node::Node" -> "megalib::fs::node::NodeType" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::fs::upload_state::UploadState" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::http::HttpClient" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::http::HttpClient" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::http::HttpClient" -> "megalib::http::RequestPolicy" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::http::RequestPolicy" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::api::client::ApiClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::fs::node::NodeType" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::http::HttpClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::public::PublicFolder" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::session::actor::AccountInfo" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::session::actor::SessionCommand" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::session::actor::SessionHandle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionActor" -> "megalib::session::core::Session" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionCommand" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionCommand" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::session::actor::SessionCommand" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::session::core::FolderSessionBlob" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::actor::SessionHandle" -> "megalib::session::core::Session" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::api::client::ApiClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::api::error::ApiErrorCode" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::authring::AuthRing" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::authring::AuthState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::key_manager::KeyManager" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::key_manager::PendingUid" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::key_manager::Warnings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::keyring::Keyring" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::crypto::rsa::MegaRsaKey" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::fs::node::Node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::fs::node::NodeType" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::fs::node::Quota" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::fs::upload_state::UploadState" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::http::HttpClient" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::http::RequestKind" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::progress::TransferProgress" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::session::auth::UpgradeOutcome" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::session::core::Contact" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::session::core::FolderSessionBlob" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::session::core::SessionBlob" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::core::Session" -> "megalib::session::key_sync::ContactPublicKeys" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "megalib::session::registration::RegistrationState" -> "megalib::error::MegaError" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+
+}
