@@ -67,6 +67,8 @@ pub(crate) struct Session {
     pub(crate) user_attr_versions: HashMap<String, String>,
     /// Last persisted ^!keys blob (base64url), to avoid redundant updates.
     pub(crate) last_keys_blob_b64: Option<String>,
+    /// Deferred persist marker used by actor-side coalescing.
+    pub(crate) keys_persist_dirty: bool,
     /// Prevent re-entrant ^!keys persistence attempts.
     pub(crate) keys_persist_inflight: bool,
     /// Last completed token for pending keys feed (pk command)
@@ -83,8 +85,14 @@ pub(crate) struct Session {
     pub(crate) current_seqtag: Option<String>,
     /// Whether the current seqtag has been observed in APs.
     pub(crate) current_seqtag_seen: bool,
-    /// If true, do not block on seqtag waits (actor will resolve).
-    pub(crate) defer_seqtag_wait: bool,
+    /// Whether the local node cache is ready after refresh/fetchnodes parse+apply.
+    pub(crate) nodes_state_ready: bool,
+    /// Whether the active SC/AP catch-up batch has drained.
+    pub(crate) sc_batch_catchup_done: bool,
+    /// SDK-style statecurrent equivalent: true when node state and AP catch-up are both ready.
+    pub(crate) state_current: bool,
+    /// SDK-style actionpacketsCurrent equivalent; includes seqtag high-watermark gating.
+    pub(crate) action_packets_current: bool,
     /// Whether to kick off SC50 catch-up after reaching current state.
     pub(crate) alerts_catchup_pending: bool,
     /// Last seen user-alert sequence number (SC50).
@@ -148,6 +156,7 @@ impl Session {
             user_attr_cache,
             user_attr_versions,
             last_keys_blob_b64: None,
+            keys_persist_dirty: false,
             keys_persist_inflight: false,
             pending_keys_token: None,
             keys_downgrade_detected: false,
@@ -156,7 +165,10 @@ impl Session {
             sc_catchup,
             current_seqtag: None,
             current_seqtag_seen: false,
-            defer_seqtag_wait: false,
+            nodes_state_ready: false,
+            sc_batch_catchup_done: false,
+            state_current: false,
+            action_packets_current: false,
             alerts_catchup_pending,
             user_alert_lsn: None,
             user_alerts: Vec::new(),
@@ -444,6 +456,23 @@ impl Session {
     /// Returns true if a real RSA private key is currently available.
     pub(crate) fn has_valid_rsa_key(&self) -> bool {
         self.rsa_key.is_valid_private_key()
+    }
+
+    pub(crate) fn is_full_account_session(&self) -> bool {
+        !self.email.trim().is_empty() || self.has_valid_rsa_key()
+    }
+
+    pub(crate) fn reset_state_current_tracking(&mut self) {
+        self.nodes_state_ready = false;
+        self.sc_batch_catchup_done = false;
+        self.state_current = false;
+        self.action_packets_current = false;
+    }
+
+    pub(crate) fn recompute_state_current(&mut self) -> bool {
+        let was_current = self.state_current;
+        self.state_current = self.nodes_state_ready && self.sc_batch_catchup_done;
+        !was_current && self.state_current
     }
 
     /// Construct an empty/sentinel RSA key when login path has no RSA material.
@@ -1182,6 +1211,7 @@ mod tests {
             user_attr_cache: HashMap::new(),
             user_attr_versions: HashMap::new(),
             last_keys_blob_b64: None,
+            keys_persist_dirty: false,
             keys_persist_inflight: false,
             pending_keys_token: None,
             scsn: None,
@@ -1189,7 +1219,10 @@ mod tests {
             sc_catchup: false,
             current_seqtag: None,
             current_seqtag_seen: false,
-            defer_seqtag_wait: false,
+            nodes_state_ready: false,
+            sc_batch_catchup_done: false,
+            state_current: false,
+            action_packets_current: false,
             alerts_catchup_pending: false,
             user_alert_lsn: None,
             user_alerts: Vec::new(),

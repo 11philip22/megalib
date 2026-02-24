@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::api::ApiErrorCode;
@@ -25,6 +25,46 @@ pub struct ContactPublicKeys {
     pub cu25519: Vec<u8>,
     pub verified: bool,
     pub user_handle: Option<String>,
+}
+
+pub(crate) type ActionPacketContactUpdate = (
+    String,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+    bool,
+    Option<Contact>,
+);
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActionPacketKeyWork {
+    pub(crate) share_changed: bool,
+    pub(crate) share_packets: Vec<Value>,
+    pub(crate) changed_handles: Vec<String>,
+    pub(crate) stale_key_attrs: Vec<String>,
+    pub(crate) contact_updates: Vec<ActionPacketContactUpdate>,
+}
+
+impl ActionPacketKeyWork {
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.share_changed
+            && self.share_packets.is_empty()
+            && self.changed_handles.is_empty()
+            && self.stale_key_attrs.is_empty()
+            && self.contact_updates.is_empty()
+    }
+
+    pub(crate) fn merge_from(&mut self, mut other: ActionPacketKeyWork) {
+        self.share_changed |= other.share_changed;
+        self.share_packets.append(&mut other.share_packets);
+        self.changed_handles.append(&mut other.changed_handles);
+        self.stale_key_attrs.append(&mut other.stale_key_attrs);
+        self.contact_updates.append(&mut other.contact_updates);
+
+        self.changed_handles.sort_unstable();
+        self.changed_handles.dedup();
+        self.stale_key_attrs.sort_unstable();
+        self.stale_key_attrs.dedup();
+    }
 }
 
 fn derive_pairwise_key(priv_cu: &[u8], peer_pub: &[u8]) -> Result<[u8; 16]> {
@@ -201,10 +241,10 @@ impl Session {
         }
     }
 
-    /// Promote pending out/in shares by performing pairwise ECDH and encrypting/decrypting share keys.
-    ///
-    /// Returns true if any state changed (pending entries cleared or flags updated).
-    pub async fn promote_pending_shares(&mut self) -> Result<bool> {
+    async fn promote_pending_shares_internal(
+        &mut self,
+        persist_immediately: bool,
+    ) -> Result<bool> {
         if !self.key_manager.is_ready() {
             return Ok(false);
         }
@@ -352,10 +392,19 @@ impl Session {
         if changed {
             // clear cv warning if everyone verified
             self.maybe_clear_cv_warning();
-            self.persist_keys_with_retry().await?;
+            if persist_immediately {
+                self.persist_keys_with_retry().await?;
+            }
         }
 
         Ok(changed)
+    }
+
+    /// Promote pending out/in shares by performing pairwise ECDH and encrypting/decrypting share keys.
+    ///
+    /// Returns true if any state changed (pending entries cleared or flags updated).
+    pub async fn promote_pending_shares(&mut self) -> Result<bool> {
+        self.promote_pending_shares_internal(true).await
     }
 
     /// Clear IN_USE bits for share keys whose folders are no longer present in the node graph.
@@ -408,13 +457,14 @@ impl Session {
     }
 
     /// Handle contact key updates (action packet). Updates authrings, warning flags, clears trusted flags on fingerprint change.
-    /// Returns true if ^!keys was persisted.
-    pub async fn handle_contact_key_update(
+    /// Returns true if local key state changed.
+    async fn handle_contact_key_update_internal(
         &mut self,
         contact_handle_b64: &str,
         ed_pub: Option<&[u8]>,
         cu_pub: Option<&[u8]>,
         verified: bool,
+        persist_immediately: bool,
     ) -> Result<bool> {
         let mut changed = false;
         let mut fingerprint_changed = false;
@@ -457,32 +507,124 @@ impl Session {
         }
 
         if changed {
-            self.persist_keys_with_retry().await?;
+            if persist_immediately {
+                self.persist_keys_with_retry().await?;
+            }
         }
         Ok(changed)
+    }
+
+    /// Handle contact key updates and persist immediately.
+    #[allow(dead_code)]
+    pub async fn handle_contact_key_update(
+        &mut self,
+        contact_handle_b64: &str,
+        ed_pub: Option<&[u8]>,
+        cu_pub: Option<&[u8]>,
+        verified: bool,
+    ) -> Result<bool> {
+        self.handle_contact_key_update_internal(
+            contact_handle_b64,
+            ed_pub,
+            cu_pub,
+            verified,
+            true,
+        )
+        .await
     }
 
     /// Handle multiple contact updates from an action packet batch.
     pub async fn handle_contact_updates(
         &mut self,
-        updates: &[(
-            String,
-            Option<Vec<u8>>,
-            Option<Vec<u8>>,
-            bool,
-            Option<Contact>,
-        )],
+        updates: &[ActionPacketContactUpdate],
     ) -> Result<bool> {
         let mut changed = false;
         for (h, ed, cu, verified, _contact) in updates {
             let ed_ref = ed.as_deref();
             let cu_ref = cu.as_deref();
             if self
-                .handle_contact_key_update(h, ed_ref, cu_ref, *verified)
+                .handle_contact_key_update_internal(h, ed_ref, cu_ref, *verified, false)
                 .await?
             {
                 changed = true;
             }
+        }
+        Ok(changed)
+    }
+
+    pub(crate) async fn execute_actionpacket_key_work(
+        &mut self,
+        work: ActionPacketKeyWork,
+    ) -> Result<bool> {
+        if work.is_empty() {
+            return Ok(false);
+        }
+
+        let mut changed = false;
+
+        if !work.share_packets.is_empty()
+            && self.apply_deferred_share_packets(&work.share_packets)?
+        {
+            changed = true;
+        }
+
+        if !work.contact_updates.is_empty()
+            && self.handle_contact_updates(&work.contact_updates).await?
+        {
+            changed = true;
+        }
+
+        if !work.contact_updates.is_empty() {
+            if self.cleanup_pending_outshares_for_deleted_contacts() {
+                changed = true;
+            }
+            self.maybe_clear_cv_warning();
+        }
+
+        if !work.stale_key_attrs.is_empty() {
+            let stale: HashSet<String> = work.stale_key_attrs.iter().cloned().collect();
+            if self.refetch_key_user_attrs(&stale).await? {
+                changed = true;
+            }
+        }
+
+        let needs_key_maintenance = work.share_changed
+            || !work.changed_handles.is_empty()
+            || !work.stale_key_attrs.is_empty();
+
+        if needs_key_maintenance
+            && self
+                .handle_actionpacket_keys(&work.changed_handles, work.share_changed)
+                .await?
+        {
+            changed = true;
+        }
+
+        Ok(changed)
+    }
+
+    /// SDK-style pending keys handling for AP `a:"pk"`: trigger pending keys retrieval asynchronously.
+    pub(crate) async fn handle_actionpacket_pending_keys_fetch(&mut self) -> Result<bool> {
+        if self.key_manager.generation == 0 {
+            return Ok(false);
+        }
+        self.promote_pending_shares_internal(false).await
+    }
+
+    /// SDK-style startup/post-upgrade reconciliation pass.
+    ///
+    /// This mirrors the intent of fetching latest key material and then running one
+    /// pending-key promotion pass without requiring a new `a:"pk"` action packet.
+    pub(crate) async fn run_startup_key_reconciliation(&mut self) -> Result<bool> {
+        if self.key_manager.generation == 0 {
+            return Ok(false);
+        }
+        let mut changed = false;
+        if self.sync_keys_attribute_internal(false, false).await? {
+            changed = true;
+        }
+        if self.handle_actionpacket_pending_keys_fetch().await? {
+            changed = true;
         }
         Ok(changed)
     }
@@ -553,7 +695,7 @@ impl Session {
     /// - Sync remote ^!keys if any key-bearing handles changed
     /// - Promote pending shares
     /// - Clear in-use flags for removed shares
-    /// Returns true if local state changed and was persisted.
+    /// Returns true if local key state changed.
     pub async fn handle_actionpacket_keys(
         &mut self,
         changed_handles: &[String],
@@ -596,23 +738,20 @@ impl Session {
         }
 
         // Try to sync remote ^!keys and then promote pending shares.
-        if self.sync_keys_attribute().await.unwrap_or(false) {
+        if self.sync_keys_attribute_internal(true, false).await.unwrap_or(false) {
             changed = true;
-        } else if self.promote_pending_shares().await? {
+        } else if self.promote_pending_shares_internal(false).await? {
             changed = true;
-        }
-
-        if changed {
-            self.persist_keys_with_retry().await?;
         }
 
         Ok(changed)
     }
 
-    /// Merge remote ^!keys into local KeyManager, rehydrate caches, and retry pending promotions.
-    ///
-    /// Returns true if state changed.
-    pub async fn sync_keys_attribute(&mut self) -> Result<bool> {
+    async fn sync_keys_attribute_internal(
+        &mut self,
+        include_pending_promotions: bool,
+        persist_immediately: bool,
+    ) -> Result<bool> {
         let Some(remote_blob) = self.get_user_attribute_raw("^!keys").await? else {
             return Ok(false);
         };
@@ -640,10 +779,52 @@ impl Session {
         self.manual_verification = self.key_manager.manual_verification;
 
         let mut changed = false;
-        changed |= self.promote_pending_shares().await?;
+        if include_pending_promotions {
+            changed |= self
+                .promote_pending_shares_internal(persist_immediately)
+                .await?;
+        }
         changed |= self.clear_inuse_flags_for_missing_shares();
-        if changed {
+        if changed && persist_immediately {
             self.persist_keys_with_retry().await?;
+        }
+        Ok(changed)
+    }
+
+    /// Merge remote ^!keys into local KeyManager, rehydrate caches, and retry pending promotions.
+    ///
+    /// Returns true if state changed.
+    #[allow(dead_code)]
+    pub async fn sync_keys_attribute(&mut self) -> Result<bool> {
+        self.sync_keys_attribute_internal(true, true).await
+    }
+
+    pub(crate) async fn refetch_key_user_attrs(&mut self, stale: &HashSet<String>) -> Result<bool> {
+        let priority = [
+            "^!keys",
+            "*keyring",
+            "*~usk",
+            "*~jscd",
+            "+puCu255",
+            "+puEd255",
+            "+sigCu255",
+            "+sigPubk",
+        ];
+
+        let mut changed = false;
+        for attr in priority {
+            if !stale.contains(attr) {
+                continue;
+            }
+            let existing = self.user_attr_cache.get(attr).cloned();
+            let fetched = self.get_user_attribute_raw(attr).await?;
+            if fetched.is_some() {
+                changed = true;
+            } else if existing.is_some() {
+                self.user_attr_cache.remove(attr);
+                self.user_attr_versions.remove(attr);
+                changed = true;
+            }
         }
         Ok(changed)
     }
@@ -724,6 +905,9 @@ impl Session {
         .await;
 
         self.keys_persist_inflight = false;
+        if result.is_ok() {
+            self.keys_persist_dirty = false;
+        }
         result
     }
 }

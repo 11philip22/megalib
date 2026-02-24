@@ -1,19 +1,22 @@
 //! Actor-based session runtime for background SC polling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::io::{AsyncRead, AsyncSeek};
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, sleep};
+use tracing::debug;
 
 use crate::crypto::{AuthState, Warnings};
 use crate::error::{MegaError, Result};
 use crate::fs::{Node, Quota};
 use crate::progress::ProgressCallback;
 use crate::session::core::{FolderSessionBlob, Session, SessionBlob};
+use crate::session::key_sync::ActionPacketKeyWork;
+use crate::session::sc_poller::{ScPoller, ScPollerControl, ScPollerEvent, ScPollerState};
 
 trait AsyncReadSeek: AsyncRead + AsyncSeek + Unpin + Send {}
 
@@ -22,6 +25,36 @@ impl<T> AsyncReadSeek for T where T: AsyncRead + AsyncSeek + Unpin + Send {}
 type BoxedReader = Box<dyn AsyncReadSeek>;
 type BoxedWriter = Box<dyn Write + Send>;
 type SeqtagWaiter = Box<dyn FnOnce(&mut Session) + Send>;
+
+enum DeferredKeyWork {
+    FromActionPacket {
+        work: ActionPacketKeyWork,
+        attempts: u8,
+        ready_at: Instant,
+    },
+    PendingKeysFetch {
+        attempts: u8,
+        ready_at: Instant,
+    },
+    StartupReconciliation {
+        attempts: u8,
+        ready_at: Instant,
+    },
+}
+
+const MAX_DEFERRED_KEY_WORK_RETRIES: u8 = 3;
+const MAX_DEFERRED_KEY_WORK_QUEUE: usize = 64;
+const DEFERRED_KEY_WORK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+impl DeferredKeyWork {
+    fn is_due(&self, now: Instant) -> bool {
+        match self {
+            DeferredKeyWork::FromActionPacket { ready_at, .. }
+            | DeferredKeyWork::PendingKeysFetch { ready_at, .. }
+            | DeferredKeyWork::StartupReconciliation { ready_at, .. } => *ready_at <= now,
+        }
+    }
+}
 
 /// Account metadata for the current session.
 ///
@@ -234,9 +267,34 @@ enum SessionCommand {
 struct SessionActor {
     session: Session,
     rx: mpsc::Receiver<SessionCommand>,
+    sc_event_rx: mpsc::Receiver<ScPollerEvent>,
+    sc_control_tx: mpsc::Sender<ScPollerControl>,
+    sc_poller_task: Option<tokio::task::JoinHandle<()>>,
     seqtag_waiters: HashMap<String, Vec<SeqtagWaiter>>,
-    alerts_enabled: bool,
-    alerts_inflight: bool,
+    key_work_queue: VecDeque<DeferredKeyWork>,
+    deferred_key_work_enqueued: u64,
+    deferred_key_work_coalesced: u64,
+    deferred_key_work_started: u64,
+    deferred_key_work_retried: u64,
+    deferred_key_work_dropped: u64,
+    deferred_key_work_queue_hwm: usize,
+    ap_pk_seen: u64,
+    pending_keys_fetch_queued: u64,
+    pending_keys_fetch_started: u64,
+    state_current_transitions: u64,
+    action_packets_current_transitions: u64,
+    deferred_pk_bursts: u64,
+    startup_reconciliation_requested: bool,
+    startup_reconciliation_queued: bool,
+    startup_reconciliation_enqueued: u64,
+    startup_reconciliation_started: u64,
+    startup_reconciliation_completed: u64,
+    startup_reconciliation_retried: u64,
+    startup_reconciliation_dropped: u64,
+    last_key_generation: u32,
+    persist_requested: u64,
+    persist_started: u64,
+    persist_coalesced: u64,
 }
 
 impl SessionHandle {
@@ -1312,13 +1370,54 @@ impl SessionHandle {
 
 impl SessionActor {
     fn spawn(session: Session) -> SessionHandle {
+        let last_key_generation = session.key_manager.generation;
         let (tx, rx) = mpsc::channel(64);
+        let (sc_event_tx, sc_event_rx) = mpsc::channel(64);
+        let (sc_control_tx, sc_control_rx) = mpsc::channel(16);
+        let poller_state = ScPollerState {
+            scsn: session.scsn.clone(),
+            wsc_url: session.wsc_url.clone(),
+            sc_catchup: session.sc_catchup,
+            alerts_catchup_pending: session.alerts_catchup_pending,
+        };
+        let poller = ScPoller::new(
+            session.api.clone(),
+            poller_state,
+            sc_event_tx,
+            sc_control_rx,
+        );
+        let sc_poller_task = tokio::spawn(poller.run());
         let actor = SessionActor {
             session,
             rx,
+            sc_event_rx,
+            sc_control_tx,
+            sc_poller_task: Some(sc_poller_task),
             seqtag_waiters: HashMap::new(),
-            alerts_enabled: true,
-            alerts_inflight: false,
+            key_work_queue: VecDeque::new(),
+            deferred_key_work_enqueued: 0,
+            deferred_key_work_coalesced: 0,
+            deferred_key_work_started: 0,
+            deferred_key_work_retried: 0,
+            deferred_key_work_dropped: 0,
+            deferred_key_work_queue_hwm: 0,
+            ap_pk_seen: 0,
+            pending_keys_fetch_queued: 0,
+            pending_keys_fetch_started: 0,
+            state_current_transitions: 0,
+            action_packets_current_transitions: 0,
+            deferred_pk_bursts: 0,
+            startup_reconciliation_requested: false,
+            startup_reconciliation_queued: false,
+            startup_reconciliation_enqueued: 0,
+            startup_reconciliation_started: 0,
+            startup_reconciliation_completed: 0,
+            startup_reconciliation_retried: 0,
+            startup_reconciliation_dropped: 0,
+            last_key_generation,
+            persist_requested: 0,
+            persist_started: 0,
+            persist_coalesced: 0,
         };
         tokio::spawn(actor.run());
         SessionHandle { tx }
@@ -1338,11 +1437,580 @@ impl SessionActor {
         }
     }
 
-    async fn run(mut self) {
-        let mut delay = Duration::from_millis(1_000);
-        let max_delay = Duration::from_millis(60_000);
-        let mut next_poll = Instant::now() + delay;
+    fn sc_poller_state(&self) -> ScPollerState {
+        ScPollerState {
+            scsn: self.session.scsn.clone(),
+            wsc_url: self.session.wsc_url.clone(),
+            sc_catchup: self.session.sc_catchup,
+            alerts_catchup_pending: self.session.alerts_catchup_pending,
+        }
+    }
 
+    async fn sync_sc_state_to_poller(&mut self) {
+        let _ = self
+            .sc_control_tx
+            .send(ScPollerControl::UpdateState(self.sc_poller_state()))
+            .await;
+    }
+
+    fn deferred_retry_backoff(attempt: u8) -> Duration {
+        match attempt {
+            1 => Duration::from_millis(100),
+            2 => Duration::from_millis(500),
+            3 => Duration::from_secs(2),
+            _ => Duration::from_secs(5),
+        }
+    }
+
+    fn update_deferred_queue_hwm(&mut self) {
+        let len = self.key_work_queue.len();
+        if len > self.deferred_key_work_queue_hwm {
+            self.deferred_key_work_queue_hwm = len;
+        }
+    }
+
+    fn seqtag_high_watermark_pending(&self) -> bool {
+        !self.seqtag_waiters.is_empty()
+            || (self.session.current_seqtag.is_some() && !self.session.current_seqtag_seen)
+    }
+
+    fn should_run_startup_reconciliation(&self) -> bool {
+        self.session.is_full_account_session() && self.session.key_manager.generation > 0
+    }
+
+    fn maybe_enqueue_startup_reconciliation(&mut self) {
+        if !self.startup_reconciliation_requested
+            || self.startup_reconciliation_queued
+            || !self.session.state_current
+            || !self.should_run_startup_reconciliation()
+        {
+            return;
+        }
+        self.startup_reconciliation_queued = true;
+        self.startup_reconciliation_enqueued = self.startup_reconciliation_enqueued.saturating_add(1);
+        self.key_work_queue
+            .push_back(DeferredKeyWork::StartupReconciliation {
+                attempts: 0,
+                ready_at: Instant::now(),
+            });
+        self.update_deferred_queue_hwm();
+        debug!(
+            startup_reconciliation_enqueued = self.startup_reconciliation_enqueued,
+            startup_reconciliation_started = self.startup_reconciliation_started,
+            startup_reconciliation_completed = self.startup_reconciliation_completed,
+            deferred_pk_bursts = self.deferred_pk_bursts,
+            deferred_key_work_queue_len = self.key_work_queue.len(),
+            deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+            "queued startup key reconciliation pass"
+        );
+    }
+
+    fn request_startup_reconciliation(&mut self, reason: &str) {
+        self.startup_reconciliation_requested = true;
+        debug!(
+            reason,
+            state_current = self.session.state_current,
+            nodes_state_ready = self.session.nodes_state_ready,
+            sc_batch_catchup_done = self.session.sc_batch_catchup_done,
+            key_generation = self.session.key_manager.generation,
+            full_account_session = self.session.is_full_account_session(),
+            deferred_pk_bursts = self.deferred_pk_bursts,
+            "startup key reconciliation requested"
+        );
+        self.maybe_enqueue_startup_reconciliation();
+    }
+
+    fn refresh_state_current_flags(&mut self) {
+        let previous_state_current = self.session.state_current;
+        self.session.recompute_state_current();
+        if previous_state_current != self.session.state_current {
+            if self.session.state_current {
+                self.state_current_transitions = self.state_current_transitions.saturating_add(1);
+                debug!(
+                    state_current_transitions = self.state_current_transitions,
+                    nodes_state_ready = self.session.nodes_state_ready,
+                    sc_batch_catchup_done = self.session.sc_batch_catchup_done,
+                    deferred_pk_bursts = self.deferred_pk_bursts,
+                    "state_current=false -> true"
+                );
+                if self.should_run_startup_reconciliation() {
+                    self.request_startup_reconciliation("state_current_transition");
+                } else {
+                    debug!(
+                        key_generation = self.session.key_manager.generation,
+                        full_account_session = self.session.is_full_account_session(),
+                        "state_current reached but startup reconciliation is gated"
+                    );
+                }
+            } else {
+                debug!(
+                    nodes_state_ready = self.session.nodes_state_ready,
+                    sc_batch_catchup_done = self.session.sc_batch_catchup_done,
+                    "state_current=true -> false"
+                );
+            }
+        }
+
+        let seqtag_high_watermark_pending = self.seqtag_high_watermark_pending();
+        let previous_ap_current = self.session.action_packets_current;
+        self.session.action_packets_current =
+            self.session.state_current && !seqtag_high_watermark_pending;
+        if previous_ap_current != self.session.action_packets_current {
+            self.action_packets_current_transitions =
+                self.action_packets_current_transitions.saturating_add(1);
+            debug!(
+                action_packets_current_transitions = self.action_packets_current_transitions,
+                action_packets_current = self.session.action_packets_current,
+                state_current = self.session.state_current,
+                seqtag_high_watermark_pending,
+                pending_seqtag_waiters = self.seqtag_waiters.len(),
+                "action_packets_current transition"
+            );
+        }
+    }
+
+    fn check_generation_upgrade_transition(&mut self) {
+        let current_generation = self.session.key_manager.generation;
+        if self.last_key_generation == 0
+            && current_generation > 0
+            && self.session.is_full_account_session()
+        {
+            debug!(
+                generation_previous = self.last_key_generation,
+                generation_current = current_generation,
+                state_current = self.session.state_current,
+                "detected key generation upgrade; scheduling reconciliation"
+            );
+            self.request_startup_reconciliation("post_upgrade_generation_transition");
+        }
+        self.last_key_generation = current_generation;
+    }
+
+    fn refresh_runtime_state(&mut self) {
+        self.refresh_state_current_flags();
+        self.check_generation_upgrade_transition();
+        self.maybe_enqueue_startup_reconciliation();
+    }
+
+    fn schedule_keys_persist(&mut self, reason: &str) {
+        if self.session.keys_persist_dirty {
+            self.persist_coalesced = self.persist_coalesced.saturating_add(1);
+            debug!(
+                reason,
+                persist_requested = self.persist_requested,
+                persist_started = self.persist_started,
+                persist_coalesced = self.persist_coalesced,
+                "coalesced keys persist request"
+            );
+            return;
+        }
+        self.session.keys_persist_dirty = true;
+        self.persist_requested = self.persist_requested.saturating_add(1);
+        debug!(
+            reason,
+            persist_requested = self.persist_requested,
+            persist_started = self.persist_started,
+            persist_coalesced = self.persist_coalesced,
+            "scheduled keys persist flush"
+        );
+    }
+
+    async fn flush_keys_persist_if_dirty(&mut self, force: bool) {
+        if !self.session.keys_persist_dirty {
+            return;
+        }
+        if self.session.keys_persist_inflight {
+            debug!(
+                force_flush = force,
+                persist_requested = self.persist_requested,
+                persist_started = self.persist_started,
+                persist_coalesced = self.persist_coalesced,
+                "keys persist already inflight; deferring flush"
+            );
+            return;
+        }
+
+        self.persist_started = self.persist_started.saturating_add(1);
+        self.session.keys_persist_dirty = false;
+        let started = Instant::now();
+        match self.session.persist_keys_with_retry().await {
+            Ok(()) => {
+                debug!(
+                    persist_requested = self.persist_requested,
+                    persist_started = self.persist_started,
+                    persist_coalesced = self.persist_coalesced,
+                    persist_flush_ms = started.elapsed().as_millis() as u64,
+                    "keys persist flush completed"
+                );
+            }
+            Err(err) => {
+                self.session.keys_persist_dirty = true;
+                debug!(
+                    error = %err,
+                    persist_requested = self.persist_requested,
+                    persist_started = self.persist_started,
+                    persist_coalesced = self.persist_coalesced,
+                    persist_flush_ms = started.elapsed().as_millis() as u64,
+                    "keys persist flush failed; will retry"
+                );
+            }
+        }
+    }
+
+    fn enqueue_key_work(&mut self, work: ActionPacketKeyWork) {
+        if work.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        self.deferred_key_work_enqueued = self.deferred_key_work_enqueued.saturating_add(1);
+        if let Some(DeferredKeyWork::FromActionPacket {
+            work: queued_work,
+            attempts,
+            ready_at,
+        }) = self.key_work_queue.back_mut()
+        {
+            if *attempts == 0 {
+                queued_work.merge_from(work);
+                *ready_at = now;
+                self.deferred_key_work_coalesced =
+                    self.deferred_key_work_coalesced.saturating_add(1);
+                debug!(
+                    deferred_key_work_enqueued = self.deferred_key_work_enqueued,
+                    deferred_key_work_coalesced = self.deferred_key_work_coalesced,
+                    deferred_key_work_queue_len = self.key_work_queue.len(),
+                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                    "coalesced deferred key work from action packets"
+                );
+                return;
+            }
+        }
+        let mut queued_work = work;
+        if self.key_work_queue.len() >= MAX_DEFERRED_KEY_WORK_QUEUE {
+            if let Some(DeferredKeyWork::FromActionPacket {
+                work: oldest_work, ..
+            }) = self.key_work_queue.pop_front()
+            {
+                queued_work.merge_from(oldest_work);
+                self.deferred_key_work_coalesced =
+                    self.deferred_key_work_coalesced.saturating_add(1);
+                debug!(
+                    deferred_key_work_enqueued = self.deferred_key_work_enqueued,
+                    deferred_key_work_coalesced = self.deferred_key_work_coalesced,
+                    deferred_key_work_queue_len = self.key_work_queue.len(),
+                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                    queue_limit = MAX_DEFERRED_KEY_WORK_QUEUE,
+                    "deferred key work queue at capacity; merged oldest item into new work"
+                );
+            }
+        }
+        self.key_work_queue
+            .push_back(DeferredKeyWork::FromActionPacket {
+                work: queued_work,
+                attempts: 0,
+                ready_at: now,
+            });
+        self.update_deferred_queue_hwm();
+        debug!(
+            deferred_key_work_enqueued = self.deferred_key_work_enqueued,
+            deferred_key_work_coalesced = self.deferred_key_work_coalesced,
+            deferred_key_work_queue_len = self.key_work_queue.len(),
+            deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+            "queued deferred key work from action packets"
+        );
+    }
+
+    fn enqueue_pending_keys_fetch(&mut self) {
+        self.pending_keys_fetch_queued = self.pending_keys_fetch_queued.saturating_add(1);
+        self.key_work_queue
+            .push_back(DeferredKeyWork::PendingKeysFetch {
+                attempts: 0,
+                ready_at: Instant::now(),
+            });
+        self.update_deferred_queue_hwm();
+        debug!(
+            ap_pk_seen = self.ap_pk_seen,
+            pending_keys_fetch_queued = self.pending_keys_fetch_queued,
+            deferred_key_work_queue_len = self.key_work_queue.len(),
+            deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+            "queued sdk-style pending keys fetch from action packet"
+        );
+    }
+
+    async fn process_deferred_key_work_once(&mut self) {
+        let now = Instant::now();
+        let Some(idx) = self.key_work_queue.iter().position(|work| work.is_due(now)) else {
+            return;
+        };
+        if let Some(work) = self.key_work_queue.remove(idx) {
+            match work {
+                DeferredKeyWork::FromActionPacket { work, attempts, .. } => {
+                    self.deferred_key_work_started =
+                        self.deferred_key_work_started.saturating_add(1);
+                    let retry_work = work.clone();
+                    match self.session.execute_actionpacket_key_work(work).await {
+                        Ok(changed) => {
+                            if changed {
+                                self.schedule_keys_persist("action_packet_key_work");
+                            }
+                        }
+                        Err(err) => {
+                            let next_attempt = attempts.saturating_add(1);
+                            if next_attempt <= MAX_DEFERRED_KEY_WORK_RETRIES {
+                                let retry_backoff = Self::deferred_retry_backoff(next_attempt);
+                                self.deferred_key_work_retried =
+                                    self.deferred_key_work_retried.saturating_add(1);
+                                self.key_work_queue
+                                    .push_back(DeferredKeyWork::FromActionPacket {
+                                        work: retry_work,
+                                        attempts: next_attempt,
+                                        ready_at: Instant::now() + retry_backoff,
+                                    });
+                                self.update_deferred_queue_hwm();
+                                debug!(
+                                    error = %err,
+                                    attempt = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    retry_backoff_ms = retry_backoff.as_millis() as u64,
+                                    deferred_key_work_started = self.deferred_key_work_started,
+                                    deferred_key_work_retried = self.deferred_key_work_retried,
+                                    deferred_key_work_queue_len = self.key_work_queue.len(),
+                                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                                    "deferred key work failed; requeued for retry"
+                                );
+                            } else {
+                                self.deferred_key_work_dropped =
+                                    self.deferred_key_work_dropped.saturating_add(1);
+                                debug!(
+                                    error = %err,
+                                    attempts = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    deferred_key_work_started = self.deferred_key_work_started,
+                                    deferred_key_work_retried = self.deferred_key_work_retried,
+                                    deferred_key_work_dropped = self.deferred_key_work_dropped,
+                                    "deferred key work failed; dropping after max retries"
+                                );
+                            }
+                        }
+                    }
+                }
+                DeferredKeyWork::PendingKeysFetch { attempts, .. } => {
+                    self.pending_keys_fetch_started =
+                        self.pending_keys_fetch_started.saturating_add(1);
+                    match self.session.handle_actionpacket_pending_keys_fetch().await {
+                        Ok(changed) => {
+                            if changed {
+                                self.schedule_keys_persist("pending_keys_fetch");
+                            }
+                        }
+                        Err(err) => {
+                            let next_attempt = attempts.saturating_add(1);
+                            if next_attempt <= MAX_DEFERRED_KEY_WORK_RETRIES {
+                                let retry_backoff = Self::deferred_retry_backoff(next_attempt);
+                                self.deferred_key_work_retried =
+                                    self.deferred_key_work_retried.saturating_add(1);
+                                self.key_work_queue
+                                    .push_back(DeferredKeyWork::PendingKeysFetch {
+                                        attempts: next_attempt,
+                                        ready_at: Instant::now() + retry_backoff,
+                                    });
+                                self.update_deferred_queue_hwm();
+                                debug!(
+                                    error = %err,
+                                    attempt = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    retry_backoff_ms = retry_backoff.as_millis() as u64,
+                                    pending_keys_fetch_started = self.pending_keys_fetch_started,
+                                    deferred_key_work_retried = self.deferred_key_work_retried,
+                                    deferred_key_work_queue_len = self.key_work_queue.len(),
+                                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                                    "pending keys fetch failed; requeued for retry"
+                                );
+                            } else {
+                                self.deferred_key_work_dropped =
+                                    self.deferred_key_work_dropped.saturating_add(1);
+                                debug!(
+                                    error = %err,
+                                    attempts = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    pending_keys_fetch_started = self.pending_keys_fetch_started,
+                                    deferred_key_work_retried = self.deferred_key_work_retried,
+                                    deferred_key_work_dropped = self.deferred_key_work_dropped,
+                                    "pending keys fetch failed; dropping after max retries"
+                                );
+                            }
+                        }
+                    }
+                }
+                DeferredKeyWork::StartupReconciliation { attempts, .. } => {
+                    self.startup_reconciliation_started =
+                        self.startup_reconciliation_started.saturating_add(1);
+                    match self.session.run_startup_key_reconciliation().await {
+                        Ok(changed) => {
+                            if changed {
+                                self.schedule_keys_persist("startup_reconciliation");
+                            }
+                            self.startup_reconciliation_completed =
+                                self.startup_reconciliation_completed.saturating_add(1);
+                            self.startup_reconciliation_requested = false;
+                            self.startup_reconciliation_queued = false;
+                            self.deferred_pk_bursts = 0;
+                            debug!(
+                                startup_reconciliation_enqueued = self.startup_reconciliation_enqueued,
+                                startup_reconciliation_started = self.startup_reconciliation_started,
+                                startup_reconciliation_completed = self.startup_reconciliation_completed,
+                                startup_reconciliation_retried = self.startup_reconciliation_retried,
+                                startup_reconciliation_dropped = self.startup_reconciliation_dropped,
+                                "startup key reconciliation completed"
+                            );
+                        }
+                        Err(err) => {
+                            let next_attempt = attempts.saturating_add(1);
+                            if next_attempt <= MAX_DEFERRED_KEY_WORK_RETRIES {
+                                let retry_backoff = Self::deferred_retry_backoff(next_attempt);
+                                self.startup_reconciliation_retried =
+                                    self.startup_reconciliation_retried.saturating_add(1);
+                                self.key_work_queue
+                                    .push_back(DeferredKeyWork::StartupReconciliation {
+                                        attempts: next_attempt,
+                                        ready_at: Instant::now() + retry_backoff,
+                                    });
+                                self.update_deferred_queue_hwm();
+                                debug!(
+                                    error = %err,
+                                    attempt = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    retry_backoff_ms = retry_backoff.as_millis() as u64,
+                                    startup_reconciliation_started = self.startup_reconciliation_started,
+                                    startup_reconciliation_retried = self.startup_reconciliation_retried,
+                                    deferred_key_work_queue_len = self.key_work_queue.len(),
+                                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                                    "startup key reconciliation failed; requeued for retry"
+                                );
+                            } else {
+                                self.startup_reconciliation_dropped =
+                                    self.startup_reconciliation_dropped.saturating_add(1);
+                                self.startup_reconciliation_requested = false;
+                                self.startup_reconciliation_queued = false;
+                                self.deferred_pk_bursts = 0;
+                                debug!(
+                                    error = %err,
+                                    attempts = next_attempt,
+                                    max_attempts = MAX_DEFERRED_KEY_WORK_RETRIES,
+                                    startup_reconciliation_started = self.startup_reconciliation_started,
+                                    startup_reconciliation_retried = self.startup_reconciliation_retried,
+                                    startup_reconciliation_dropped = self.startup_reconciliation_dropped,
+                                    "startup key reconciliation failed; dropping after max retries"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn drain_pending_commands(&mut self) -> bool {
+        loop {
+            match self.rx.try_recv() {
+                Ok(cmd) => {
+                    if self.handle_command(cmd).await {
+                        return true;
+                    }
+                }
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => return true,
+            }
+        }
+    }
+
+    async fn handle_sc_event(&mut self, event: ScPollerEvent) {
+        match event {
+            ScPollerEvent::ScBatch {
+                packets,
+                seqtags,
+                next_sn,
+                next_wsc_url,
+                ir,
+                poll_catchup,
+            } => {
+                self.session.scsn = Some(next_sn);
+                if let Some(w) = next_wsc_url {
+                    self.session.wsc_url = Some(w);
+                }
+                self.session.sc_catchup = poll_catchup && ir;
+                if poll_catchup {
+                    self.session.sc_batch_catchup_done = !ir;
+                } else {
+                    self.session.sc_batch_catchup_done = true;
+                }
+                self.refresh_runtime_state();
+                let started = Instant::now();
+                match self.session.dispatch_action_packets(&packets).await {
+                    Ok(dispatch) => {
+                        if dispatch.ap_pk_seen {
+                            self.ap_pk_seen = self.ap_pk_seen.saturating_add(1);
+                            if !self.session.state_current {
+                                self.deferred_pk_bursts =
+                                    self.deferred_pk_bursts.saturating_add(1);
+                                debug!(
+                                    deferred_pk_bursts = self.deferred_pk_bursts,
+                                    state_current = self.session.state_current,
+                                    "deferred AP-triggered pending-key work until state_current"
+                                );
+                                self.request_startup_reconciliation("deferred_ap_pk");
+                            }
+                        }
+                        debug!(
+                            ap_packets = packets.len(),
+                            ap_pk_seen = dispatch.ap_pk_seen,
+                            ap_pk_seen_total = self.ap_pk_seen,
+                            pending_keys_fetch_queued = dispatch.pending_keys_fetch,
+                            ap_parse_apply_ms = started.elapsed().as_millis() as u64,
+                            deferred_key_work_enqueued = dispatch.deferred_key_work.is_some(),
+                            "processed action packet batch"
+                        );
+                        if let Some(work) = dispatch.deferred_key_work {
+                            self.enqueue_key_work(work);
+                        }
+                        if dispatch.pending_keys_fetch {
+                            self.enqueue_pending_keys_fetch();
+                        }
+                    }
+                    Err(err) => {
+                        debug!(
+                            error = %err,
+                            ap_packets = packets.len(),
+                            ap_parse_apply_ms = started.elapsed().as_millis() as u64,
+                            "action packet batch processing failed"
+                        );
+                    }
+                }
+                if !seqtags.is_empty() {
+                    self.resolve_seqtag_waiters(&seqtags);
+                }
+                self.refresh_runtime_state();
+            }
+            ScPollerEvent::AlertsBatch { alerts, lsn } => {
+                if !alerts.is_empty() {
+                    self.session.user_alerts.extend(alerts);
+                }
+                if let Some(token) = lsn {
+                    self.session.user_alert_lsn = Some(token);
+                }
+                self.session.alerts_catchup_pending = false;
+            }
+        }
+    }
+
+    async fn stop_sc_poller(&mut self) {
+        let _ = self.sc_control_tx.send(ScPollerControl::Shutdown).await;
+        if let Some(task) = self.sc_poller_task.take() {
+            let _ = task.await;
+        }
+    }
+
+    async fn run(mut self) {
+        self.refresh_runtime_state();
         loop {
             tokio::select! {
                 cmd = self.rx.recv() => {
@@ -1351,37 +2019,28 @@ impl SessionActor {
                         break;
                     }
                 }
-                _ = sleep(next_poll.saturating_duration_since(Instant::now())) => {
-                    if self.session.scsn.is_some() {
-                        let poll = tokio::time::timeout(Duration::from_secs(20), self.session.poll_action_packets_once_with_seqtags()).await;
-                        match poll {
-                            Ok(Ok((_, seqtags))) => {
-                                if !seqtags.is_empty() {
-                                    self.resolve_seqtag_waiters(&seqtags);
-                                }
-                                delay = Duration::from_millis(1_000);
-                            }
-                            Ok(Err(MegaError::ServerBusy)) | Ok(Err(MegaError::InvalidResponse)) | Err(_) => {
-                                delay = (delay * 2).min(max_delay);
-                            }
-                            Ok(Err(_)) => {
-                                delay = (delay * 2).min(max_delay);
-                            }
-                        }
-                    }
-                    if self.alerts_enabled
-                        && !self.session.sc_catchup
-                        && self.session.alerts_catchup_pending
-                        && !self.alerts_inflight
-                    {
-                        self.alerts_inflight = true;
-                        let _ = self.session.poll_user_alerts_once().await;
-                        self.alerts_inflight = false;
-                    }
-                    next_poll = Instant::now() + delay;
+                sc_event = self.sc_event_rx.recv() => {
+                    let Some(event) = sc_event else { break; };
+                    self.handle_sc_event(event).await;
                 }
+                _ = tokio::time::sleep(DEFERRED_KEY_WORK_POLL_INTERVAL), if !self.key_work_queue.is_empty() => {}
             }
+            if self.drain_pending_commands().await {
+                self.flush_keys_persist_if_dirty(true).await;
+                break;
+            }
+            self.process_deferred_key_work_once().await;
+            let has_more_due_key_work = self
+                .key_work_queue
+                .iter()
+                .any(|work| work.is_due(Instant::now()));
+            if !has_more_due_key_work {
+                self.flush_keys_persist_if_dirty(false).await;
+            }
+            self.refresh_runtime_state();
         }
+        self.flush_keys_persist_if_dirty(true).await;
+        self.stop_sc_poller().await;
     }
 
     async fn handle_command(&mut self, cmd: SessionCommand) -> bool {
@@ -1405,6 +2064,9 @@ impl SessionActor {
             }
             SessionCommand::Refresh { reply } => {
                 let res = self.session.refresh().await;
+                if res.is_ok() {
+                    self.sync_sc_state_to_poller().await;
+                }
                 let _ = reply.send(res);
             }
             SessionCommand::Quota { reply } => {
@@ -1457,10 +2119,7 @@ impl SessionActor {
                 let _ = reply.send(res);
             }
             SessionCommand::Mkdir { path, reply } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.mkdir(&path).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1484,10 +2143,7 @@ impl SessionActor {
                 dest,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.mv(&source, &dest).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1506,10 +2162,7 @@ impl SessionActor {
                 new_name,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.rename(&path, &new_name).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1524,10 +2177,7 @@ impl SessionActor {
                 }
             }
             SessionCommand::Rm { path, reply } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.rm(&path).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1542,10 +2192,7 @@ impl SessionActor {
                 }
             }
             SessionCommand::Export { path, reply } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.export(&path).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1560,11 +2207,8 @@ impl SessionActor {
                 }
             }
             SessionCommand::ExportMany { paths, reply } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let path_refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
                 let res = self.session.export_many(&path_refs).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1584,10 +2228,7 @@ impl SessionActor {
                 level,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.share_folder(&handle, &email, level).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1606,10 +2247,7 @@ impl SessionActor {
                 remote,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.upload(&local, &remote).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1634,13 +2272,10 @@ impl SessionActor {
                 remote,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self
                     .session
                     .upload_from_bytes(&data, &filename, &remote)
                     .await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1666,13 +2301,10 @@ impl SessionActor {
                 remote,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self
                     .session
                     .upload_from_reader(reader, &filename, size, &remote)
                     .await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1696,10 +2328,7 @@ impl SessionActor {
                 remote_parent,
                 reply,
             } => {
-                let prev = self.session.defer_seqtag_wait;
-                self.session.defer_seqtag_wait = true;
                 let res = self.session.upload_resumable(&local, &remote_parent).await;
-                self.session.defer_seqtag_wait = prev;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -1805,10 +2434,12 @@ impl SessionActor {
                 let _ = reply.send(res);
             }
             SessionCommand::Shutdown { reply } => {
+                self.flush_keys_persist_if_dirty(true).await;
                 let _ = reply.send(());
                 return true;
             }
         }
+        self.refresh_runtime_state();
         false
     }
 }

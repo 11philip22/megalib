@@ -119,11 +119,7 @@ impl Session {
                         .to_string(),
                 });
             }
-            if let Some(tag) = self.track_seqtag_from_response(&share_resp) {
-                if !self.defer_seqtag_wait {
-                    self.wait_for_seqtag(&tag).await?;
-                }
-            }
+            let _ = self.track_seqtag_from_response(&share_resp);
 
             // Persist share key into ^!keys only for upgraded accounts, once per export.
             self.share_keys.insert(handle.clone(), share_key);
@@ -275,11 +271,6 @@ impl Session {
                 self.nodes[idx].link = Some(link_handle.clone());
                 parsed_links.insert(handles[i].clone(), link_handle);
             }
-        }
-
-        // Allow SC action packets to update public links (SDK parity).
-        if self.scsn.is_some() {
-            let _ = self.poll_action_packets_once().await;
         }
 
         let mut results = Vec::new();

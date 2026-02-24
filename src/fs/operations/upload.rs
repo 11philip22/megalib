@@ -20,8 +20,18 @@ use crate::fs::upload_state::UploadState;
 use crate::fs::upload_state::calculate_file_hash;
 use crate::http::RequestKind;
 use crate::session::Session;
+use tracing::debug;
 
 impl Session {
+    fn trace_upload_hotpath_policy(&self, parent_handle: &str, remote_parent_path: &str) {
+        debug!(
+            upload_preflight = "sdk-no-key-bootstrap",
+            parent_handle,
+            remote_parent_path,
+            "upload hot path preflight policy"
+        );
+    }
+
     /// Upload a node attribute (thumbnail, preview) to MEGA's attribute storage.
     ///
     /// This is used internally when `enable_previews(true)` is set, but can also
@@ -133,8 +143,7 @@ impl Session {
 
         // 1. Get upload URL
         // [{a:u, s:<SIZE>, ssl:0}]
-        // Ensure upgraded keys are present before uploading (for shared parent handling).
-        self.ensure_keys_attribute().await?;
+        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
 
         let response = self
             .api_mut()
@@ -212,6 +221,7 @@ impl Session {
             let current_hash = calculate_file_hash(path)?;
 
             if existing_state.file_hash == current_hash && existing_state.is_likely_valid() {
+                self.trace_upload_hotpath_policy(&existing_state.parent_handle, remote_parent_path);
                 // Resume from existing state
                 match self
                     .upload_internal(path, existing_state, Some(&state_path))
@@ -252,6 +262,8 @@ impl Session {
             ))
         })?;
         let parent_handle = parent_node.handle.clone();
+
+        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
 
         // Get upload URL
         let response = self
@@ -390,6 +402,8 @@ impl Session {
             ))
         })?;
         let parent_handle = parent_node.handle.clone();
+
+        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
 
         // Get upload URL
         let response = self
@@ -864,11 +878,7 @@ impl Session {
                     last_node.path = Some(parent_path_str);
                 }
 
-                if let Some(tag) = seqtag {
-                    if !self.defer_seqtag_wait {
-                        self.wait_for_seqtag(&tag).await?;
-                    }
-                }
+                let _ = seqtag;
                 return Ok(node);
             }
         }
@@ -885,16 +895,7 @@ impl Session {
             }
         }
 
-        if let Some(tag) = seqtag {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
-        if self.defer_seqtag_wait {
-            return Err(MegaError::Custom(
-                "Failed to observe uploaded node via action packets".to_string(),
-            ));
-        }
+        let _ = seqtag;
 
         let parent_path = self
             .nodes

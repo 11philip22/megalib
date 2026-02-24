@@ -9,6 +9,7 @@ use std::time::Duration;
 pub enum RequestKind {
     ApiJson,
     ScPoll,
+    ScUserAlerts,
     TransferUpload,
     TransferDownload,
     PublicApi,
@@ -17,7 +18,7 @@ pub enum RequestKind {
 
 #[derive(Debug, Clone, Copy)]
 struct RequestPolicy {
-    timeout: Duration,
+    timeout: Option<Duration>,
     follow_redirects: bool,
     max_redirects: usize,
 }
@@ -26,24 +27,31 @@ impl RequestPolicy {
     fn for_kind(kind: RequestKind) -> Self {
         match kind {
             RequestKind::ApiJson => Self {
-                timeout: Duration::from_secs(20),
+                timeout: Some(Duration::from_secs(20)),
                 follow_redirects: true,
                 max_redirects: 10,
             },
             RequestKind::ScPoll => Self {
-                timeout: Duration::from_secs(25),
+                // SDK SCREQUESTTIMEOUT intent: ~40 seconds on the SC long-poll lane.
+                timeout: Some(Duration::from_secs(40)),
+                follow_redirects: true,
+                max_redirects: 10,
+            },
+            RequestKind::ScUserAlerts => Self {
+                // SDK user-alert catch-up (`sc?c=50`) is sent on SC lane without long-poll timeout semantics.
+                timeout: None,
                 follow_redirects: true,
                 max_redirects: 10,
             },
             RequestKind::TransferUpload
             | RequestKind::TransferDownload
             | RequestKind::PublicTransfer => Self {
-                timeout: Duration::from_secs(120),
+                timeout: Some(Duration::from_secs(120)),
                 follow_redirects: true,
                 max_redirects: 10,
             },
             RequestKind::PublicApi => Self {
-                timeout: Duration::from_secs(30),
+                timeout: Some(Duration::from_secs(30)),
                 follow_redirects: true,
                 max_redirects: 10,
             },
@@ -96,10 +104,10 @@ impl HttpClient {
         let policy = RequestPolicy::for_kind(kind);
         let mut current = url.to_string();
         for _ in 0..=policy.max_redirects {
-            let mut request = self
-                .client
-                .request(method.clone(), &current)
-                .timeout(policy.timeout);
+            let mut request = self.client.request(method.clone(), &current);
+            if let Some(timeout) = policy.timeout {
+                request = request.timeout(timeout);
+            }
             for (name, value) in headers {
                 request = request.header(*name, value);
             }

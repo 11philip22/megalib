@@ -21,7 +21,7 @@ const SC_URL: &str = "https://g.api.mega.co.nz/sc";
 const SC_ALERTS_URL: &str = "https://g.api.mega.co.nz/sc?c=50";
 
 /// MEGA API client.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ApiClient {
     http: HttpClient,
     request_id: u32,
@@ -431,7 +431,10 @@ impl ApiClient {
             .as_deref()
             .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
         let url = format!("{}&sid={}", SC_ALERTS_URL, sid);
-        let response_text = self.http.post_json(&url, "", RequestKind::ScPoll).await?;
+        let response_text = self
+            .http
+            .post_json(&url, "", RequestKind::ScUserAlerts)
+            .await?;
         let resp: Value =
             serde_json::from_str(&response_text).map_err(|_| MegaError::InvalidResponse)?;
 

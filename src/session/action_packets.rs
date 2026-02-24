@@ -1,77 +1,25 @@
 //! Action packet handling for Session.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::time::timeout;
 
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::aes128_ecb_decrypt;
-use crate::error::{MegaError, Result};
+use crate::error::Result;
 use crate::fs::Node;
 use crate::session::Session;
 use crate::session::core::Contact;
+use crate::session::key_sync::{ActionPacketContactUpdate, ActionPacketKeyWork};
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActionPacketDispatchResult {
+    pub(crate) ap_pk_seen: bool,
+    pub(crate) pending_keys_fetch: bool,
+    pub(crate) deferred_key_work: Option<ActionPacketKeyWork>,
+}
 
 impl Session {
-    /// Poll the SC channel once and dispatch action packets.
-    ///
-    /// Returns true if any local state changed (e.g., ^!keys or authrings updated).
-    /// This is legacy; prefer the Session actor which polls in the background.
-    pub(crate) async fn poll_action_packets_once(&mut self) -> Result<bool> {
-        let (changed, _) = self.poll_action_packets_once_with_seqtags().await?;
-        Ok(changed)
-    }
-
-    pub(crate) async fn poll_action_packets_once_with_seqtags(
-        &mut self,
-    ) -> Result<(bool, Vec<String>)> {
-        if self.scsn.is_none() {
-            return Err(MegaError::Custom(
-                "SC not initialized; call refresh() before polling action packets".to_string(),
-            ));
-        }
-        let mut changed = false;
-        let mut seqtags = Vec::new();
-        loop {
-            let (packets, sn, wsc, ir) = self
-                .api
-                .poll_sc(
-                    self.scsn.as_deref(),
-                    self.wsc_url.as_deref(),
-                    self.sc_catchup,
-                )
-                .await?;
-            self.scsn = Some(sn);
-            if let Some(w) = wsc {
-                self.wsc_url = Some(w);
-            }
-            seqtags.extend(Self::extract_seqtags_from_packets(&packets));
-            if self.dispatch_action_packets(&packets).await? {
-                changed = true;
-            }
-            if !ir {
-                if self.sc_catchup {
-                    self.sc_catchup = false;
-                }
-                break;
-            }
-        }
-        Ok((changed, seqtags))
-    }
-
-    fn extract_seqtags_from_packets(packets: &[Value]) -> Vec<String> {
-        let mut out = Vec::new();
-        for pkt in packets {
-            if let Some(obj) = pkt.as_object() {
-                if let Some(st) = obj.get("st").and_then(|v| v.as_str()) {
-                    out.push(st.to_string());
-                }
-            }
-        }
-        out
-    }
-
     fn extract_seqtag_from_response(response: &Value) -> Option<String> {
         if let Some(st) = response.get("st").and_then(|v| v.as_str()) {
             return Some(st.to_string());
@@ -91,36 +39,8 @@ impl Session {
         Some(st)
     }
 
-    pub(crate) async fn wait_for_seqtag(&mut self, expected: &str) -> Result<()> {
-        if self.scsn.is_none() {
-            return Err(MegaError::Custom(
-                "SC not initialized; call refresh() before waiting for action packets".to_string(),
-            ));
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if self.current_seqtag_seen && self.current_seqtag.as_deref() == Some(expected) {
-                self.current_seqtag = None;
-                self.current_seqtag_seen = false;
-                return Ok(());
-            }
-
-            match timeout(Duration::from_secs(20), self.poll_action_packets_once()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    // Ignore long-poll timeout; try again until deadline.
-                }
-            }
-        }
-
-        Err(MegaError::Custom(
-            "Timed out waiting for action packets".to_string(),
-        ))
-    }
-
-    /// Poll user alerts (SC50) once. Optional, used by clients that need alerts.
+    /// Poll user alerts (SC50) once. Optional helper retained for direct-session call sites.
+    #[allow(dead_code)]
     pub async fn poll_user_alerts_once(&mut self) -> Result<(Vec<Value>, Option<String>)> {
         if self.scsn.is_none() {
             return Ok((Vec::new(), self.user_alert_lsn.clone()));
@@ -136,38 +56,16 @@ impl Session {
         Ok((alerts, lsn))
     }
 
-    // /// Run a lightweight action-packet loop with exponential backoff.
-    // ///
-    // /// The `should_stop` predicate is evaluated after each poll to allow
-    // /// embedding applications to terminate the loop.
-    // pub(crate) async fn run_action_packet_loop<F>(&mut self, mut should_stop: F) -> Result<()>
-    // where
-    //     F: FnMut() -> bool,
-    // {
-    //     let mut delay_ms = 1_000u64;
-    //     let max_delay = 60_000u64;
-
-    //     while !should_stop() {
-    //         match self.poll_action_packets_once().await {
-    //             Ok(_) => {
-    //                 delay_ms = 1_000;
-    //             }
-    //             Err(MegaError::ServerBusy) | Err(MegaError::InvalidResponse) => {
-    //                 delay_ms = (delay_ms * 2).min(max_delay);
-    //             }
-    //             Err(e) => return Err(e),
-    //         }
-    //         sleep(Duration::from_millis(delay_ms)).await;
-    //     }
-    //     Ok(())
-    // }
-
-    async fn dispatch_action_packets(&mut self, packets: &[Value]) -> Result<bool> {
+    pub(crate) async fn dispatch_action_packets(
+        &mut self,
+        packets: &[Value],
+    ) -> Result<ActionPacketDispatchResult> {
         let mut changed_handles = Vec::new();
-        let mut contact_updates = Vec::new();
-        let mut node_changed = false;
+        let mut contact_updates: Vec<ActionPacketContactUpdate> = Vec::new();
         let mut share_changed = false;
         let mut key_event = false;
+        let mut saw_pk = false;
+        let mut share_packets = Vec::new();
         let mut stale_user_attrs = HashSet::new();
 
         for pkt in packets {
@@ -188,6 +86,9 @@ impl Session {
                 }
 
                 Self::extract_handles_from_action(obj, &mut changed_handles);
+                if obj.get("a").and_then(|v| v.as_str()) == Some("pk") {
+                    saw_pk = true;
+                }
                 if Self::is_key_attr_update(obj) {
                     key_event = true;
                 }
@@ -205,19 +106,16 @@ impl Session {
                     obj.get("a").and_then(|v| v.as_str()),
                     Some("s") | Some("s2")
                 );
-                if self.handle_actionpacket_nodes(obj)? {
-                    if is_share_action {
-                        share_changed = true;
-                    } else {
-                        node_changed = true;
-                    }
+                if is_share_action {
+                    share_changed = true;
+                    share_packets.push(Value::Object(obj.clone()));
+                } else if self.handle_actionpacket_nodes(obj)? {
+                    // node cache already updated inline by handler
                 }
             }
         }
 
-        let mut changed = false;
         if !contact_updates.is_empty() {
-            let mut contact_changed = false;
             for (_h, _ed, _cu, _verified, contact) in &contact_updates {
                 if let Some(c) = contact {
                     let needs_update = self
@@ -231,54 +129,45 @@ impl Session {
                         .unwrap_or(true);
                     if needs_update {
                         self.contacts.insert(c.handle.clone(), c.clone());
-                        contact_changed = true;
                     }
                 }
             }
-            if self.handle_contact_updates(&contact_updates).await? {
-                changed = true;
-            }
-            if contact_changed {
-                changed = true;
-                if self.key_manager.is_ready() {
-                    self.cleanup_pending_outshares_for_deleted_contacts();
-                }
-            }
-            self.maybe_clear_cv_warning();
         }
 
-        if !stale_user_attrs.is_empty() {
-            let key_attrs_changed = stale_user_attrs.iter().any(|attr| Self::is_key_attr(attr));
-            if self.refetch_user_attrs(&stale_user_attrs).await? {
-                changed = true;
-            }
-            if key_attrs_changed {
-                key_event = true;
-            }
+        let stale_key_attrs: Vec<String> = stale_user_attrs
+            .into_iter()
+            .filter(|attr| Self::is_key_attr(attr))
+            .collect();
+        if !stale_key_attrs.is_empty() {
+            key_event = true;
         }
 
         if share_changed {
             key_event = true;
         }
 
-        if key_event || !changed_handles.is_empty() || share_changed {
-            if self
-                .handle_actionpacket_keys(&changed_handles, share_changed)
-                .await?
-            {
-                changed = true;
-            }
-        }
+        let needs_key_work = key_event
+            || !changed_handles.is_empty()
+            || share_changed
+            || !share_packets.is_empty()
+            || !stale_key_attrs.is_empty()
+            || !contact_updates.is_empty();
 
-        if share_changed && !self.key_manager.is_ready() {
-            changed = true;
-        }
+        let pending_keys_fetch = saw_pk && self.key_manager.generation > 0 && self.state_current;
 
-        if node_changed {
-            changed = true;
-        }
+        let deferred_key_work = needs_key_work.then_some(ActionPacketKeyWork {
+            share_changed,
+            share_packets,
+            changed_handles,
+            stale_key_attrs,
+            contact_updates,
+        });
 
-        Ok(changed)
+        Ok(ActionPacketDispatchResult {
+            ap_pk_seen: saw_pk,
+            pending_keys_fetch,
+            deferred_key_work,
+        })
     }
 
     fn extract_handles_from_action(obj: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
@@ -352,36 +241,6 @@ impl Session {
                 stale.insert(attr.to_string());
             }
         }
-    }
-
-    async fn refetch_user_attrs(&mut self, stale: &HashSet<String>) -> Result<bool> {
-        let priority = [
-            "^!keys",
-            "*keyring",
-            "*~usk",
-            "*~jscd",
-            "+puCu255",
-            "+puEd255",
-            "+sigCu255",
-            "+sigPubk",
-        ];
-
-        let mut changed = false;
-        for attr in priority {
-            if !stale.contains(attr) {
-                continue;
-            }
-            let existing = self.user_attr_cache.get(attr).cloned();
-            let fetched = self.get_user_attribute_raw(attr).await?;
-            if fetched.is_some() {
-                changed = true;
-            } else if existing.is_some() {
-                self.user_attr_cache.remove(attr);
-                self.user_attr_versions.remove(attr);
-                changed = true;
-            }
-        }
-        Ok(changed)
     }
 
     fn handle_actionpacket_nodes(&mut self, obj: &serde_json::Map<String, Value>) -> Result<bool> {
@@ -520,7 +379,7 @@ impl Session {
                     if self.key_manager.is_ready()
                         && owner == Some(self.user_handle.as_str())
                         && ou.as_deref() != Some(self.user_handle.as_str())
-                        && !self.sc_catchup
+                        && self.state_current
                         && self.key_manager.generation > 0
                         && self.key_manager.is_share_key_in_use(handle)
                         && total_before == 1
@@ -768,7 +627,7 @@ impl Session {
         out_count + pending_count
     }
 
-    fn cleanup_pending_outshares_for_deleted_contacts(&mut self) {
+    pub(crate) fn cleanup_pending_outshares_for_deleted_contacts(&mut self) -> bool {
         let mut removed_any = false;
         for (_handle, sharees) in self.pending_outshares.iter_mut() {
             let before = sharees.len();
@@ -803,6 +662,23 @@ impl Session {
                     }
                 });
         }
+        removed_any
+    }
+
+    pub(crate) fn apply_deferred_share_packets(&mut self, packets: &[Value]) -> Result<bool> {
+        let mut changed = false;
+        for pkt in packets {
+            let Some(obj) = pkt.as_object() else {
+                continue;
+            };
+            let Some(action) = obj.get("a").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if matches!(action, "s" | "s2") && self.handle_actionpacket_share(obj)? {
+                changed = true;
+            }
+        }
+        Ok(changed)
     }
 
     fn node_has_ancestor_in_nodes(
@@ -840,15 +716,7 @@ impl Session {
 
     fn extract_contact_update(
         obj: &serde_json::Map<String, Value>,
-    ) -> Result<
-        Option<(
-            String,
-            Option<Vec<u8>>,
-            Option<Vec<u8>>,
-            bool,
-            Option<Contact>,
-        )>,
-    > {
+    ) -> Result<Option<ActionPacketContactUpdate>> {
         let user = match obj.get("u").and_then(|v| v.as_str()) {
             Some(u) => u.to_string(),
             None => return Ok(None),

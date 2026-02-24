@@ -7,6 +7,7 @@ mod core;
 mod device_id;
 pub mod key_sync;
 pub mod registration;
+mod sc_poller;
 mod sharing;
 
 pub use actor::{AccountInfo, SessionHandle};

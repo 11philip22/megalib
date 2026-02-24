@@ -121,11 +121,7 @@ impl Session {
                 });
             }
         }
-        if let Some(tag) = self.track_seqtag_from_response(&response) {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
+        let _ = self.track_seqtag_from_response(&response);
 
         // Remember the share key locally so children uploaded later can reuse it.
         self.share_keys

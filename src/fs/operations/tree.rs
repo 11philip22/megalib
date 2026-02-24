@@ -31,6 +31,7 @@ impl Session {
     pub async fn refresh(&mut self) -> Result<()> {
         // Match SDK behavior: ensure keys are initialized before fetching nodes.
         self.ensure_keys_attribute().await?;
+        self.reset_state_current_tracking();
 
         // Fetch filesystem data
         let response = self
@@ -45,6 +46,9 @@ impl Session {
             self.current_seqtag = None;
             self.current_seqtag_seen = false;
             self.alerts_catchup_pending = true;
+        } else {
+            self.sc_catchup = false;
+            self.sc_batch_catchup_done = true;
         }
 
         // Parse share keys from "ok" array
@@ -114,6 +118,10 @@ impl Session {
 
         // Store nodes
         self.nodes = nodes;
+        self.nodes_state_ready = true;
+        self.recompute_state_current();
+        self.action_packets_current = self.state_current
+            && (self.current_seqtag.is_none() || self.current_seqtag_seen);
 
         // Clear in-use flags for share keys no longer present, persist if changed.
         if self.clear_inuse_flags_for_missing_shares() {

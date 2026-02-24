@@ -115,19 +115,10 @@ impl Session {
             }
         }
 
-        if let Some(tag) = seqtag {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
+        let _ = seqtag;
 
         if let Some(node) = created_node {
             return Ok(node);
-        }
-        if self.defer_seqtag_wait {
-            return Err(MegaError::Custom(
-                "Folder creation pending action packets".to_string(),
-            ));
         }
         if let Some(node) = self.stat(path) {
             return Ok(node.clone());
@@ -154,11 +145,7 @@ impl Session {
                 "i": session_id
             }))
             .await?;
-        if let Some(tag) = self.track_seqtag_from_response(&response) {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
+        let _ = self.track_seqtag_from_response(&response);
 
         Ok(())
     }
@@ -210,11 +197,7 @@ impl Session {
                 "i": session_id
             }))
             .await?;
-        if let Some(tag) = self.track_seqtag_from_response(&response) {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
+        let _ = self.track_seqtag_from_response(&response);
 
         Ok(())
     }
@@ -293,11 +276,7 @@ impl Session {
                 "i": session_id
             }))
             .await?;
-        if let Some(tag) = self.track_seqtag_from_response(&response) {
-            if !self.defer_seqtag_wait {
-                self.wait_for_seqtag(&tag).await?;
-            }
-        }
+        let _ = self.track_seqtag_from_response(&response);
 
         // Update local cache
         self.nodes[node_idx].name = new_name.to_string();
