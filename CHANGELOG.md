@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed upload hot-path key preflight behavior before upload URL requests (`a:"u"`), keeping upload preflight minimal.
 - Aligned SC timeout/retry policy separation between SC long-poll and user-alert polling paths.
 - Reorganized repository automation assets from `agent/*` to `agents/*`.
+- Migrated all runnable examples to `clap`-based argument parsing and removed manual example CLI parsing paths.
+- Added `clap` as a dev-dependency for examples and development tooling.
 
 ### Removed
 - Removed generated graph visualization artifacts `mods.dot`, `mods.svg`, `types.dot`, and `types.svg` from versioned files.

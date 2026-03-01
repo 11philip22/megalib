@@ -3,33 +3,42 @@
 //! Usage:
 //!   cargo run --example rename -- --email EMAIL --password PASSWORD [--proxy PROXY] <PATH> <NEW_NAME>
 
-mod cli;
+use clap::Parser;
+use megalib::SessionHandle;
 
-use cli::{parse_credentials, usage_and_exit};
-
-const USAGE: &str = "Usage: cargo run --example rename -- --email EMAIL --password PASSWORD [--proxy PROXY] <PATH> <NEW_NAME>";
+#[derive(Debug, Parser)]
+#[command(name = "rename")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    path: String,
+    new_name: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 2 {
-        usage_and_exit(USAGE);
-    }
-    let path = creds.positionals[0].clone();
-    let new_name = creds.positionals[1].clone();
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
-    println!("Renaming {} to {}...", path, new_name);
-    session.rename(&path, &new_name).await?;
+    println!("Renaming {} to {}...", args.path, args.new_name);
+    session.rename(&args.path, &args.new_name).await?;
 
-    println!("✅ Rename complete!");
+    println!("Rename complete!");
 
     Ok(())
 }

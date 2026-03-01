@@ -3,33 +3,42 @@
 //! Usage:
 //!   cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST_FOLDER>
 
-mod cli;
+use clap::Parser;
+use megalib::SessionHandle;
 
-use cli::{parse_credentials, usage_and_exit};
-
-const USAGE: &str = "Usage: cargo run --example mv -- --email EMAIL --password PASSWORD [--proxy PROXY] <SOURCE> <DEST>";
+#[derive(Debug, Parser)]
+#[command(name = "mv")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    source: String,
+    dest: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 2 {
-        usage_and_exit(USAGE);
-    }
-    let source = creds.positionals[0].clone();
-    let dest = creds.positionals[1].clone();
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
-    println!("Moving {} to {}...", source, dest);
-    session.mv(&source, &dest).await?;
+    println!("Moving {} to {}...", args.source, args.dest);
+    session.mv(&args.source, &args.dest).await?;
 
-    println!("✅ Move complete!");
+    println!("Move complete!");
 
     Ok(())
 }

@@ -92,6 +92,7 @@ Run any command as shown (replace placeholder values with your own).
 # Auth + listing
 cargo run --example login -- --email you@example.com --password "your-password"
 cargo run --example ls -- --email you@example.com --password "your-password" --path /Root
+cargo run --example cached_session -- --email you@example.com --password "your-password"
 
 # Upload / download
 cargo run --example upload -- --email you@example.com --password "your-password" ./local-file.txt /Root
@@ -105,6 +106,13 @@ cargo run --example download_resume -- --email you@example.com --password "your-
 cargo run --example export -- --email you@example.com --password "your-password" --path /Root/file.txt
 cargo run --example share -- --email you@example.com --password "your-password" --folder /Root/shared --recipient friend@example.com --level 0
 
+# Filesystem operations
+cargo run --example stat -- --email you@example.com --password "your-password" --path /Root/file.txt
+cargo run --example mkdir -- --email you@example.com --password "your-password" /Root/new-folder
+cargo run --example rm -- --email you@example.com --password "your-password" /Root/old-file.txt
+cargo run --example rename -- --email you@example.com --password "your-password" /Root/file.txt file-renamed.txt
+cargo run --example mv -- --email you@example.com --password "your-password" /Root/file.txt /Root/destination-folder
+
 # Public links / folders
 cargo run --example folder -- "https://mega.nz/folder/<FOLDER_ID>#<KEY>"
 cargo run --example download_public -- "https://mega.nz/file/<FILE_ID>#<KEY>" ./public-file.bin
@@ -112,6 +120,14 @@ cargo run --example download_public -- "https://mega.nz/file/<FILE_ID>#<KEY>" ./
 # In-memory / reader uploads
 cargo run --example upload_bytes -- --email you@example.com --password "your-password" /Root
 cargo run --example upload_reader -- --email you@example.com --password "your-password" /Root
+
+# Account management
+cargo run --example passwd -- --email you@example.com --password "current-password" --new "new-password"
+cargo run --example register -- --email you@example.com --password "your-password" --name "Your Name"
+cargo run --example verify -- --state "SESSION_KEY_FROM_STEP_1" --link "CONFIRMATION_LINK_OR_FRAGMENT"
+
+# Full workflow demo
+cargo run --example sequence -- --email you@example.com --password "your-password"
 ```
 `--proxy <PROXY_URL>` is also supported on credential-based examples.
 

@@ -3,14 +3,20 @@
 //! Usage:
 //!   cargo run --example register -- --email YOUR_EMAIL --password YOUR_PASSWORD --name "Your Name"
 
-mod cli;
-
-use cli::{ArgParser, usage_and_exit};
+use clap::Parser;
 use megalib::register;
 use tracing_subscriber::{EnvFilter, fmt};
 
-const USAGE: &str =
-    "Usage: cargo run --example register -- --email EMAIL --password PASSWORD --name \"Your Name\"";
+#[derive(Debug, Parser)]
+#[command(name = "register")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(short = 'n', long)]
+    name: String,
+}
 
 fn init_tracing() {
     let filter =
@@ -21,30 +27,17 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() {
     init_tracing();
-    let mut parser = ArgParser::new(USAGE);
-    let email = parser
-        .take_value(&["--email", "-e"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let password = parser
-        .take_value(&["--password", "-p"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let name = parser
-        .take_value(&["--name", "-n"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
+    let args = Args::parse();
 
-    if !parser.remaining().is_empty() {
-        usage_and_exit(USAGE);
-    }
-
-    println!("Registering account for: {}", email);
-    println!("Name: {}", name);
+    println!("Registering account for: {}", args.email);
+    println!("Name: {}", args.name);
     println!();
 
-    match register(&email, &password, &name, None).await {
+    match register(&args.email, &args.password, &args.name, None).await {
         Ok(state) => {
-            println!("✅ Registration initiated successfully!");
+            println!("Registration initiated successfully!");
             println!();
-            println!("Check your email ({}) for the verification link.", email);
+            println!("Check your email ({}) for the verification link.", args.email);
             println!();
             println!("Save this session key for step 2:");
             println!("----------------------------------------");
@@ -58,7 +51,7 @@ async fn main() {
             );
         }
         Err(e) => {
-            eprintln!("❌ Registration failed: {}", e);
+            eprintln!("Registration failed: {}", e);
             std::process::exit(1);
         }
     }

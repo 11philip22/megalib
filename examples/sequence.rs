@@ -1,6 +1,4 @@
-mod cli;
-
-use cli::parse_credentials;
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use megalib::SessionHandle;
 use megalib::api::ApiErrorCode;
@@ -9,9 +7,20 @@ use megalib::progress::TransferProgress;
 use std::io::{self, Write};
 use tracing_subscriber::{EnvFilter, fmt};
 
-const USAGE: &str = "Usage: cargo run --example sequence -- --email EMAIL --password PASSWORD [--proxy PROXY] [FOLDER1 FOLDER2 LOCAL1 LOCAL2]
-
-Defaults: FOLDER1=/Root/lol1 FOLDER2=/Root/lol2 LOCAL1=./Cargo.toml LOCAL2=./Cargo.lock";
+#[derive(Debug, Parser)]
+#[command(name = "sequence")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    folder1: Option<String>,
+    folder2: Option<String>,
+    local1: Option<String>,
+    local2: Option<String>,
+}
 
 fn init_tracing() {
     let filter =
@@ -22,30 +31,19 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
-    let creds = parse_credentials(USAGE);
-    let folder1 = creds
-        .positionals
-        .get(0)
-        .cloned()
-        .unwrap_or_else(|| "/Root/lol1".to_string());
-    let folder2 = creds
-        .positionals
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| "/Root/lol2".to_string());
-    let local1 = creds
-        .positionals
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| "./Cargo.toml".to_string());
-    let local2 = creds
-        .positionals
-        .get(3)
-        .cloned()
-        .unwrap_or_else(|| "./Cargo.lock".to_string());
+    let args = Args::parse();
+
+    let folder1 = args.folder1.unwrap_or_else(|| "/Root/lol1".to_string());
+    let folder2 = args.folder2.unwrap_or_else(|| "/Root/lol2".to_string());
+    let local1 = args.local1.unwrap_or_else(|| "./Cargo.toml".to_string());
+    let local2 = args.local2.unwrap_or_else(|| "./Cargo.lock".to_string());
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
@@ -94,22 +92,19 @@ async fn main() -> Result<()> {
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
-    // Sequence mirrored from mega-sequence.ps1
     ensure_folder(&session, &folder1).await?;
     upload_and_export(&session, &local1, &folder1).await?;
-    wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.lock")?;
+    wait_for_enter("Verify exported link, then press Enter to upload Cargo.lock")?;
 
     upload_and_export(&session, &local2, &folder1).await?;
-    wait_for_enter(
-        "Check if both files are in the folder and login to upgrade encryption. Then press Enter to continue",
-    )?;
+    wait_for_enter("Check both files in folder. Press Enter to continue")?;
 
     ensure_folder(&session, &folder2).await?;
     upload_and_export(&session, &local2, &folder2).await?;
-    wait_for_enter("Verify if the exported link is correct and press Enter to upload Cargo.toml")?;
+    wait_for_enter("Verify exported link, then press Enter to upload Cargo.toml")?;
 
     upload_and_export(&session, &local1, &folder2).await?;
-    println!("Please verify if both files are in the folder now.");
+    println!("Please verify both files are now in the folder.");
 
     println!("Sequence complete.");
     Ok(())
@@ -128,11 +123,7 @@ async fn ensure_folder(session: &SessionHandle, path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn upload_and_export(
-    session: &SessionHandle,
-    local: &str,
-    remote_folder: &str,
-) -> Result<()> {
+async fn upload_and_export(session: &SessionHandle, local: &str, remote_folder: &str) -> Result<()> {
     println!("Uploading {local} to {remote_folder} ...");
     let remote_path = format!("{}/", remote_folder.trim_end_matches('/'));
     let node = session.upload(local, &remote_path).await?;

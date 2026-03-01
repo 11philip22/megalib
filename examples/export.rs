@@ -3,31 +3,32 @@
 //! Usage:
 //!   cargo run --example export -- --email YOUR_EMAIL --password YOUR_PASSWORD --path /Root/file.txt [--proxy PROXY]
 
-mod cli;
-
-use cli::{ArgParser, credentials_from_parser, usage_and_exit};
+use clap::Parser;
 use megalib::SessionHandle;
 
-const USAGE: &str = "Usage: cargo run --example export -- --email EMAIL --password PASSWORD --path <PATH> [--proxy PROXY]";
+#[derive(Debug, Parser)]
+#[command(name = "export")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    #[arg(long)]
+    path: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut parser = ArgParser::new(USAGE);
-    let mut creds = credentials_from_parser(&mut parser, USAGE);
-    let path = parser
-        .take_value(&["--path"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    creds.positionals = parser.remaining();
-    if !creds.positionals.is_empty() {
-        usage_and_exit(USAGE);
-    }
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = if let Some(p) = creds.proxy.as_deref() {
-        println!("Using proxy: {}", p);
-        SessionHandle::login_with_proxy(&creds.email, &creds.password, p).await?
+    let session = if let Some(proxy) = args.proxy.as_deref() {
+        println!("Using proxy: {}", proxy);
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
     } else {
-        SessionHandle::login(&creds.email, &creds.password).await?
+        SessionHandle::login(&args.email, &args.password).await?
     };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
@@ -35,15 +36,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
-    println!("Exporting: {}", path);
-    match session.export(&path).await {
+    println!("Exporting: {}", args.path);
+    match session.export(&args.path).await {
         Ok(url) => {
-            println!("\n✅ Export successful!");
-            println!("\n🔗 Public link:");
+            println!("\nExport successful!");
+            println!("\nPublic link:");
             println!("{}", url);
         }
         Err(e) => {
-            eprintln!("❌ Export failed: {}", e);
+            eprintln!("Export failed: {}", e);
             std::process::exit(1);
         }
     }

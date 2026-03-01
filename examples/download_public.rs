@@ -1,42 +1,33 @@
 //! Example: Download from a public MEGA link
 //!
 //! Usage:
-//!   cargo run --example dl -- <URL> [OUTPUT_FILE]
+//!   cargo run --example download_public -- <URL> [OUTPUT_FILE]
 
+use clap::Parser;
 use megalib::public::{download_public_file, get_public_file_info};
-use std::env;
 use std::fs::File;
 use std::io::BufWriter;
 
+#[derive(Debug, Parser)]
+#[command(name = "download_public")]
+struct Args {
+    url: String,
+    output_file: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    if args.len() < 2 {
-        eprintln!("Usage: dl <MEGA_URL> [OUTPUT_FILE]");
-        eprintln!();
-        eprintln!("Example:");
-        eprintln!("  cargo run --example dl -- \"https://mega.nz/file/ABC123#key\"");
-        std::process::exit(1);
-    }
-
-    let url = &args[1];
-
-    // First, get file info
     println!("Fetching file info...");
-    let info = get_public_file_info(url).await?;
+    let info = get_public_file_info(&args.url).await?;
 
     println!();
-    println!("📄 File: {}", info.name);
-    println!("📦 Size: {}", format_size(info.size));
-    println!("🔑 Handle: {}", info.handle);
+    println!("File: {}", info.name);
+    println!("Size: {}", format_size(info.size));
+    println!("Handle: {}", info.handle);
 
-    // Determine output path
-    let output_path = if args.len() > 2 {
-        args[2].clone()
-    } else {
-        info.name.clone()
-    };
+    let output_path = args.output_file.unwrap_or_else(|| info.name.clone());
 
     println!();
     println!("Downloading to: {}", output_path);
@@ -44,10 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::create(&output_path)?;
     let mut writer = BufWriter::new(file);
 
-    download_public_file(url, &mut writer).await?;
+    download_public_file(&args.url, &mut writer).await?;
 
     println!();
-    println!("✅ Download complete!");
+    println!("Download complete!");
 
     Ok(())
 }

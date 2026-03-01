@@ -1,36 +1,40 @@
 //! Example: Download a file with resume support
 //!
-//! This example demonstrates the download_to_file method which automatically
-//! handles resume for interrupted downloads.
+//! This example demonstrates download_to_file, which automatically
+//! resumes interrupted downloads.
 //!
 //! Usage:
 //!   cargo run --example download_resume -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>
-//!
-//! To test resume:
-//! 1. Start a large file download
-//! 2. Cancel it mid-way (Ctrl+C)
-//! 3. Run the same command again - it will resume from where it left off
 
-mod cli;
-
-use cli::{parse_credentials, usage_and_exit};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use megalib::SessionHandle;
 use megalib::error::Result;
 use megalib::progress::TransferProgress;
 
-const USAGE: &str = "Usage: cargo run --example download_resume -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH> <LOCAL_PATH>";
+#[derive(Debug, Parser)]
+#[command(name = "download_resume")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    remote_path: String,
+    local_path: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 2 {
-        usage_and_exit(USAGE);
-    }
-    let remote_path = creds.positionals[0].clone();
-    let local_path = creds.positionals[1].clone();
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
@@ -40,20 +44,18 @@ async fn main() -> Result<()> {
     // Enable parallel downloads
     session.set_workers(4).await?;
 
-    println!("Looking for: {}", remote_path);
+    println!("Looking for: {}", args.remote_path);
     let node = session
-        .stat(&remote_path)
+        .stat(&args.remote_path)
         .await?
-        .ok_or_else(|| {
-            megalib::error::MegaError::Custom(format!("File not found: {}", remote_path))
-        })?
+        .ok_or_else(|| megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path)))?
         .clone();
 
     println!("Found: {} ({} bytes)", node.name, node.size);
 
     // Enable resume support
     session.set_resume(true).await?;
-    println!("Resume enabled: downloads will continue from partial files");
+    println!("Resume enabled.");
 
     // Set up progress callback
     let progress_bar = ProgressBar::new(node.size);
@@ -87,22 +89,16 @@ async fn main() -> Result<()> {
         }))
         .await?;
 
-    // Check if partial file exists
-    let local_path_buf = std::path::Path::new(&local_path);
+    let local_path_buf = std::path::Path::new(&args.local_path);
     if local_path_buf.exists() {
-        let existing_size = std::fs::metadata(local_path_buf)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let existing_size = std::fs::metadata(local_path_buf).map(|m| m.len()).unwrap_or(0);
         if existing_size > 0 && existing_size < node.size {
-            println!(
-                "\nFound partial file ({} bytes), will resume...",
-                existing_size
-            );
+            println!("\nFound partial file ({} bytes), resuming...", existing_size);
         }
     }
 
-    println!("Downloading to: {}", local_path);
-    session.download_to_file(&node, &local_path).await?;
+    println!("Downloading to: {}", args.local_path);
+    session.download_to_file(&node, &args.local_path).await?;
 
     println!("Download complete!");
 

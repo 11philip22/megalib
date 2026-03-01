@@ -1,24 +1,32 @@
-/// Example: Upload data from memory using upload_from_bytes
+/// Example: Upload data from memory using upload_from_bytes.
 ///
 /// This demonstrates uploading in-memory data without writing to disk first.
-/// Useful when data is generated programmatically.
-mod cli;
-
-use cli::{parse_credentials, usage_and_exit};
+use clap::Parser;
+use megalib::SessionHandle;
 use std::process;
 
-const USAGE: &str = "Usage: cargo run --example upload_bytes -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH>";
+#[derive(Debug, Parser)]
+#[command(name = "upload_bytes")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    remote_path: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 1 {
-        usage_and_exit(USAGE);
-    }
-    let remote_path = &creds.positionals[0];
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
@@ -33,11 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Uploading {} bytes as '{}' to {}...",
         data.len(),
         file_name,
-        remote_path
+        args.remote_path
     );
 
     match session
-        .upload_from_bytes(data, file_name, remote_path)
+        .upload_from_bytes(data, file_name, &args.remote_path)
         .await
     {
         Ok(node) => {

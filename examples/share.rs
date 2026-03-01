@@ -3,33 +3,36 @@
 //! Usage:
 //!   cargo run --example share -- --email <EMAIL> --password <PASSWORD> [--proxy PROXY] --folder <FOLDER_PATH> --recipient <RECIPIENT_EMAIL> --level <0|1|2>
 
-mod cli;
+use clap::Parser;
+use megalib::SessionHandle;
 
-use cli::{ArgParser, credentials_from_parser, usage_and_exit};
-
-const USAGE: &str = "Usage: cargo run --example share -- --email EMAIL --password PASSWORD [--proxy PROXY] --folder /Root/path --recipient USER --level <0|1|2>";
+#[derive(Debug, Parser)]
+#[command(name = "share")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    #[arg(long)]
+    folder: String,
+    #[arg(long)]
+    recipient: String,
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(i32).range(0..=2))]
+    level: i32,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut parser = ArgParser::new(USAGE);
-    let mut creds = credentials_from_parser(&mut parser, USAGE);
-    let folder_path = parser
-        .take_value(&["--folder"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let recipient = parser
-        .take_value(&["--recipient"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let level = parser
-        .take_value(&["--level"])
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(0);
-    creds.positionals = parser.remaining();
-    if !creds.positionals.is_empty() {
-        usage_and_exit(USAGE);
-    }
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as {}", info.email);
 
@@ -38,11 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Sharing folder '{}' with {} (Level {})...",
-        folder_path, recipient, level
+        args.folder, args.recipient, args.level
     );
 
     session
-        .share_folder(&folder_path, &recipient, level)
+        .share_folder(&args.folder, &args.recipient, args.level)
         .await?;
 
     println!("Share command sent successfully!");

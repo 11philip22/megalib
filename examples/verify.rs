@@ -3,9 +3,18 @@
 //! Usage:
 //!   cargo run --example verify -- --state "SESSION_KEY_FROM_STEP_1" --link "CONFIRMATION_LINK_OR_FRAGMENT"
 
+use clap::Parser;
 use megalib::{RegistrationState, verify_registration};
-use std::env;
 use tracing_subscriber::{EnvFilter, fmt};
+
+#[derive(Debug, Parser)]
+#[command(name = "verify")]
+struct Args {
+    #[arg(short = 's', long)]
+    state: String,
+    #[arg(short = 'l', long)]
+    link: String,
+}
 
 fn init_tracing() {
     let filter =
@@ -16,47 +25,22 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() {
     init_tracing();
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    // Parse arguments
-    let mut state_str = None;
-    let mut link = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--state" | "-s" => {
-                state_str = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--link" | "-l" => {
-                link = args.get(i + 1).cloned();
-                i += 2;
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-
-    let state_str = state_str.expect("--state is required");
-    let link = link.expect("--link is required (confirmation link or fragment from the email)");
-
-    // Parse state
-    let state = RegistrationState::deserialize(&state_str).expect("Invalid state format");
+    let state = RegistrationState::deserialize(&args.state).expect("Invalid state format");
 
     println!("Verifying registration...");
     println!("Session key: {}", state.session_key);
     println!();
 
-    match verify_registration(&state, &link, None).await {
+    match verify_registration(&state, &args.link, None).await {
         Ok(()) => {
-            println!("✅ Account registered successfully!");
+            println!("Account registered successfully!");
             println!();
             println!("You can now log in with your email and password.");
         }
         Err(e) => {
-            eprintln!("❌ Verification failed: {}", e);
+            eprintln!("Verification failed: {}", e);
             std::process::exit(1);
         }
     }

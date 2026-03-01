@@ -1,29 +1,38 @@
-mod cli;
-
-use cli::{parse_credentials, usage_and_exit};
+use clap::Parser;
+use megalib::SessionHandle;
 use std::process;
 
-const USAGE: &str = "Usage: cargo run --example upload -- --email EMAIL --password PASSWORD [--proxy PROXY] <LOCAL_FILE> <REMOTE_PATH>";
+#[derive(Debug, Parser)]
+#[command(name = "upload")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    local_file: String,
+    remote_path: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 2 {
-        usage_and_exit(USAGE);
-    }
-    let local_file = &creds.positionals[0];
-    let remote_path = &creds.positionals[1];
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
     println!("Refreshing filesystem...");
     session.refresh().await?;
 
-    println!("Uploading {} to {}...", local_file, remote_path);
-    match session.upload(local_file, remote_path).await {
+    println!("Uploading {} to {}...", args.local_file, args.remote_path);
+    match session.upload(&args.local_file, &args.remote_path).await {
         Ok(node) => {
             println!("Upload complete!");
             println!("Created node: {} ({} bytes)", node.name, node.size);

@@ -1,26 +1,31 @@
-/// Example: Upload data from an async reader using upload_from_reader
-///
-/// This demonstrates uploading from any source implementing AsyncRead + AsyncSeek.
-/// In this example we use a Cursor wrapping a Vec<u8>, but you could use any
-/// compatible reader.
-mod cli;
-
-use cli::{parse_credentials, usage_and_exit};
+/// Example: Upload data from an async reader using upload_from_reader.
+use clap::Parser;
 use futures::io::Cursor;
+use megalib::SessionHandle;
 use std::process;
 
-const USAGE: &str = "Usage: cargo run --example upload_reader -- --email EMAIL --password PASSWORD [--proxy PROXY] <REMOTE_PATH>";
+#[derive(Debug, Parser)]
+#[command(name = "upload_reader")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    remote_path: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let creds = parse_credentials(USAGE);
-    if creds.positionals.len() != 1 {
-        usage_and_exit(USAGE);
-    }
-    let remote_path = &creds.positionals[0];
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.password).await?
+    };
     let info = session.account_info().await?;
     println!("Logged in as: {}", info.email);
 
@@ -37,11 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Uploading {} bytes as '{}' to {} using reader...",
-        file_size, file_name, remote_path
+        file_size, file_name, args.remote_path
     );
 
     match session
-        .upload_from_reader(cursor, file_name, file_size, remote_path)
+        .upload_from_reader(cursor, file_name, file_size, &args.remote_path)
         .await
     {
         Ok(node) => {

@@ -3,49 +3,54 @@
 //! Usage:
 //!   cargo run --example ls -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY] [--path /Root/path]
 
-mod cli;
+use clap::Parser;
+use megalib::SessionHandle;
 
-use cli::{ArgParser, credentials_from_parser, usage_and_exit};
-
-const USAGE: &str = "Usage: cargo run --example ls -- --email EMAIL --password PASSWORD [--proxy PROXY] [--path /Root/path]";
+#[derive(Debug, Parser)]
+#[command(name = "ls")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+    #[arg(long, default_value = "/Root")]
+    path: String,
+}
 
 #[tokio::main]
 async fn main() {
-    let mut parser = ArgParser::new(USAGE);
-    let mut creds = credentials_from_parser(&mut parser, USAGE);
-    let path = parser
-        .take_value(&["--path"])
-        .unwrap_or_else(|| "/Root".to_string());
-    creds.positionals = parser.remaining();
-    if !creds.positionals.is_empty() {
-        usage_and_exit(USAGE);
-    }
+    let args = Args::parse();
 
     println!("Logging in...");
-    let session = creds.login().await.expect("Login failed");
+    let login = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await
+    } else {
+        SessionHandle::login(&args.email, &args.password).await
+    };
+    let session = login.expect("Login failed");
 
     println!("Refreshing filesystem...");
     session.refresh().await.expect("Refresh failed");
 
-    // Get quota
     let quota = session.quota().await.expect("Failed to get quota");
     println!(
-        "\n📊 Storage: {:.2} GB / {:.2} GB ({:.1}% used)",
+        "\nStorage: {:.2} GB / {:.2} GB ({:.1}% used)",
         quota.used as f64 / 1_073_741_824.0,
         quota.total as f64 / 1_073_741_824.0,
         quota.usage_percent()
     );
 
-    // List path
-    println!("\n📁 Listing: {}\n", path);
+    println!("\nListing: {}\n", args.path);
 
-    match session.list(&path, false).await {
+    match session.list(&args.path, false).await {
         Ok(nodes) => {
             if nodes.is_empty() {
                 println!("  (empty)");
             } else {
                 for node in nodes {
-                    let type_icon = if node.is_file() { "📄" } else { "📁" };
+                    let type_icon = if node.is_file() { "[F]" } else { "[D]" };
                     let size_str = if node.is_file() {
                         format_size(node.size)
                     } else {
@@ -56,7 +61,7 @@ async fn main() {
             }
         }
         Err(e) => {
-            eprintln!("❌ Failed to list: {}", e);
+            eprintln!("Failed to list: {}", e);
         }
     }
 }

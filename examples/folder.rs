@@ -1,34 +1,38 @@
-//! Example: Browse and download from a public folder
+//! Example: Browse a public folder
 //!
 //! Usage:
 //!   cargo run --example folder -- <FOLDER_URL>
 
+use clap::Parser;
 use megalib::public::open_folder;
-use std::env;
+
+#[derive(Debug, Parser)]
+#[command(name = "folder")]
+struct Args {
+    folder_url: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    let url = args.get(1).expect("Usage: folder <FOLDER_URL>");
+    let args = Args::parse();
 
     println!("Opening public folder...");
-    let folder = open_folder(url).await?;
+    let folder = open_folder(&args.folder_url).await?;
 
-    println!("\n📁 Folder contents:");
+    println!("\nFolder contents:");
     println!("{:-<60}", "");
 
     // Get root folder
     let root = folder.nodes().first().expect("Empty folder");
     let root_path = root.path().unwrap_or("/");
-    println!("📂 {} (root)\n", root.name);
+    println!("{} (root)\n", root.name);
 
     // List all items in root folder
     for node in folder.list(root_path, false) {
         let prefix = if node.node_type.is_container() {
-            "📁"
+            "[D]"
         } else {
-            "📄"
+            "[F]"
         };
 
         if node.size > 0 {
@@ -56,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n{:-<60}", "");
     println!(
-        "📊 Contents: {} files, {} subfolders (Total size: {} bytes)",
+        "Contents: {} files, {} subfolders (Total size: {} bytes)",
         total_files, total_subfolders, total_size
     );
 

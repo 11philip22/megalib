@@ -3,51 +3,42 @@
 //! Usage:
 //!   cargo run --example passwd -- --email <EMAIL> --password <CURRENT_PASSWORD> --new <NEW_PASSWORD> [--proxy PROXY]
 
-mod cli;
-
-use cli::{ArgParser, Credentials, usage_and_exit};
+use clap::Parser;
 use megalib::SessionHandle;
 
-const USAGE: &str = "Usage: cargo run --example passwd -- --email EMAIL --password CURRENT --new NEW [--proxy PROXY]";
+#[derive(Debug, Parser)]
+#[command(name = "passwd")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long = "password", alias = "old")]
+    current_password: String,
+    #[arg(long = "new")]
+    new_password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut parser = ArgParser::new(USAGE);
-    let email = parser
-        .take_value(&["--email", "-e"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let current_password = parser
-        .take_value(&["--password", "-p", "--old"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let new_password = parser
-        .take_value(&["--new"])
-        .unwrap_or_else(|| usage_and_exit(USAGE));
-    let proxy = parser.take_value(&["--proxy"]);
-
-    let remaining = parser.remaining();
-    if !remaining.is_empty() {
-        usage_and_exit(USAGE);
-    }
-    let creds = Credentials {
-        email,
-        password: current_password.clone(),
-        proxy,
-        positionals: Vec::new(),
-    };
+    let args = Args::parse();
 
     println!("Logging in with old password...");
-    let session = creds.login().await?;
+    let session = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.current_password, proxy).await?
+    } else {
+        SessionHandle::login(&args.email, &args.current_password).await?
+    };
     println!("Logged in successfully.");
 
     println!("Changing password...");
-    session.change_password(&new_password).await?;
+    session.change_password(&args.new_password).await?;
     println!("Password changed successfully!");
 
     println!("Verifying new password...");
-    // Try to login with new password
-    let session_new = SessionHandle::login(&creds.email, &new_password).await;
+    let session_new = SessionHandle::login(&args.email, &args.new_password).await;
     match session_new {
-        Ok(_) => println!("Verification successful: Logged in with new password."),
+        Ok(_) => println!("Verification successful: logged in with new password."),
         Err(e) => println!("Verification failed: {}", e),
     }
 

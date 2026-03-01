@@ -3,13 +3,20 @@
 //! Usage:
 //!   cargo run --example login -- --email YOUR_EMAIL --password YOUR_PASSWORD [--proxy PROXY]
 
-mod cli;
-
-use cli::{parse_credentials, usage_and_exit};
+use clap::Parser;
+use megalib::SessionHandle;
 use tracing_subscriber::{EnvFilter, fmt};
 
-const USAGE: &str =
-    "Usage: cargo run --example login -- --email EMAIL --password PASSWORD [--proxy PROXY]";
+#[derive(Debug, Parser)]
+#[command(name = "login")]
+struct Args {
+    #[arg(short = 'e', long)]
+    email: String,
+    #[arg(short = 'p', long)]
+    password: String,
+    #[arg(long)]
+    proxy: Option<String>,
+}
 
 fn init_tracing() {
     let filter =
@@ -20,24 +27,27 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() {
     init_tracing();
-    let creds = parse_credentials(USAGE);
-    if !creds.positionals.is_empty() {
-        usage_and_exit(USAGE);
-    }
+    let args = Args::parse();
 
-    println!("Logging in as: {}", creds.email);
+    println!("Logging in as: {}", args.email);
     println!();
 
-    match creds.login().await {
+    let login = if let Some(proxy) = &args.proxy {
+        SessionHandle::login_with_proxy(&args.email, &args.password, proxy).await
+    } else {
+        SessionHandle::login(&args.email, &args.password).await
+    };
+
+    match login {
         Ok(session) => {
             let info = match session.account_info().await {
                 Ok(info) => info,
                 Err(e) => {
-                    eprintln!("ƒ?O Failed to read account info: {}", e);
+                    eprintln!("Failed to read account info: {}", e);
                     std::process::exit(1);
                 }
             };
-            println!("ƒo. Login successful!");
+            println!("Login successful!");
             println!();
             println!("Email: {}", info.email);
             println!("Name: {}", info.name.as_deref().unwrap_or("(not set)"));
@@ -45,7 +55,7 @@ async fn main() {
             println!("Session ID: {}...", &info.session_id[..20]);
         }
         Err(e) => {
-            eprintln!("ƒ?O Login failed: {}", e);
+            eprintln!("Login failed: {}", e);
             std::process::exit(1);
         }
     }
