@@ -7,25 +7,43 @@ Scope: Rust source under `src/` and runnable examples under `examples/`.
 Evidence: `Cargo.toml` (`edition = "2024"`).
 How to verify: `cargo check`.
 
-2. Keep code rustfmt-clean using default rustfmt behavior unless a repo config is added.
-Evidence: `src/lib.rs`, `src/api/client.rs`, `src/http.rs`; no `rustfmt.toml` found.
-How to verify: `cargo fmt --all -- --check`.
+2. All workspace crates and examples MUST be rustfmt-clean using the repository’s rustfmt configuration (or rustfmt defaults if no config is present).
 
-3. Keep module/file names in snake_case and type names in PascalCase.
-Evidence: `src/session/mod.rs`, `src/fs/operations/mod.rs`, `src/api/client.rs`, `src/error.rs`.
-How to verify: `rg --files src examples`.
+    - Formatting must not rely on manual alignment or stylistic deviations that rustfmt would revert.
+    - Functional PRs MUST NOT include unrelated formatting-only changes.
+    - If a rustfmt configuration file (`rustfmt.toml` or `.rustfmt.toml`) is added in the future, it becomes authoritative.
+
+    **Evidence:**
+    - No `rustfmt.toml` found in repo root (default rustfmt in effect).
+    - Existing files (`src/lib.rs`, `src/api/client.rs`, `src/http.rs`) conform to rustfmt output.
+
+    **How to verify:**
+    - `cargo fmt --all -- --check`
 
 4. Keep public surface intentional: expose user-facing API from `lib.rs`/module re-exports, not accidental broad `pub`.
 Evidence: `src/lib.rs`, `src/session/mod.rs`.
 How to verify: `rg -n "pub mod|pub use" src/lib.rs src/session/mod.rs`.
 
-5. Preserve focused module splits by concern (for example API client vs HTTP transport vs FS operations).
-Evidence: `src/api/client.rs`, `src/http.rs`, `src/fs/operations/mod.rs`.
-How to verify: `rg -n "^mod " src/session/mod.rs src/fs/operations/mod.rs`.
+5. Module boundaries SHOULD reflect clear separation of concerns (e.g., API client vs HTTP transport vs filesystem operations).
 
-6. Keep optional behavior behind explicit Cargo features with localized `#[cfg(feature = "...")]`.
-Evidence: `Cargo.toml` (`default = []`, `preview = ["dep:image"]`), `src/lib.rs`, `src/fs/operations/upload.rs`.
-How to verify: `cargo check --no-default-features` and `cargo check --features preview`.
+    - Cross-concern logic SHOULD not be introduced without justification.
+    - If code spans multiple concerns, prefer introducing a new internal module rather than merging unrelated modules.
+    - Changes that significantly reorganize module boundaries SHOULD be proposed and discussed before implementation.
+
+    **Evidence:**
+    - Separation observed in:
+        - `src/api/client.rs`
+        - `src/http.rs`
+        - `src/fs/operations/mod.rs`
+    - Modules grouped by responsibility under:
+        - `src/api/`
+        - `src/fs/`
+        - `src/session/`
+
+    **How to verify:**
+    - Review diff for cross-module additions or movement.
+    - Confirm affected modules align with their existing responsibility.
+    - If boundaries shift, ensure rationale is documented in PR description.
 
 7. Use colocated unit tests (`#[cfg(test)]`) for deterministic logic in touched modules.
 Evidence: `src/api/error.rs`, `src/http.rs`, `src/api/client.rs`.

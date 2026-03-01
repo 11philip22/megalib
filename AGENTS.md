@@ -1,114 +1,152 @@
 # AGENTS.md
-## Mandatory Workflow: Structural-First Editing (agentic-codebase required)
 
-This repository uses `agentic-codebase` (ACB) for structural analysis.
-All non-trivial edits MUST follow the workflow defined below.
+## Repository Type
 
----
+This repository is a **Rust SDK**.
 
-## 0. Graph Freshness Rule
+All automated changes must respect:
+- Public API stability
+- Existing module structure
+- The policies in `agents/policies/`
 
-Before performing structural changes:
+Discovery artifacts live in:
+- `agents/outputs/pol_discover/`
 
-- If `project.acb` does not exist → compile it.
-- If large refactors happened → recompile.
-- If unsure → recompile.
-
-Command:
-
-    acb compile . -o project.acb
+Agents must treat discovery outputs as supporting evidence, not as policy.
 
 ---
 
-## 1. Navigation-First Policy (MANDATORY)
+## Source of Truth
 
-Before editing any of the following:
-- public functions
-- exported structs
-- trait implementations
-- shared modules
-- cross-module logic
-- anything used outside its immediate file
+Primary behavioral rules are defined in:
 
-You MUST:
+- `agents/policies/coding-standards.md`
+- `agents/policies/documentation.md`
+- `agents/policies/error-handling.md`
 
-1. Identify symbols involved.
-2. Query their callers and reverse dependencies.
-3. Run impact analysis.
+If a policy conflicts with existing code:
+- Prefer existing code.
+- Add a TODO in the relevant policy.
+- Do NOT silently “fix” the code to match policy.
 
-Required queries:
-
-    acb query project.acb symbol --name "<SymbolName>"
-    acb query project.acb calls --unit-id <ID> --depth 3
-    acb query project.acb rdeps --unit-id <ID> --depth 3
-    acb query project.acb impact --unit-id <ID> --depth 5
-
-Do NOT modify structural code without this analysis.
+Policies must reflect repo reality — not generic Rust advice.
 
 ---
 
-## 2. Blast Radius Discipline
+## Work Model
 
-Rules:
+All changes must follow **small-slice principle**:
 
-- Prefer minimal change that satisfies the task.
-- Do not modify unrelated units.
-- If `impact` shows high surface area, consider:
-  - adapter layer instead of signature change
-  - deprecation instead of replacement
-  - wrapper instead of mutation
+- One logical change per PR.
+- No mixed refactor + feature + formatting commits.
+- Preserve public API unless explicitly instructed otherwise.
+- Avoid touching unrelated files.
 
----
-
-## 3. After Editing (Verification Pass)
-
-After finishing edits:
-
-1. Re-run impact on modified units.
-2. Ensure no unintended high-risk propagation.
-3. Run tests / build.
-4. If structural changes occurred → recompile graph.
+If scope grows:
+- Stop.
+- Propose a split into multiple slices.
 
 ---
 
-## 4. When ACB Can Be Skipped
+## Allowed Changes
 
-ACB queries are NOT required for:
+Agents MAY:
+- Add or edit Markdown files under `agents/`
+- Add tests
+- Improve documentation
+- Fix clearly isolated bugs
+- Add minimal internal refactors strictly required for a change
 
-- formatting
-- pure comments
-- single-file typo fixes
-- strictly local logic not referenced externally
-
-When in doubt → run ACB queries.
-
----
-
-## 5. Refactor Protocol
-
-For refactors:
-
-1. Map full dependency tree first.
-2. Stage changes in smallest viable increments.
-3. Re-run impact between increments.
-4. Keep changes bisect-safe.
+Agents MUST NOT:
+- Perform large refactors without instruction
+- Change public API without explicit request
+- Reorganize modules
+- Rename crates/modules
+- Change Cargo workspace structure
+- Introduce new major dependencies casually
 
 ---
 
-## 6. Failure Rule
+## Mandatory Verification Before Completion
 
-If ACB fails:
-- Do NOT proceed blindly.
-- Attempt to recompile.
-- If still failing, restrict changes to strictly local logic.
+Before finalizing any change, agents MUST run:
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all
+```
+
+If the repository defines alternative commands in CI,
+those commands take precedence and must be used.
+
+No task is complete if:
+- Formatting differs
+- Clippy fails
+- Tests fail
+- New warnings are introduced (unless explicitly allowed)
 
 ---
 
-## 7. Core Principle
+## Error Handling Discipline
 
-Navigate structure before mutation.
+All changes touching error paths must follow:
+- `agents/policies/error-handling.md`
 
-Never guess dependency impact.
-Always verify graph impact.
+Never:
+- Introduce unwrap() in library code
+- Leak internal error types through public API unless policy allows
+- Downgrade structured errors to String
 
-This rule overrides convenience.
+---
+
+## Documentation Discipline
+
+All changes touching public API must:
+- Update doc comments
+- Keep examples compiling (if repo uses doc tests)
+- Follow agents/policies/documentation.md
+
+If unsure, add documentation rather than remove it.
+
+## Dependency Rules
+
+- No new dependency without justification.
+- Prefer existing crates already used in the workspace.
+- Avoid introducing alternative patterns (e.g., second async runtime).
+
+If adding a dependency:
+- Explain why existing ones are insufficient.
+- Keep feature surface minimal.
+
+## Large Changes Protocol
+
+For architectural or cross-cutting changes:
+1. Produce a short written plan (bullet list).
+2. Identify affected crates/modules.
+3. Confirm public API impact.
+4. Wait for approval before proceeding.
+
+## Output Style
+
+When completing work:
+- Summarize what changed.
+- List affected files.
+- List verification commands executed.
+- State whether public API changed.
+- Mention any follow-up TODOs.
+
+#  Stability Bias
+
+This is an SDK.
+
+Bias towards:
+- Stability
+- Predictability
+- Explicit behavior
+- Backwards compatibility
+
+Avoid:
+- Cleverness
+- Hidden magic
+- Implicit side effects
