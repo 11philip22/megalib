@@ -112,7 +112,7 @@ If this crate saves you time or helps your work, support is appreciated:
 
 ## License
 
-This project is licensed under the MIT License; see [license](license) for details.
+This project is licensed under the MIT License; see the [license](https://opensource.org/licenses/MIT) for details.
 
 ## Disclaimer
 
