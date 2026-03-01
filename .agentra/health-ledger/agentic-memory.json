@@ -1,0 +1,46 @@
+{
+  "auto_capture": {
+    "captured_count": 0,
+    "max_chars": 2048,
+    "mode": "safe",
+    "redact": true
+  },
+  "autonomic": {
+    "maintenance_mode": "normal",
+    "migration_policy": "auto-safe",
+    "profile": "desktop",
+    "throttle_count": 0
+  },
+  "graph": {
+    "edges": 0,
+    "nodes": 0,
+    "tiers": {
+      "cold": 0,
+      "hot": 0,
+      "warm": 0
+    }
+  },
+  "project": "AgenticMemory",
+  "sla": {
+    "max_mutations_per_min": 240,
+    "mutation_rate_per_min": 0
+  },
+  "status": "ok",
+  "storage": {
+    "backup_retention": 24,
+    "dirty": false,
+    "file": "C:\\Users\\Philip/.brain.amem",
+    "save_generation": 0
+  },
+  "storage_budget": {
+    "current_size_bytes": 0,
+    "horizon_years": 20,
+    "max_bytes": 2147483648,
+    "mode": "auto-rollup",
+    "over_budget": false,
+    "projected_size_bytes": null,
+    "rollup_count": 0,
+    "target_fraction": 0.8500000238418579
+  },
+  "timestamp": "2026-03-01T18:57:15.298372200+00:00"
+}

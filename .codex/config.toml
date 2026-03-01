@@ -1,3 +1,7 @@
-[mcp_servers.agentic_codebase]
-command = "acb-mcp"
+[mcp_servers.agentic-codebase]
+command = "agentic-codebase-mcp"
 args = []
+
+[mcp_servers.agentic-memory]
+command = "agentic-memory-mcp"
+args = ["serve"]
