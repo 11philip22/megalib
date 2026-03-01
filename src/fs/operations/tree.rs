@@ -120,8 +120,8 @@ impl Session {
         self.nodes = nodes;
         self.nodes_state_ready = true;
         self.recompute_state_current();
-        self.action_packets_current = self.state_current
-            && (self.current_seqtag.is_none() || self.current_seqtag_seen);
+        self.action_packets_current =
+            self.state_current && (self.current_seqtag.is_none() || self.current_seqtag_seen);
 
         // Clear in-use flags for share keys no longer present, persist if changed.
         if self.clear_inuse_flags_for_missing_shares() {

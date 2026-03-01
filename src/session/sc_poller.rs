@@ -196,10 +196,7 @@ impl ScPoller {
         let (alerts, lsn) = self.api.poll_user_alerts().await?;
         self.state.alerts_catchup_pending = false;
         self.event_tx
-            .send(ScPollerEvent::AlertsBatch {
-                alerts,
-                lsn,
-            })
+            .send(ScPollerEvent::AlertsBatch { alerts, lsn })
             .await
             .map_err(|_| MegaError::Custom("Session actor stopped".to_string()))?;
         Ok(())

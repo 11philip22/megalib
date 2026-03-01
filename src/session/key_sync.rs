@@ -241,10 +241,7 @@ impl Session {
         }
     }
 
-    async fn promote_pending_shares_internal(
-        &mut self,
-        persist_immediately: bool,
-    ) -> Result<bool> {
+    async fn promote_pending_shares_internal(&mut self, persist_immediately: bool) -> Result<bool> {
         if !self.key_manager.is_ready() {
             return Ok(false);
         }
@@ -523,14 +520,8 @@ impl Session {
         cu_pub: Option<&[u8]>,
         verified: bool,
     ) -> Result<bool> {
-        self.handle_contact_key_update_internal(
-            contact_handle_b64,
-            ed_pub,
-            cu_pub,
-            verified,
-            true,
-        )
-        .await
+        self.handle_contact_key_update_internal(contact_handle_b64, ed_pub, cu_pub, verified, true)
+            .await
     }
 
     /// Handle multiple contact updates from an action packet batch.
@@ -738,7 +729,11 @@ impl Session {
         }
 
         // Try to sync remote ^!keys and then promote pending shares.
-        if self.sync_keys_attribute_internal(true, false).await.unwrap_or(false) {
+        if self
+            .sync_keys_attribute_internal(true, false)
+            .await
+            .unwrap_or(false)
+        {
             changed = true;
         } else if self.promote_pending_shares_internal(false).await? {
             changed = true;

@@ -39,23 +39,6 @@ impl Session {
         Some(st)
     }
 
-    /// Poll user alerts (SC50) once. Optional helper retained for direct-session call sites.
-    #[allow(dead_code)]
-    pub async fn poll_user_alerts_once(&mut self) -> Result<(Vec<Value>, Option<String>)> {
-        if self.scsn.is_none() {
-            return Ok((Vec::new(), self.user_alert_lsn.clone()));
-        }
-        let (alerts, lsn) = self.api.poll_user_alerts().await?;
-        if !alerts.is_empty() {
-            self.user_alerts.extend(alerts.clone());
-        }
-        if let Some(token) = lsn.clone() {
-            self.user_alert_lsn = Some(token);
-        }
-        self.alerts_catchup_pending = false;
-        Ok((alerts, lsn))
-    }
-
     pub(crate) async fn dispatch_action_packets(
         &mut self,
         packets: &[Value],

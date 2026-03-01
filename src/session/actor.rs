@@ -1487,7 +1487,8 @@ impl SessionActor {
             return;
         }
         self.startup_reconciliation_queued = true;
-        self.startup_reconciliation_enqueued = self.startup_reconciliation_enqueued.saturating_add(1);
+        self.startup_reconciliation_enqueued =
+            self.startup_reconciliation_enqueued.saturating_add(1);
         self.key_work_queue
             .push_back(DeferredKeyWork::StartupReconciliation {
                 attempts: 0,
@@ -1855,11 +1856,16 @@ impl SessionActor {
                             self.startup_reconciliation_queued = false;
                             self.deferred_pk_bursts = 0;
                             debug!(
-                                startup_reconciliation_enqueued = self.startup_reconciliation_enqueued,
-                                startup_reconciliation_started = self.startup_reconciliation_started,
-                                startup_reconciliation_completed = self.startup_reconciliation_completed,
-                                startup_reconciliation_retried = self.startup_reconciliation_retried,
-                                startup_reconciliation_dropped = self.startup_reconciliation_dropped,
+                                startup_reconciliation_enqueued =
+                                    self.startup_reconciliation_enqueued,
+                                startup_reconciliation_started =
+                                    self.startup_reconciliation_started,
+                                startup_reconciliation_completed =
+                                    self.startup_reconciliation_completed,
+                                startup_reconciliation_retried =
+                                    self.startup_reconciliation_retried,
+                                startup_reconciliation_dropped =
+                                    self.startup_reconciliation_dropped,
                                 "startup key reconciliation completed"
                             );
                         }
@@ -1869,11 +1875,12 @@ impl SessionActor {
                                 let retry_backoff = Self::deferred_retry_backoff(next_attempt);
                                 self.startup_reconciliation_retried =
                                     self.startup_reconciliation_retried.saturating_add(1);
-                                self.key_work_queue
-                                    .push_back(DeferredKeyWork::StartupReconciliation {
+                                self.key_work_queue.push_back(
+                                    DeferredKeyWork::StartupReconciliation {
                                         attempts: next_attempt,
                                         ready_at: Instant::now() + retry_backoff,
-                                    });
+                                    },
+                                );
                                 self.update_deferred_queue_hwm();
                                 debug!(
                                     error = %err,
@@ -1950,8 +1957,7 @@ impl SessionActor {
                         if dispatch.ap_pk_seen {
                             self.ap_pk_seen = self.ap_pk_seen.saturating_add(1);
                             if !self.session.state_current {
-                                self.deferred_pk_bursts =
-                                    self.deferred_pk_bursts.saturating_add(1);
+                                self.deferred_pk_bursts = self.deferred_pk_bursts.saturating_add(1);
                                 debug!(
                                     deferred_pk_bursts = self.deferred_pk_bursts,
                                     state_current = self.session.state_current,

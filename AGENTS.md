@@ -69,7 +69,7 @@ Agents MUST NOT:
 
 ## Mandatory Verification Before Completion
 
-Before finalizing any change, agents MUST run:
+If a change modifies Rust source code (`src/`, `examples/`, `tests/`, `benches/`, or `Cargo.toml`), agents MUST run:
 
 ```bash
 cargo fmt --all
@@ -85,6 +85,15 @@ No task is complete if:
 - Clippy fails
 - Tests fail
 - New warnings are introduced (unless explicitly allowed)
+
+If the change only modifies:
+- Markdown files
+- Files under agents/
+- Non-Rust configuration files that do not affect compilation
+
+then Rust verification commands are NOT required.
+
+If uncertain whether a change affects Rust compilation or behavior, default to running the verification commands.
 
 ---
 

@@ -28,4 +28,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed generated graph visualization artifacts `mods.dot`, `mods.svg`, `types.dot`, and `types.svg` from versioned files.
 - Removed legacy `agent/` path copies replaced by `agents/` equivalents.
-
+- Removed unused `Session::poll_user_alerts_once` from `src/session/action_packets.rs`; user-alert polling now runs through `ScPoller`.

@@ -26,9 +26,7 @@ impl Session {
     fn trace_upload_hotpath_policy(&self, parent_handle: &str, remote_parent_path: &str) {
         debug!(
             upload_preflight = "sdk-no-key-bootstrap",
-            parent_handle,
-            remote_parent_path,
-            "upload hot path preflight policy"
+            parent_handle, remote_parent_path, "upload hot path preflight policy"
         );
     }
 
