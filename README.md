@@ -45,7 +45,7 @@ This library provides a clean, asynchronous Rust interface for interacting with 
   - Check write permissions
 
 - **Sharing & Contacts**:
-- Share folders with other users by path (`share_folder`)
+  - Share folders with other users by path (`share_folder`)
   - List contacts (`list_contacts`)
   - Access incoming shared folders
 
@@ -80,15 +80,36 @@ async fn main() -> megalib::Result<()> {
 }
 ```
 
-## More Examples
+## Examples
+
+Run any command as shown (replace placeholder values with your own).
 
 ```bash
-cargo run --example <name> -- <args>
-```
+# Auth + listing
+cargo run --example login -- --email you@example.com --password "your-password"
+cargo run --example ls -- --email you@example.com --password "your-password" --path /Root
 
-Suggested starting points: `login`, `ls`, `upload`, `download`, `upload_resume`, `download_resume`,
-`export`, `share`, `folder`, `download_public`, `upload_bytes`, `upload_reader`.
-See `examples/` for the full list and example-specific flags.
+# Upload / download
+cargo run --example upload -- --email you@example.com --password "your-password" ./local-file.txt /Root
+cargo run --example download -- --email you@example.com --password "your-password" /Root/remote-file.txt ./downloaded-file.txt
+
+# Resume transfers
+cargo run --example upload_resume -- --email you@example.com --password "your-password" ./large-file.bin /Root
+cargo run --example download_resume -- --email you@example.com --password "your-password" /Root/large-file.bin ./large-file.bin
+
+# Sharing + links
+cargo run --example export -- --email you@example.com --password "your-password" --path /Root/file.txt
+cargo run --example share -- --email you@example.com --password "your-password" --folder /Root/shared --recipient friend@example.com --level 0
+
+# Public links / folders
+cargo run --example folder -- "https://mega.nz/folder/<FOLDER_ID>#<KEY>"
+cargo run --example download_public -- "https://mega.nz/file/<FILE_ID>#<KEY>" ./public-file.bin
+
+# In-memory / reader uploads
+cargo run --example upload_bytes -- --email you@example.com --password "your-password" /Root
+cargo run --example upload_reader -- --email you@example.com --password "your-password" /Root
+```
+`--proxy <PROXY_URL>` is also supported on credential-based examples.
 
 ## Documentation
 
