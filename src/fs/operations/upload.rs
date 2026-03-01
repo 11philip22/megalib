@@ -23,13 +23,6 @@ use crate::session::Session;
 use tracing::debug;
 
 impl Session {
-    fn trace_upload_hotpath_policy(&self, parent_handle: &str, remote_parent_path: &str) {
-        debug!(
-            upload_preflight = "sdk-no-key-bootstrap",
-            parent_handle, remote_parent_path, "upload hot path preflight policy"
-        );
-    }
-
     /// Upload a node attribute (thumbnail, preview) to MEGA's attribute storage.
     ///
     /// This is used internally when `enable_previews(true)` is set, but can also
@@ -141,7 +134,10 @@ impl Session {
 
         // 1. Get upload URL
         // [{a:u, s:<SIZE>, ssl:0}]
-        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
+        debug!(
+            upload_preflight = "sdk-no-key-bootstrap",
+            parent_handle, remote_parent_path, "upload hot path preflight policy"
+        );
 
         let response = self
             .api_mut()
@@ -219,7 +215,10 @@ impl Session {
             let current_hash = calculate_file_hash(path)?;
 
             if existing_state.file_hash == current_hash && existing_state.is_likely_valid() {
-                self.trace_upload_hotpath_policy(&existing_state.parent_handle, remote_parent_path);
+                debug!(
+                    upload_preflight = "sdk-no-key-bootstrap",
+                    existing_state.parent_handle, remote_parent_path, "upload hot path preflight policy"
+                );
                 // Resume from existing state
                 match self
                     .upload_internal(path, existing_state, Some(&state_path))
@@ -261,7 +260,10 @@ impl Session {
         })?;
         let parent_handle = parent_node.handle.clone();
 
-        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
+        debug!(
+            upload_preflight = "sdk-no-key-bootstrap",
+            parent_handle, remote_parent_path, "upload hot path preflight policy"
+        );
 
         // Get upload URL
         let response = self
@@ -401,7 +403,10 @@ impl Session {
         })?;
         let parent_handle = parent_node.handle.clone();
 
-        self.trace_upload_hotpath_policy(&parent_handle, remote_parent_path);
+        debug!(
+            upload_preflight = "sdk-no-key-bootstrap",
+            parent_handle, remote_parent_path, "upload hot path preflight policy"
+        );
 
         // Get upload URL
         let response = self
