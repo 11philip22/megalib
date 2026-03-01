@@ -511,19 +511,6 @@ impl Session {
         Ok(changed)
     }
 
-    /// Handle contact key updates and persist immediately.
-    #[allow(dead_code)]
-    pub async fn handle_contact_key_update(
-        &mut self,
-        contact_handle_b64: &str,
-        ed_pub: Option<&[u8]>,
-        cu_pub: Option<&[u8]>,
-        verified: bool,
-    ) -> Result<bool> {
-        self.handle_contact_key_update_internal(contact_handle_b64, ed_pub, cu_pub, verified, true)
-            .await
-    }
-
     /// Handle multiple contact updates from an action packet batch.
     pub async fn handle_contact_updates(
         &mut self,
