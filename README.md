@@ -1,15 +1,19 @@
-# megalib
+<p align="center">
+  <img src="assets/hero-banner.png" alt="hero pane" width="980">
+</p>
 
-[![Crates.io](https://img.shields.io/crates/v/megalib.svg)](https://crates.io/crates/megalib)
-[![Documentation](https://docs.rs/megalib/badge.svg)](https://docs.rs/megalib)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/11philip22/megalib/pulls)
+<p align="center">
+  <a href="https://crates.io/crates/megalib"><img src="https://img.shields.io/badge/crates.io-megalib-F59E0B?style=for-the-badge&logo=rust&logoColor=white" alt="Crates.io"></a>
+  <a href="https://docs.rs/megalib"><img src="https://img.shields.io/badge/docs.rs-megalib-3B82F6?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-8B5CF6?style=for-the-badge" alt="MIT License"></a>
+  <a href="https://github.com/11philip22/megalib/pulls"><img src="https://img.shields.io/badge/PRs-Welcome-22C55E?style=for-the-badge" alt="PRs Welcome"></a>
+</p>
 
-<img src="https://upload.wikimedia.org/wikipedia/commons/b/bc/MEGA_logo.png" alt="MEGA Logo" width="300">
+<p align="center">
+  <a href="#features">Features</a> · <a href="#installation">Installation</a> · <a href="#quickstart">Quickstart</a> · <a href="#running-the-cli-examples">Running the CLI Examples</a> · <a href="#documentation">Documentation</a> · <a href="#contributing">Contributing</a> · <a href="#support">Support</a> · <a href="#license">License</a>
+</p>
 
-A Rust client library for the MEGA cloud storage service.
-
-This library provides a clean, asynchronous Rust interface for interacting with MEGA, supporting authentication, filesystem access, and file management.
+---
 
 ## Features
 
