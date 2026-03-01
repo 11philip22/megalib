@@ -773,14 +773,6 @@ impl Session {
         Ok(changed)
     }
 
-    /// Merge remote ^!keys into local KeyManager, rehydrate caches, and retry pending promotions.
-    ///
-    /// Returns true if state changed.
-    #[allow(dead_code)]
-    pub async fn sync_keys_attribute(&mut self) -> Result<bool> {
-        self.sync_keys_attribute_internal(true, true).await
-    }
-
     pub(crate) async fn refetch_key_user_attrs(&mut self, stale: &HashSet<String>) -> Result<bool> {
         let priority = [
             "^!keys",

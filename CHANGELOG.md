@@ -30,3 +30,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed legacy `agent/` path copies replaced by `agents/` equivalents.
 - Removed unused `Session::poll_user_alerts_once` from `src/session/action_packets.rs`; user-alert polling now runs through `ScPoller`.
 - Removed unused `Session::handle_contact_key_update` from `src/session/key_sync.rs`; contact key updates now flow through deferred action-packet key work.
+- Removed unused `Session::sync_keys_attribute` from `src/session/key_sync.rs`; callers now use `sync_keys_attribute_internal` through startup reconciliation and action-packet key maintenance paths.
