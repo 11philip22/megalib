@@ -47,7 +47,7 @@ pub fn aes128_ecb_decrypt_block(data: &[u8; 16], key: &[u8; 16]) -> [u8; 16] {
 /// Panics if data length is not a multiple of 16.
 pub fn aes128_ecb_encrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     assert!(
-        data.len() % 16 == 0,
+        data.len().is_multiple_of(16),
         "Data length must be multiple of 16, got {}",
         data.len()
     );
@@ -73,7 +73,7 @@ pub fn aes128_ecb_encrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
 /// Panics if data length is not a multiple of 16.
 pub fn aes128_ecb_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     assert!(
-        data.len() % 16 == 0,
+        data.len().is_multiple_of(16),
         "Data length must be multiple of 16, got {}",
         data.len()
     );
@@ -99,7 +99,7 @@ pub fn aes128_ecb_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
 /// Panics if data length is not a multiple of 16.
 pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     assert!(
-        data.len() % 16 == 0,
+        data.len().is_multiple_of(16),
         "Data length must be multiple of 16, got {}",
         data.len()
     );
@@ -138,7 +138,7 @@ pub fn aes128_cbc_decrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
 /// Panics if data length is not a multiple of 16.
 pub fn aes128_cbc_encrypt(data: &[u8], key: &[u8; 16]) -> Vec<u8> {
     assert!(
-        data.len() % 16 == 0,
+        data.len().is_multiple_of(16),
         "Data length must be multiple of 16, got {}",
         data.len()
     );

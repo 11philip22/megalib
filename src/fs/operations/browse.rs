@@ -30,17 +30,16 @@ impl Session {
             if let Some(node_path) = &node.path {
                 if recursive {
                     // Include all nodes under this path
-                    if node_path.starts_with(&search_prefix) || node_path == &normalized_path {
-                        if node_path != &normalized_path {
-                            results.push(node);
-                        }
+                    if node_path.starts_with(&search_prefix) && node_path != &normalized_path {
+                        results.push(node);
                     }
                 } else {
                     // Include only direct children
-                    if let Some(stripped) = node_path.strip_prefix(&search_prefix) {
-                        if !stripped.contains('/') && !stripped.is_empty() {
-                            results.push(node);
-                        }
+                    if let Some(stripped) = node_path.strip_prefix(&search_prefix)
+                        && !stripped.contains('/')
+                        && !stripped.is_empty()
+                    {
+                        results.push(node);
                     }
                 }
             }
@@ -56,11 +55,11 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
-    /// for contact in session.list_contacts() {
+    /// for contact in session.list_contacts().await? {
     ///     println!("Contact: {}", contact.name);
     /// }
     /// # Ok(())
@@ -95,11 +94,11 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
-    /// if let Some(node) = session.get_node_by_handle("ABC123") {
+    /// if let Some(node) = session.get_node_by_handle("ABC123").await? {
     ///     println!("Found: {}", node.name);
     /// }
     /// # Ok(())
@@ -123,13 +122,13 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
-    /// let file = session.stat("/Root/Documents/file.txt").unwrap();
-    /// let folder = session.stat("/Root/Documents").unwrap();
-    /// assert!(session.node_has_ancestor(file, folder));
+    /// let file = session.stat("/Root/Documents/file.txt").await?.unwrap();
+    /// let folder = session.stat("/Root/Documents").await?.unwrap();
+    /// assert!(session.node_has_ancestor(&file, &folder).await?);
     /// # Ok(())
     /// # }
     /// ```

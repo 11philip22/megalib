@@ -24,10 +24,10 @@ impl Session {
         if let Some(st) = response.get("st").and_then(|v| v.as_str()) {
             return Some(st.to_string());
         }
-        if let Some(arr) = response.as_array() {
-            if let Some(st) = arr.get(0).and_then(|v| v.as_str()) {
-                return Some(st.to_string());
-            }
+        if let Some(arr) = response.as_array()
+            && let Some(st) = arr.first().and_then(|v| v.as_str())
+        {
+            return Some(st.to_string());
         }
         None
     }
@@ -53,18 +53,18 @@ impl Session {
 
         for pkt in packets {
             if let Some(obj) = pkt.as_object() {
-                if let Some(st) = obj.get("st").and_then(|v| v.as_str()) {
-                    if self.current_seqtag.as_deref() == Some(st) {
-                        self.current_seqtag_seen = true;
-                    }
+                if let Some(st) = obj.get("st").and_then(|v| v.as_str())
+                    && self.current_seqtag.as_deref() == Some(st)
+                {
+                    self.current_seqtag_seen = true;
                 }
 
-                if let Some(origin) = obj.get("i").and_then(|v| v.as_str()) {
-                    if origin == self.session_id() {
-                        let action = obj.get("a").and_then(|v| v.as_str());
-                        if !matches!(action, Some("d") | Some("t")) {
-                            continue;
-                        }
+                if let Some(origin) = obj.get("i").and_then(|v| v.as_str())
+                    && origin == self.session_id()
+                {
+                    let action = obj.get("a").and_then(|v| v.as_str());
+                    if !matches!(action, Some("d") | Some("t")) {
+                        continue;
                     }
                 }
 
@@ -300,43 +300,43 @@ impl Session {
 
         let mut share_key: Option<[u8; 16]> = None;
 
-        if outbound && !ignore_outbound_share_key_material {
-            if let Some(ok_str) = ok_b64 {
-                if let Ok(enc) = base64url_decode(ok_str) {
-                    let dec = aes128_ecb_decrypt(&enc, &self.master_key);
-                    if dec.len() >= 16 {
-                        let mut key = [0u8; 16];
-                        key.copy_from_slice(&dec[..16]);
-                        // Defensive guard against dummy outbound key material.
-                        if key != [0u8; 16] {
-                            share_key = Some(key);
-                        }
-                    }
+        if outbound
+            && !ignore_outbound_share_key_material
+            && let Some(ok_str) = ok_b64
+            && let Ok(enc) = base64url_decode(ok_str)
+        {
+            let dec = aes128_ecb_decrypt(&enc, &self.master_key);
+            if dec.len() >= 16 {
+                let mut key = [0u8; 16];
+                key.copy_from_slice(&dec[..16]);
+                // Defensive guard against dummy outbound key material.
+                if key != [0u8; 16] {
+                    share_key = Some(key);
                 }
             }
         }
 
-        if share_key.is_none() && !ignore_outbound_share_key_material {
-            if let Some(k_str) = k_b64 {
-                if let Ok(enc) = base64url_decode(k_str) {
-                    if let Some(dec) = self.rsa_key().decrypt(&enc) {
-                        if dec.len() >= 16 {
-                            let mut key = [0u8; 16];
-                            key.copy_from_slice(&dec[..16]);
-                            // Defensive guard against dummy outbound key material.
-                            if !outbound || key != [0u8; 16] {
-                                share_key = Some(key);
-                            }
-                        }
-                    } else if !outbound && self.key_manager.is_ready() {
-                        if let Some(owner_b64) = owner {
-                            if let Some(owner_handle) = Self::decode_user_handle(owner_b64) {
-                                self.key_manager.add_pending_in(handle, &owner_handle, enc);
-                                changed = true;
-                            }
-                        }
+        if share_key.is_none()
+            && !ignore_outbound_share_key_material
+            && let Some(k_str) = k_b64
+            && let Ok(enc) = base64url_decode(k_str)
+        {
+            if let Some(dec) = self.rsa_key().decrypt(&enc) {
+                if dec.len() >= 16 {
+                    let mut key = [0u8; 16];
+                    key.copy_from_slice(&dec[..16]);
+                    // Defensive guard against dummy outbound key material.
+                    if !outbound || key != [0u8; 16] {
+                        share_key = Some(key);
                     }
                 }
+            } else if !outbound
+                && self.key_manager.is_ready()
+                && let Some(owner_b64) = owner
+                && let Some(owner_handle) = Self::decode_user_handle(owner_b64)
+            {
+                self.key_manager.add_pending_in(handle, &owner_handle, enc);
+                changed = true;
             }
         }
 
@@ -344,7 +344,7 @@ impl Session {
             self.share_keys.insert(handle.to_string(), key);
             changed = true;
             if self.key_manager.is_ready() {
-                let in_use = access.map_or(true, |r| r >= 0);
+                let in_use = access.is_none_or(|r| r >= 0);
                 self.key_manager
                     .add_share_key_with_flags(handle, &key, true, in_use);
             }
@@ -352,28 +352,25 @@ impl Session {
 
         let sharee_id = pending.or(target);
         let is_removed = access.unwrap_or(-1) < 0;
-        if outbound {
-            if let Some(id) = sharee_id {
-                if is_removed {
-                    let total_before = self.outshare_total(handle);
-                    if self.remove_outshare(handle, id, pending.is_some()) {
-                        changed = true;
-                    }
-                    if self.key_manager.is_ready()
-                        && owner == Some(self.user_handle.as_str())
-                        && ou.as_deref() != Some(self.user_handle.as_str())
-                        && self.state_current
-                        && self.key_manager.generation > 0
-                        && self.key_manager.is_share_key_in_use(handle)
-                        && total_before == 1
-                    {
-                        if self.key_manager.set_share_key_in_use(handle, false) {
-                            changed = true;
-                        }
-                    }
-                } else if self.add_outshare(handle, id, pending.is_some()) {
+        if outbound && let Some(id) = sharee_id {
+            if is_removed {
+                let total_before = self.outshare_total(handle);
+                if self.remove_outshare(handle, id, pending.is_some()) {
                     changed = true;
                 }
+                if self.key_manager.is_ready()
+                    && owner == Some(self.user_handle.as_str())
+                    && ou != Some(self.user_handle.as_str())
+                    && self.state_current
+                    && self.key_manager.generation > 0
+                    && self.key_manager.is_share_key_in_use(handle)
+                    && total_before == 1
+                    && self.key_manager.set_share_key_in_use(handle, false)
+                {
+                    changed = true;
+                }
+            } else if self.add_outshare(handle, id, pending.is_some()) {
+                changed = true;
             }
         }
 
@@ -391,16 +388,15 @@ impl Session {
             }
         }
 
-        if self.key_manager.is_ready() {
-            if let Some(r) = access {
-                if r >= 0 {
-                    let mut flag_changed = false;
-                    flag_changed |= self.key_manager.set_share_key_in_use(handle, true);
-                    flag_changed |= self.key_manager.set_share_key_trusted(handle, true);
-                    if flag_changed {
-                        changed = true;
-                    }
-                }
+        if self.key_manager.is_ready()
+            && let Some(r) = access
+            && r >= 0
+        {
+            let mut flag_changed = false;
+            flag_changed |= self.key_manager.set_share_key_in_use(handle, true);
+            flag_changed |= self.key_manager.set_share_key_trusted(handle, true);
+            if flag_changed {
+                changed = true;
             }
         }
 
@@ -450,20 +446,19 @@ impl Session {
         };
 
         let mut changed = false;
-        if let Some(at) = obj.get("at").and_then(|v| v.as_str()) {
-            if let Some(name) = self.decrypt_node_attrs(at, &self.nodes[node_idx].key) {
-                if self.nodes[node_idx].name != name {
-                    self.nodes[node_idx].name = name;
-                    changed = true;
-                }
-            }
+        if let Some(at) = obj.get("at").and_then(|v| v.as_str())
+            && let Some(name) = self.decrypt_node_attrs(at, &self.nodes[node_idx].key)
+            && self.nodes[node_idx].name != name
+        {
+            self.nodes[node_idx].name = name;
+            changed = true;
         }
 
-        if let Some(ts) = obj.get("ts").and_then(|v| v.as_i64()) {
-            if self.nodes[node_idx].timestamp != ts {
-                self.nodes[node_idx].timestamp = ts;
-                changed = true;
-            }
+        if let Some(ts) = obj.get("ts").and_then(|v| v.as_i64())
+            && self.nodes[node_idx].timestamp != ts
+        {
+            self.nodes[node_idx].timestamp = ts;
+            changed = true;
         }
 
         if changed {
@@ -526,11 +521,11 @@ impl Session {
                     }
                     return Ok(false);
                 }
-                if let Some(ph) = link_handle {
-                    if node.link.as_deref() != Some(ph) {
-                        node.link = Some(ph.to_string());
-                        return Ok(true);
-                    }
+                if let Some(ph) = link_handle
+                    && node.link.as_deref() != Some(ph)
+                {
+                    node.link = Some(ph.to_string());
+                    return Ok(true);
                 }
                 return Ok(false);
             }
@@ -624,9 +619,7 @@ impl Session {
                 }
                 self.contacts.contains_key(sharee)
             });
-            if sharees.is_empty() && before > 0 {
-                removed_any = true;
-            } else if sharees.len() != before {
+            if sharees.len() != before {
                 removed_any = true;
             }
         }

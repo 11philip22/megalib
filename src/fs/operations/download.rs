@@ -42,13 +42,13 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # use std::fs::OpenOptions;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     ///
-    /// let node = session.stat("/Root/largefile.zip").unwrap().clone();
+    /// let node = session.stat("/Root/largefile.zip").await?.unwrap();
     ///
     /// // Check if partial file exists
     /// let offset = std::fs::metadata("largefile.zip")
@@ -61,7 +61,9 @@ impl Session {
     ///     .append(true)  // Important: append mode for resume
     ///     .open("largefile.zip")?;
     ///
-    /// session.download_with_offset(&node, &mut file, offset).await?;
+    /// session
+    ///     .download_to_writer_with_offset(&node, Box::new(file), offset)
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -112,9 +114,7 @@ impl Session {
             aes_key[i] = k[i] ^ k[i + 16];
         }
 
-        for i in 0..8 {
-            nonce[i] = k[i + 16];
-        }
+        nonce.copy_from_slice(&k[16..24]);
 
         // If sequential (workers = 1), just stream the response body as before
         if self.workers() <= 1 {
@@ -271,13 +271,13 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.set_resume(true);  // Enable resume support
     /// session.refresh().await?;
     ///
-    /// let node = session.stat("/Root/largefile.zip").unwrap().clone();
+    /// let node = session.stat("/Root/largefile.zip").await?.unwrap();
     /// session.download_to_file(&node, "largefile.zip").await?;
     /// # Ok(())
     /// # }

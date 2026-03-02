@@ -176,14 +176,14 @@ impl Session {
             }))
             .await?;
 
-        if let Some(code) = resp.as_i64() {
-            if code < 0 {
-                let err = ApiErrorCode::from(code);
-                return Err(MegaError::ApiError {
-                    code: code as i32,
-                    message: err.description().to_string(),
-                });
-            }
+        if let Some(code) = resp.as_i64()
+            && code < 0
+        {
+            let err = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: err.description().to_string(),
+            });
         }
         Ok(())
     }
@@ -217,10 +217,10 @@ impl Session {
                 // k is user handle b64
                 if let Some(inner) = v.as_object() {
                     for (share_b64, key_val) in inner {
-                        if let Some(key_str) = key_val.as_str() {
-                            if let Ok(key_bin) = base64url_decode(key_str) {
-                                items.push((k.clone(), share_b64.clone(), key_bin));
-                            }
+                        if let Some(key_str) = key_val.as_str()
+                            && let Ok(key_bin) = base64url_decode(key_str)
+                        {
+                            items.push((k.clone(), share_b64.clone(), key_bin));
                         }
                     }
                 }
@@ -259,11 +259,11 @@ impl Session {
         if !remote_items.is_empty() {
             for (user_b64, share_b64, enc_key) in remote_items {
                 let mut uh = [0u8; 8];
-                if let Ok(u) = base64url_decode(&user_b64) {
-                    if u.len() == 8 {
-                        uh.copy_from_slice(&u);
-                        self.key_manager.add_pending_in(&share_b64, &uh, enc_key);
-                    }
+                if let Ok(u) = base64url_decode(&user_b64)
+                    && u.len() == 8
+                {
+                    uh.copy_from_slice(&u);
+                    self.key_manager.add_pending_in(&share_b64, &uh, enc_key);
                 }
             }
             changed = true;
@@ -503,10 +503,8 @@ impl Session {
             changed = true;
         }
 
-        if changed {
-            if persist_immediately {
-                self.persist_keys_with_retry().await?;
-            }
+        if changed && persist_immediately {
+            self.persist_keys_with_retry().await?;
         }
         Ok(changed)
     }
@@ -673,6 +671,7 @@ impl Session {
     /// - Sync remote ^!keys if any key-bearing handles changed
     /// - Promote pending shares
     /// - Clear in-use flags for removed shares
+    ///
     /// Returns true if local key state changed.
     pub async fn handle_actionpacket_keys(
         &mut self,
@@ -720,9 +719,8 @@ impl Session {
             .sync_keys_attribute_internal(true, false)
             .await
             .unwrap_or(false)
+            || self.promote_pending_shares_internal(false).await?
         {
-            changed = true;
-        } else if self.promote_pending_shares_internal(false).await? {
             changed = true;
         }
 

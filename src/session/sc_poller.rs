@@ -118,19 +118,19 @@ impl ScPoller {
             return;
         }
 
-        if self.should_poll_alerts() {
-            if let Err(err) = self.poll_user_alerts_once().await {
-                let previous_delay = self.delay;
-                self.delay = (self.delay * 2).min(MAX_DELAY);
-                debug!(
-                    stage = "sc50_user_alerts",
-                    error = %err,
-                    previous_delay_ms = previous_delay.as_millis() as u64,
-                    next_delay_ms = self.delay.as_millis() as u64,
-                    "sc channel request failed; backing off"
-                );
-                return;
-            }
+        if self.should_poll_alerts()
+            && let Err(err) = self.poll_user_alerts_once().await
+        {
+            let previous_delay = self.delay;
+            self.delay = (self.delay * 2).min(MAX_DELAY);
+            debug!(
+                stage = "sc50_user_alerts",
+                error = %err,
+                previous_delay_ms = previous_delay.as_millis() as u64,
+                next_delay_ms = self.delay.as_millis() as u64,
+                "sc channel request failed; backing off"
+            );
+            return;
         }
 
         if self.delay != BASE_DELAY {
@@ -206,10 +206,10 @@ impl ScPoller {
 fn extract_seqtags(packets: &[Value]) -> Vec<String> {
     let mut out = Vec::new();
     for pkt in packets {
-        if let Some(obj) = pkt.as_object() {
-            if let Some(st) = obj.get("st").and_then(|v| v.as_str()) {
-                out.push(st.to_string());
-            }
+        if let Some(obj) = pkt.as_object()
+            && let Some(st) = obj.get("st").and_then(|v| v.as_str())
+        {
+            out.push(st.to_string());
         }
     }
     out

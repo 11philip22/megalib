@@ -52,26 +52,26 @@ impl PublicFile {
 /// Tuple of (handle, key) on success
 pub fn parse_mega_link(url: &str) -> Result<(String, String)> {
     // New format: https://mega.nz/file/HANDLE#KEY
-    if url.contains("/file/") {
-        if let Some(pos) = url.find("/file/") {
-            let rest = &url[pos + 6..];
-            if let Some(hash_pos) = rest.find('#') {
-                let handle = rest[..hash_pos].to_string();
-                let key = rest[hash_pos + 1..].to_string();
-                return Ok((handle, key));
-            }
+    if url.contains("/file/")
+        && let Some(pos) = url.find("/file/")
+    {
+        let rest = &url[pos + 6..];
+        if let Some(hash_pos) = rest.find('#') {
+            let handle = rest[..hash_pos].to_string();
+            let key = rest[hash_pos + 1..].to_string();
+            return Ok((handle, key));
         }
     }
 
     // Legacy format: https://mega.nz/#!HANDLE!KEY
-    if url.contains("#!") {
-        if let Some(pos) = url.find("#!") {
-            let rest = &url[pos + 2..];
-            if let Some(bang_pos) = rest.find('!') {
-                let handle = rest[..bang_pos].to_string();
-                let key = rest[bang_pos + 1..].to_string();
-                return Ok((handle, key));
-            }
+    if url.contains("#!")
+        && let Some(pos) = url.find("#!")
+    {
+        let rest = &url[pos + 2..];
+        if let Some(bang_pos) = rest.find('!') {
+            let handle = rest[..bang_pos].to_string();
+            let key = rest[bang_pos + 1..].to_string();
+            return Ok((handle, key));
         }
     }
 
@@ -184,8 +184,8 @@ pub async fn download_public_file_data<W: Write>(info: &PublicFile, writer: &mut
     let mut aes_key = [0u8; 16];
     let mut nonce = [0u8; 8];
 
-    for i in 0..16 {
-        aes_key[i] = info.key[i] ^ info.key[i + 16];
+    for (i, key_byte) in aes_key.iter_mut().enumerate() {
+        *key_byte = info.key[i] ^ info.key[i + 16];
     }
     nonce.copy_from_slice(&info.key[16..24]);
 
@@ -284,12 +284,11 @@ impl PublicFolder {
                     if node_path.starts_with(&search_prefix) && node_path != &normalized {
                         results.push(node);
                     }
-                } else {
-                    if let Some(stripped) = node_path.strip_prefix(&search_prefix) {
-                        if !stripped.contains('/') && !stripped.is_empty() {
-                            results.push(node);
-                        }
-                    }
+                } else if let Some(stripped) = node_path.strip_prefix(&search_prefix)
+                    && !stripped.contains('/')
+                    && !stripped.is_empty()
+                {
+                    results.push(node);
                 }
             }
         }
@@ -367,26 +366,26 @@ impl PublicFolder {
 /// Returns tuple of (handle, key) on success.
 pub fn parse_folder_link(url: &str) -> Result<(String, String)> {
     // New format: https://mega.nz/folder/HANDLE#KEY
-    if url.contains("/folder/") {
-        if let Some(pos) = url.find("/folder/") {
-            let rest = &url[pos + 8..];
-            if let Some(hash_pos) = rest.find('#') {
-                let handle = rest[..hash_pos].to_string();
-                let key = rest[hash_pos + 1..].to_string();
-                return Ok((handle, key));
-            }
+    if url.contains("/folder/")
+        && let Some(pos) = url.find("/folder/")
+    {
+        let rest = &url[pos + 8..];
+        if let Some(hash_pos) = rest.find('#') {
+            let handle = rest[..hash_pos].to_string();
+            let key = rest[hash_pos + 1..].to_string();
+            return Ok((handle, key));
         }
     }
 
     // Legacy format: https://mega.nz/#F!HANDLE!KEY
-    if url.contains("#F!") {
-        if let Some(pos) = url.find("#F!") {
-            let rest = &url[pos + 3..];
-            if let Some(bang_pos) = rest.find('!') {
-                let handle = rest[..bang_pos].to_string();
-                let key = rest[bang_pos + 1..].to_string();
-                return Ok((handle, key));
-            }
+    if url.contains("#F!")
+        && let Some(pos) = url.find("#F!")
+    {
+        let rest = &url[pos + 3..];
+        if let Some(bang_pos) = rest.find('!') {
+            let handle = rest[..bang_pos].to_string();
+            let key = rest[bang_pos + 1..].to_string();
+            return Ok((handle, key));
         }
     }
 
@@ -476,10 +475,10 @@ pub async fn open_folder(url: &str) -> Result<PublicFolder> {
 
     for (idx, node_json) in nodes_array.iter().enumerate() {
         // First node is the root folder - set its share key
-        if idx == 0 {
-            if let Some(h) = node_json.get("h").and_then(|v| v.as_str()) {
-                share_keys.insert(h.to_string(), folder_key);
-            }
+        if idx == 0
+            && let Some(h) = node_json.get("h").and_then(|v| v.as_str())
+        {
+            share_keys.insert(h.to_string(), folder_key);
         }
 
         if let Some(node) = parse_public_node(node_json, &folder_key, &share_keys, idx == 0) {
@@ -647,11 +646,11 @@ fn build_public_path(
         return format!("/{}", node.name);
     }
 
-    if let Some(parent_handle) = &node.parent_handle {
-        if let Some(&parent_idx) = handle_map.get(parent_handle.as_str()) {
-            let parent_path = build_public_path(nodes, parent_idx, handle_map, depth + 1);
-            return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
-        }
+    if let Some(parent_handle) = &node.parent_handle
+        && let Some(&parent_idx) = handle_map.get(parent_handle.as_str())
+    {
+        let parent_path = build_public_path(nodes, parent_idx, handle_map, depth + 1);
+        return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
     }
 
     format!("/{}", node.name)

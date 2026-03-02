@@ -48,7 +48,9 @@ async fn main() -> Result<()> {
     let node = session
         .stat(&args.remote_path)
         .await?
-        .ok_or_else(|| megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path)))?
+        .ok_or_else(|| {
+            megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path))
+        })?
         .clone();
 
     println!("Found: {} ({} bytes)", node.name, node.size);
@@ -91,9 +93,14 @@ async fn main() -> Result<()> {
 
     let local_path_buf = std::path::Path::new(&args.local_path);
     if local_path_buf.exists() {
-        let existing_size = std::fs::metadata(local_path_buf).map(|m| m.len()).unwrap_or(0);
+        let existing_size = std::fs::metadata(local_path_buf)
+            .map(|m| m.len())
+            .unwrap_or(0);
         if existing_size > 0 && existing_size < node.size {
-            println!("\nFound partial file ({} bytes), resuming...", existing_size);
+            println!(
+                "\nFound partial file ({} bytes), resuming...",
+                existing_size
+            );
         }
     }
 

@@ -48,7 +48,7 @@ impl Session {
         // Pad to 16 bytes
         let pad_len = 16 - (attrs_bytes.len() % 16);
         let mut padded_attrs = attrs_bytes;
-        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+        padded_attrs.extend(std::iter::repeat_n(0, pad_len));
 
         let encrypted_attrs = crate::crypto::aes::aes128_cbc_encrypt(&padded_attrs, &node_key);
         let attrs_b64 = crate::base64::base64url_encode(&encrypted_attrs);
@@ -80,39 +80,38 @@ impl Session {
 
         // 5. Parse response
         let mut created_node: Option<Node> = None;
-        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
-            if let Some(node_obj) = nodes_array.get(0) {
-                let mut node = self.parse_node(node_obj).ok_or_else(|| {
-                    crate::error::MegaError::Custom("Failed to parse node".to_string())
-                })?;
-                node.name = name.to_string(); // Name isn't returned in 'f', set it manually
+        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array())
+            && let Some(node_obj) = nodes_array.first()
+        {
+            let mut node = self.parse_node(node_obj).ok_or_else(|| {
+                crate::error::MegaError::Custom("Failed to parse node".to_string())
+            })?;
+            node.name = name.to_string(); // Name isn't returned in 'f', set it manually
 
-                // Add to local cache manually
-                self.nodes.push(node.clone());
-                let parent_path_str = if parent_path == "/" {
-                    format!("/{}", name)
-                } else {
-                    format!("{}/{}", parent_path.trim_end_matches('/'), name)
-                };
-                if let Some(last_node) = self.nodes.last_mut() {
-                    last_node.path = Some(parent_path_str);
-                }
-
-                created_node = Some(node);
+            // Add to local cache manually
+            self.nodes.push(node.clone());
+            let parent_path_str = if parent_path == "/" {
+                format!("/{}", name)
+            } else {
+                format!("{}/{}", parent_path.trim_end_matches('/'), name)
+            };
+            if let Some(last_node) = self.nodes.last_mut() {
+                last_node.path = Some(parent_path_str);
             }
+
+            created_node = Some(node);
         }
 
         // Handle seqtag array response with error list (SDK-style).
-        if let Some(arr) = response.as_array() {
-            if let Some(errors) = arr.get(1) {
-                if let Some(code) = first_error_code(errors) {
-                    let api = ApiErrorCode::from(code);
-                    return Err(MegaError::ApiError {
-                        code: code as i32,
-                        message: api.description().to_string(),
-                    });
-                }
-            }
+        if let Some(arr) = response.as_array()
+            && let Some(errors) = arr.get(1)
+            && let Some(code) = first_error_code(errors)
+        {
+            let api = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: api.description().to_string(),
+            });
         }
 
         let _ = seqtag;
@@ -158,9 +157,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// session.mv("/Root/file.txt", "/Root/Documents").await?;
     /// # Ok(())
@@ -210,9 +209,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// session.rename("/Root/old_name.txt", "new_name.txt").await?;
     /// # Ok(())
@@ -241,7 +240,7 @@ impl Session {
         let pad_len = (16 - (attrs_bytes.len() % 16)) % 16;
         let mut padded_attrs = attrs_bytes;
         if pad_len > 0 {
-            padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+            padded_attrs.extend(std::iter::repeat_n(0, pad_len));
         }
 
         // Get the AES key for attributes
@@ -292,10 +291,10 @@ fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
 
     if let Some(arr) = errors.as_array() {
         for v in arr {
-            if let Some(code) = v.as_i64() {
-                if code != 0 {
-                    return Some(code);
-                }
+            if let Some(code) = v.as_i64()
+                && code != 0
+            {
+                return Some(code);
             }
         }
         return None;
@@ -303,10 +302,10 @@ fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
 
     if let Some(obj) = errors.as_object() {
         for v in obj.values() {
-            if let Some(code) = v.as_i64() {
-                if code != 0 {
-                    return Some(code);
-                }
+            if let Some(code) = v.as_i64()
+                && code != 0
+            {
+                return Some(code);
             }
         }
     }

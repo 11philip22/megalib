@@ -139,13 +139,14 @@ impl Keyring {
         let ed = records.get(TLV_KEY_ED25519).cloned();
         let cu = records.get(TLV_KEY_CU25519).cloned();
 
-        if let (Some(ed), Some(cu)) = (ed, cu) {
-            if ed.len() == 32 && cu.len() == 32 {
-                return Ok(Keyring {
-                    ed25519: Some(ed),
-                    cu25519: Some(cu),
-                });
-            }
+        if let (Some(ed), Some(cu)) = (ed, cu)
+            && ed.len() == 32
+            && cu.len() == 32
+        {
+            return Ok(Keyring {
+                ed25519: Some(ed),
+                cu25519: Some(cu),
+            });
         }
 
         Err(MegaError::Custom(

@@ -178,68 +178,11 @@ impl ApiClient {
 
             // Handle single-number array like [-3] as errors (including EAGAIN)
             if let Some(arr) = response.as_array() {
-                if arr.len() == 1 {
-                    if let Some(code) = arr[0].as_i64() {
-                        // MEGA returns [0] for success on some calls (e.g. uc); treat >=0 as success.
-                        if code >= 0 {
-                            trace!(
-                                request_id,
-                                attempt,
-                                url = %url,
-                                body_bytes = body.len(),
-                                body = %body,
-                                response_bytes,
-                                response_body = %response_text,
-                                elapsed_ms,
-                                result = "ok",
-                                api_code = code,
-                                "api request"
-                            );
-                            return Ok(Value::from(code));
-                        }
-                        let error_code = ApiErrorCode::from(code);
-                        if allowed_errors.contains(&code) {
-                            trace!(
-                                request_id,
-                                attempt,
-                                url = %url,
-                                body_bytes = body.len(),
-                                body = %body,
-                                response_bytes,
-                                response_body = %response_text,
-                                elapsed_ms,
-                                result = "allowed_error",
-                                api_error = code,
-                                "api request"
-                            );
-                            return Ok(Value::from(code));
-                        }
-                        if error_code == ApiErrorCode::Again {
-                            sleep(Duration::from_millis(delay_ms)).await;
-                            let next_delay = delay_ms.saturating_mul(2);
-                            let retry_limit = attempts >= max_attempts || next_delay > max_delay_ms;
-                            trace!(
-                                request_id,
-                                attempt,
-                                url = %url,
-                                body_bytes = body.len(),
-                                body = %body,
-                                response_bytes,
-                                response_body = %response_text,
-                                elapsed_ms,
-                                result = if retry_limit { "server_busy" } else { "retry" },
-                                api_error = code,
-                                delay_ms,
-                                next_delay,
-                                max_attempts,
-                                "api request"
-                            );
-                            if retry_limit {
-                                return Err(MegaError::ServerBusy);
-                            }
-                            delay_ms = next_delay;
-                            continue;
-                        }
+                if arr.len() == 1
+                    && let Some(code) = arr[0].as_i64()
+                {
+                    // MEGA returns [0] for success on some calls (e.g. uc); treat >=0 as success.
+                    if code >= 0 {
                         trace!(
                             request_id,
                             attempt,
@@ -249,15 +192,72 @@ impl ApiClient {
                             response_bytes,
                             response_body = %response_text,
                             elapsed_ms,
-                            result = "api_error",
+                            result = "ok",
+                            api_code = code,
+                            "api request"
+                        );
+                        return Ok(Value::from(code));
+                    }
+                    let error_code = ApiErrorCode::from(code);
+                    if allowed_errors.contains(&code) {
+                        trace!(
+                            request_id,
+                            attempt,
+                            url = %url,
+                            body_bytes = body.len(),
+                            body = %body,
+                            response_bytes,
+                            response_body = %response_text,
+                            elapsed_ms,
+                            result = "allowed_error",
                             api_error = code,
                             "api request"
                         );
-                        return Err(MegaError::ApiError {
-                            code: code as i32,
-                            message: error_code.description().to_string(),
-                        });
+                        return Ok(Value::from(code));
                     }
+                    if error_code == ApiErrorCode::Again {
+                        sleep(Duration::from_millis(delay_ms)).await;
+                        let next_delay = delay_ms.saturating_mul(2);
+                        let retry_limit = attempts >= max_attempts || next_delay > max_delay_ms;
+                        trace!(
+                            request_id,
+                            attempt,
+                            url = %url,
+                            body_bytes = body.len(),
+                            body = %body,
+                            response_bytes,
+                            response_body = %response_text,
+                            elapsed_ms,
+                            result = if retry_limit { "server_busy" } else { "retry" },
+                            api_error = code,
+                            delay_ms,
+                            next_delay,
+                            max_attempts,
+                            "api request"
+                        );
+                        if retry_limit {
+                            return Err(MegaError::ServerBusy);
+                        }
+                        delay_ms = next_delay;
+                        continue;
+                    }
+                    trace!(
+                        request_id,
+                        attempt,
+                        url = %url,
+                        body_bytes = body.len(),
+                        body = %body,
+                        response_bytes,
+                        response_body = %response_text,
+                        elapsed_ms,
+                        result = "api_error",
+                        api_error = code,
+                        "api request"
+                    );
+                    return Err(MegaError::ApiError {
+                        code: code as i32,
+                        message: error_code.description().to_string(),
+                    });
                 }
                 if let Some(first) = arr.first() {
                     trace!(
@@ -416,7 +416,7 @@ impl ApiClient {
         let events = obj
             .get("a")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.clone())
+            .cloned()
             .unwrap_or_default();
 
         Ok((events, next_sn, wsc, ir))
@@ -450,7 +450,7 @@ impl ApiClient {
         let alerts = obj
             .get("c")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.clone())
+            .cloned()
             .unwrap_or_default();
         let lsn = obj
             .get("lsn")

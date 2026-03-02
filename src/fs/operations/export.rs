@@ -23,9 +23,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     /// let url = session.export("/Root/myfile.txt").await?;
     /// println!("Public link: {}", url);

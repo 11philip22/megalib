@@ -30,11 +30,12 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use megalib::Session;
+    /// use megalib::SessionHandle;
     ///
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let session = Session::login("user@example.com", "password").await?;
-    /// println!("Logged in as: {}", session.email);
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// let info = session.account_info().await?;
+    /// println!("Logged in as: {}", info.email);
     /// # Ok(())
     /// # }
     /// ```
@@ -51,10 +52,10 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use megalib::Session;
+    /// use megalib::SessionHandle;
     ///
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let session = Session::login_with_proxy(
+    /// let session = SessionHandle::login_with_proxy(
     ///     "user@example.com",
     ///     "password",
     ///     "http://proxy.example.com:8080"
@@ -380,9 +381,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "old_password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "old_password").await?;
     /// session.change_password("new_secure_password").await?;
     /// # Ok(())
     /// # }
@@ -413,15 +414,15 @@ impl Session {
             .await?;
 
         // Check for error code if any
-        if let Some(err_code) = response.as_i64() {
-            if err_code < 0 {
-                // Fix: Fully qualified path to ApiErrorCode
-                let error_code = crate::api::ApiErrorCode::from(err_code);
-                return Err(MegaError::ApiError {
-                    code: err_code as i32,
-                    message: error_code.description().to_string(),
-                });
-            }
+        if let Some(err_code) = response.as_i64()
+            && err_code < 0
+        {
+            // Fix: Fully qualified path to ApiErrorCode
+            let error_code = crate::api::ApiErrorCode::from(err_code);
+            return Err(MegaError::ApiError {
+                code: err_code as i32,
+                message: error_code.description().to_string(),
+            });
         }
 
         Ok(())

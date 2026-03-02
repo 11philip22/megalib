@@ -15,20 +15,18 @@
 //! use std::path::Path;
 //! use megalib::preview::generate_thumbnail;
 //!
-//! fn main() {
-//!     let path = Path::new("my_photo.jpg");
-//!     
-//!     if let Some(result) = generate_thumbnail(path) {
-//!         match result {
-//!             Ok(thumbnail_data) => {
-//!                 println!("Generated thumbnail: {} bytes", thumbnail_data.len());
-//!                 // Upload thumbnail_data...
-//!             }
-//!             Err(e) => eprintln!("Failed to generate thumbnail: {}", e),
+//! let path = Path::new("my_photo.jpg");
+//!
+//! if let Some(result) = generate_thumbnail(path) {
+//!     match result {
+//!         Ok(thumbnail_data) => {
+//!             println!("Generated thumbnail: {} bytes", thumbnail_data.len());
+//!             // Upload thumbnail_data...
 //!         }
-//!     } else {
-//!         println!("No thumbnail support for this file type.");
+//!         Err(e) => eprintln!("Failed to generate thumbnail: {}", e),
 //!     }
+//! } else {
+//!     println!("No thumbnail support for this file type.");
 //! }
 //! ```
 

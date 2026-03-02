@@ -45,7 +45,7 @@ pub const SHAREKEY_FLAG_IN_USE: u8 = 1 << 1;
 ///
 /// `handle` is the 6-byte node handle, `key` is the 16-byte share key, and
 /// `flags` stores `SHAREKEY_FLAG_*` bits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ShareKeyEntry {
     pub handle: [u8; 6],
     pub key: [u8; 16],
@@ -165,16 +165,6 @@ pub struct KeyManager {
     pub manual_verification: bool,
 }
 
-impl Default for ShareKeyEntry {
-    fn default() -> Self {
-        ShareKeyEntry {
-            handle: [0u8; 6],
-            key: [0u8; 16],
-            flags: 0,
-        }
-    }
-}
-
 /// Derive the ^!keys AES-128-GCM key from the master key using HKDF-SHA256 (info byte = 1).
 fn derive_keys_cipher(master_key: &[u8; 16]) -> [u8; 16] {
     // HKDF-Extract with salt = zeros(hashlen)
@@ -228,11 +218,12 @@ impl KeyManager {
     /// assert!(!km.is_ready());
     /// ```
     pub fn new() -> Self {
-        let mut km = KeyManager::default();
-        km.version = 1;
-        km.generation = 0;
-        km.manual_verification = false;
-        km
+        KeyManager {
+            version: 1,
+            generation: 0,
+            manual_verification: false,
+            ..KeyManager::default()
+        }
     }
 
     /// Check whether private Ed25519 and Cu25519 keys are present.
@@ -1154,7 +1145,7 @@ impl KeyManager {
     fn parse_share_keys(data: &[u8]) -> Result<Vec<ShareKeyEntry>> {
         let mut out = Vec::new();
         let mut offset = 0usize;
-        while offset + 6 + 16 + 1 <= data.len() {
+        while offset + 6 + 16 < data.len() {
             let mut h = [0u8; 6];
             h.copy_from_slice(&data[offset..offset + 6]);
             offset += 6;

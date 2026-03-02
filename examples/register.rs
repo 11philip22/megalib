@@ -37,7 +37,10 @@ async fn main() {
         Ok(state) => {
             println!("Registration initiated successfully!");
             println!();
-            println!("Check your email ({}) for the verification link.", args.email);
+            println!(
+                "Check your email ({}) for the verification link.",
+                args.email
+            );
             println!();
             println!("Save this session key for step 2:");
             println!("----------------------------------------");

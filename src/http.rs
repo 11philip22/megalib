@@ -118,21 +118,21 @@ impl HttpClient {
 
             let status = response.status();
             if status.is_redirection() && policy.follow_redirects {
-                if let Some(loc) = response.headers().get(reqwest::header::LOCATION) {
-                    if let Ok(loc_str) = loc.to_str() {
-                        let next =
-                            if loc_str.starts_with("http://") || loc_str.starts_with("https://") {
-                                loc_str.to_string()
-                            } else {
-                                let base = reqwest::Url::parse(&current)
-                                    .map_err(|_| MegaError::HttpError(status.as_u16()))?;
-                                base.join(loc_str)
-                                    .map_err(|_| MegaError::HttpError(status.as_u16()))?
-                                    .to_string()
-                            };
-                        current = next;
-                        continue;
-                    }
+                if let Some(loc) = response.headers().get(reqwest::header::LOCATION)
+                    && let Ok(loc_str) = loc.to_str()
+                {
+                    let next = if loc_str.starts_with("http://") || loc_str.starts_with("https://")
+                    {
+                        loc_str.to_string()
+                    } else {
+                        let base = reqwest::Url::parse(&current)
+                            .map_err(|_| MegaError::HttpError(status.as_u16()))?;
+                        base.join(loc_str)
+                            .map_err(|_| MegaError::HttpError(status.as_u16()))?
+                            .to_string()
+                    };
+                    current = next;
+                    continue;
                 }
                 return Err(MegaError::HttpError(status.as_u16()));
             }

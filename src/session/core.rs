@@ -118,6 +118,7 @@ pub struct Contact {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_internal(
         api: ApiClient,
         session_id: String,
@@ -195,14 +196,14 @@ impl Session {
     fn validate_upv_batch(resp: Value) -> Result<()> {
         if let Some(arr) = resp.as_array() {
             for item in arr {
-                if let Some(code) = item.as_i64() {
-                    if code < 0 {
-                        let error_code = crate::api::ApiErrorCode::from(code);
-                        return Err(MegaError::ApiError {
-                            code: code as i32,
-                            message: error_code.description().to_string(),
-                        });
-                    }
+                if let Some(code) = item.as_i64()
+                    && code < 0
+                {
+                    let error_code = crate::api::ApiErrorCode::from(code);
+                    return Err(MegaError::ApiError {
+                        code: code as i32,
+                        message: error_code.description().to_string(),
+                    });
                 }
             }
         }
@@ -499,9 +500,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.set_resume(true);
     /// // Now downloads will attempt to resume if partial file exists
     /// # Ok(())
@@ -523,9 +524,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     ///
     /// // Register a custom callback
     /// session.watch_status(Box::new(|progress| {
@@ -562,9 +563,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.enable_previews(true);
     /// // Now uploads will generate and attach thumbnails
     /// # Ok(())
@@ -589,9 +590,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.set_workers(4); // Use 4 parallel transfers
     /// # Ok(())
     /// # }
@@ -617,11 +618,11 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use megalib::Session;
+    /// use megalib::SessionHandle;
     ///
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let session = Session::login("user@example.com", "password").await?;
-    /// session.save("session.json")?;
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.save("session.json").await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -848,7 +849,7 @@ impl Session {
 
         let response = match self.api_mut().get_user_attribute(attr).await {
             Ok(v) => v,
-            Err(MegaError::ApiError { code, .. }) if code == -9 => {
+            Err(MegaError::ApiError { code: -9, .. }) => {
                 // Attribute not set
                 return Ok(None);
             }
@@ -870,24 +871,23 @@ impl Session {
             return Ok(Some(decoded));
         }
 
-        if let Some(arr) = response.as_array() {
-            if let Some(obj) = arr
+        if let Some(arr) = response.as_array()
+            && let Some(obj) = arr
                 .iter()
                 .find(|o| o.get("av").and_then(|v| v.as_str()).is_some())
-            {
-                let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
-                if av.is_empty() {
-                    return Ok(None);
-                }
-                let decoded = base64url_decode(av)?;
-                self.user_attr_cache
-                    .insert(attr.to_string(), decoded.clone());
-                if let Some(ver) = obj.get("v").and_then(|v| v.as_str()) {
-                    self.user_attr_versions
-                        .insert(attr.to_string(), ver.to_string());
-                }
-                return Ok(Some(decoded));
+        {
+            let av = obj.get("av").and_then(|v| v.as_str()).unwrap_or("");
+            if av.is_empty() {
+                return Ok(None);
             }
+            let decoded = base64url_decode(av)?;
+            self.user_attr_cache
+                .insert(attr.to_string(), decoded.clone());
+            if let Some(ver) = obj.get("v").and_then(|v| v.as_str()) {
+                self.user_attr_versions
+                    .insert(attr.to_string(), ver.to_string());
+            }
+            return Ok(Some(decoded));
         }
 
         Ok(None)
@@ -924,10 +924,10 @@ impl Session {
     }
 
     fn extract_attr_version(resp: &Value, attr: &str) -> Option<String> {
-        if let Some(obj) = resp.as_object() {
-            if let Some(v) = obj.get(attr).and_then(|v| v.as_str()) {
-                return Some(v.to_string());
-            }
+        if let Some(obj) = resp.as_object()
+            && let Some(v) = obj.get(attr).and_then(|v| v.as_str())
+        {
+            return Some(v.to_string());
         }
         if let Some(arr) = resp.as_array() {
             for item in arr {
@@ -1013,10 +1013,10 @@ impl Session {
             }
             self.key_manager = km;
             // If priv RSA is present, propagate into session crypto layer.
-            if !self.key_manager.priv_rsa.is_empty() {
-                if let Ok(rsa) = parse_raw_private_key(&self.key_manager.priv_rsa) {
-                    self.rsa_key = rsa;
-                }
+            if !self.key_manager.priv_rsa.is_empty()
+                && let Ok(rsa) = parse_raw_private_key(&self.key_manager.priv_rsa)
+            {
+                self.rsa_key = rsa;
             }
             // Cache authrings/backups/warnings/manual verification in session for quick access.
             self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
@@ -1099,15 +1099,15 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// use megalib::Session;
+    /// use megalib::SessionHandle;
     ///
     /// # async fn example() -> megalib::error::Result<()> {
     /// // Try to load cached session, fall back to login
-    /// let session = match Session::load("session.json").await? {
+    /// let session = match SessionHandle::load("session.json").await? {
     ///     Some(s) => s,
     ///     None => {
-    ///         let s = Session::login("user@example.com", "password").await?;
-    ///         s.save("session.json")?;
+    ///         let s = SessionHandle::login("user@example.com", "password").await?;
+    ///         s.save("session.json").await?;
     ///         s
     ///     }
     /// };

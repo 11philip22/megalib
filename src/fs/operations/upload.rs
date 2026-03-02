@@ -43,13 +43,13 @@ impl Session {
         node_key: &[u8; 16],
     ) -> Result<String> {
         // Pad data to multiple of 16 bytes
-        let pad_len = if data.len() % 16 == 0 {
+        let pad_len = if data.len().is_multiple_of(16) {
             0
         } else {
             16 - (data.len() % 16)
         };
         let mut padded = data.to_vec();
-        padded.extend(std::iter::repeat(0u8).take(pad_len));
+        padded.extend(std::iter::repeat_n(0u8, pad_len));
 
         // Get upload URL via a:ufa API
         let response = self
@@ -191,9 +191,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     ///
     /// // This upload can be safely interrupted and resumed
@@ -217,7 +217,9 @@ impl Session {
             if existing_state.file_hash == current_hash && existing_state.is_likely_valid() {
                 debug!(
                     upload_preflight = "sdk-no-key-bootstrap",
-                    existing_state.parent_handle, remote_parent_path, "upload hot path preflight policy"
+                    existing_state.parent_handle,
+                    remote_parent_path,
+                    "upload hot path preflight policy"
                 );
                 // Resume from existing state
                 match self
@@ -326,9 +328,9 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     ///
     /// let data = b"Hello, MEGA!";
@@ -373,10 +375,10 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// use futures::io::Cursor;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
     ///
     /// let data = vec![0u8; 1024]; // 1KB of zeros
@@ -474,17 +476,15 @@ impl Session {
         // If resume state indicates complete upload (offset == file_size),
         // we might have missed the handle if the process crashed before finalization.
         // Rewind by one chunk to force re-upload and get the handle again.
-        if offset == file_size && file_size > 0 {
-            if !chunk_macs.is_empty() {
-                chunk_macs.pop();
+        if offset == file_size && file_size > 0 && !chunk_macs.is_empty() {
+            chunk_macs.pop();
 
-                // Recalculate offset from remaining chunks
-                let mut new_offset = 0;
-                for i in 0..chunk_macs.len() {
-                    new_offset += get_chunk_size(i, new_offset, file_size);
-                }
-                offset = new_offset;
+            // Recalculate offset from remaining chunks
+            let mut new_offset = 0;
+            for i in 0..chunk_macs.len() {
+                new_offset += get_chunk_size(i, new_offset, file_size);
             }
+            offset = new_offset;
         }
 
         // Seek to resume position
@@ -515,8 +515,6 @@ impl Session {
         let mut stream = stream::iter(chunks)
             .map(|(_index, chunk_offset, chunk_size)| {
                 let path = path_buf.clone();
-                let file_key = file_key;
-                let nonce = nonce;
                 let upload_url = upload_url.clone();
                 let file_name_clone = file_name.clone();
                 let transfer_http = transfer_http.clone();
@@ -642,15 +640,10 @@ impl Session {
             {
                 if let Some(thumbnail_result) = crate::preview::generate_thumbnail(path) {
                     match thumbnail_result {
-                        Ok(thumbnail_data) => {
-                            match self
-                                .upload_node_attribute(&thumbnail_data, "0", &file_key)
-                                .await
-                            {
-                                Ok(handle) => Some(handle),
-                                Err(_) => None,
-                            }
-                        }
+                        Ok(thumbnail_data) => (self
+                            .upload_node_attribute(&thumbnail_data, "0", &file_key)
+                            .await)
+                            .ok(),
                         Err(_) => None,
                     }
                 } else {
@@ -786,6 +779,7 @@ impl Session {
     }
 
     /// Shared upload finalization: creates the file node on MEGA after all chunks are uploaded.
+    #[allow(clippy::too_many_arguments)]
     async fn finalize_upload(
         &mut self,
         upload_handle: &str,
@@ -803,7 +797,7 @@ impl Session {
         let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
         let pad_len = 16 - (attrs_bytes.len() % 16);
         let mut padded_attrs = attrs_bytes;
-        padded_attrs.extend(std::iter::repeat(0).take(pad_len));
+        padded_attrs.extend(std::iter::repeat_n(0, pad_len));
         let encrypted_attrs = aes128_cbc_encrypt(&padded_attrs, file_key);
         let attrs_b64 = base64url_encode(&encrypted_attrs);
 
@@ -853,49 +847,48 @@ impl Session {
         let seqtag = self.track_seqtag_from_response(&response);
 
         // Parse result; accept "f" array when available.
-        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array()) {
-            if let Some(node_obj) = nodes_array.get(0) {
-                let node = self
-                    .parse_node(node_obj)
-                    .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
+        if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array())
+            && let Some(node_obj) = nodes_array.first()
+        {
+            let node = self
+                .parse_node(node_obj)
+                .ok_or_else(|| MegaError::Custom("Failed to parse new node".to_string()))?;
 
-                // Find parent path
-                let parent_path_str = {
-                    let parent_path = self
-                        .nodes
-                        .iter()
-                        .find(|n| n.handle == parent_handle)
-                        .and_then(|n| n.path.as_ref())
-                        .map(|p| p.as_str())
-                        .unwrap_or("");
+            // Find parent path
+            let parent_path_str = {
+                let parent_path = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.handle == parent_handle)
+                    .and_then(|n| n.path.as_ref())
+                    .map(|p| p.as_str())
+                    .unwrap_or("");
 
-                    if !parent_path.is_empty() {
-                        format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
-                    } else {
-                        format!("/{}", node.name)
-                    }
-                };
-
-                self.nodes.push(node.clone());
-                if let Some(last_node) = self.nodes.last_mut() {
-                    last_node.path = Some(parent_path_str);
+                if !parent_path.is_empty() {
+                    format!("{}/{}", parent_path.trim_end_matches('/'), node.name)
+                } else {
+                    format!("/{}", node.name)
                 }
+            };
 
-                let _ = seqtag;
-                return Ok(node);
+            self.nodes.push(node.clone());
+            if let Some(last_node) = self.nodes.last_mut() {
+                last_node.path = Some(parent_path_str);
             }
+
+            let _ = seqtag;
+            return Ok(node);
         }
 
         // Accept seqtag array response with error list.
-        if let Some(arr) = response.as_array() {
-            if let Some(errors) = arr.get(1) {
-                if let Some(code) = first_error_code(errors) {
-                    return Err(MegaError::ApiError {
-                        code: code as i32,
-                        message: ApiErrorCode::from(code).description().to_string(),
-                    });
-                }
-            }
+        if let Some(arr) = response.as_array()
+            && let Some(errors) = arr.get(1)
+            && let Some(code) = first_error_code(errors)
+        {
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: ApiErrorCode::from(code).description().to_string(),
+            });
         }
 
         let _ = seqtag;
@@ -925,10 +918,10 @@ fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
 
     if let Some(arr) = errors.as_array() {
         for v in arr {
-            if let Some(code) = v.as_i64() {
-                if code != 0 {
-                    return Some(code);
-                }
+            if let Some(code) = v.as_i64()
+                && code != 0
+            {
+                return Some(code);
             }
         }
         return None;
@@ -936,10 +929,10 @@ fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
 
     if let Some(obj) = errors.as_object() {
         for v in obj.values() {
-            if let Some(code) = v.as_i64() {
-                if code != 0 {
-                    return Some(code);
-                }
+            if let Some(code) = v.as_i64()
+                && code != 0
+            {
+                return Some(code);
             }
         }
     }

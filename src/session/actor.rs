@@ -1669,40 +1669,36 @@ impl SessionActor {
             attempts,
             ready_at,
         }) = self.key_work_queue.back_mut()
+            && *attempts == 0
         {
-            if *attempts == 0 {
-                queued_work.merge_from(work);
-                *ready_at = now;
-                self.deferred_key_work_coalesced =
-                    self.deferred_key_work_coalesced.saturating_add(1);
-                debug!(
-                    deferred_key_work_enqueued = self.deferred_key_work_enqueued,
-                    deferred_key_work_coalesced = self.deferred_key_work_coalesced,
-                    deferred_key_work_queue_len = self.key_work_queue.len(),
-                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
-                    "coalesced deferred key work from action packets"
-                );
-                return;
-            }
+            queued_work.merge_from(work);
+            *ready_at = now;
+            self.deferred_key_work_coalesced = self.deferred_key_work_coalesced.saturating_add(1);
+            debug!(
+                deferred_key_work_enqueued = self.deferred_key_work_enqueued,
+                deferred_key_work_coalesced = self.deferred_key_work_coalesced,
+                deferred_key_work_queue_len = self.key_work_queue.len(),
+                deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                "coalesced deferred key work from action packets"
+            );
+            return;
         }
         let mut queued_work = work;
-        if self.key_work_queue.len() >= MAX_DEFERRED_KEY_WORK_QUEUE {
-            if let Some(DeferredKeyWork::FromActionPacket {
+        if self.key_work_queue.len() >= MAX_DEFERRED_KEY_WORK_QUEUE
+            && let Some(DeferredKeyWork::FromActionPacket {
                 work: oldest_work, ..
             }) = self.key_work_queue.pop_front()
-            {
-                queued_work.merge_from(oldest_work);
-                self.deferred_key_work_coalesced =
-                    self.deferred_key_work_coalesced.saturating_add(1);
-                debug!(
-                    deferred_key_work_enqueued = self.deferred_key_work_enqueued,
-                    deferred_key_work_coalesced = self.deferred_key_work_coalesced,
-                    deferred_key_work_queue_len = self.key_work_queue.len(),
-                    deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
-                    queue_limit = MAX_DEFERRED_KEY_WORK_QUEUE,
-                    "deferred key work queue at capacity; merged oldest item into new work"
-                );
-            }
+        {
+            queued_work.merge_from(oldest_work);
+            self.deferred_key_work_coalesced = self.deferred_key_work_coalesced.saturating_add(1);
+            debug!(
+                deferred_key_work_enqueued = self.deferred_key_work_enqueued,
+                deferred_key_work_coalesced = self.deferred_key_work_coalesced,
+                deferred_key_work_queue_len = self.key_work_queue.len(),
+                deferred_key_work_queue_hwm = self.deferred_key_work_queue_hwm,
+                queue_limit = MAX_DEFERRED_KEY_WORK_QUEUE,
+                "deferred key work queue at capacity; merged oldest item into new work"
+            );
         }
         self.key_work_queue
             .push_back(DeferredKeyWork::FromActionPacket {
@@ -2095,7 +2091,7 @@ impl SessionActor {
                 let _ = reply.send(res);
             }
             SessionCommand::Nodes { reply } => {
-                let res: Result<Vec<Node>> = Ok(self.session.nodes().iter().cloned().collect());
+                let res: Result<Vec<Node>> = Ok(self.session.nodes().to_vec());
                 let _ = reply.send(res);
             }
             SessionCommand::ListContacts { reply } => {

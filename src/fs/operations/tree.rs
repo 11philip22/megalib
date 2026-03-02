@@ -20,11 +20,11 @@ impl Session {
     ///
     /// # Example
     /// ```no_run
-    /// # use megalib::Session;
+    /// # use megalib::SessionHandle;
     /// # async fn example() -> megalib::error::Result<()> {
-    /// let mut session = Session::login("user@example.com", "password").await?;
+    /// let mut session = SessionHandle::login("user@example.com", "password").await?;
     /// session.refresh().await?;
-    /// let nodes = session.list("/Root", false)?;
+    /// let nodes = session.list("/Root", false).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -76,26 +76,25 @@ impl Session {
 
         // Preload share keys for our own folders so children can decrypt when no ok entry is usable.
         for node_json in nodes_array {
-            if let Some(1) = node_json.get("t").and_then(|v| v.as_i64()) {
-                if let (Some(handle), Some(kstr)) = (
+            if let Some(1) = node_json.get("t").and_then(|v| v.as_i64())
+                && let (Some(handle), Some(kstr)) = (
                     node_json.get("h").and_then(|v| v.as_str()),
                     node_json.get("k").and_then(|v| v.as_str()),
-                ) {
-                    for part in kstr.split('/') {
-                        if let Some((key_handle, encrypted_key)) = part.split_once(':') {
-                            if key_handle == self.user_handle {
-                                if let Ok(enc) = base64url_decode(encrypted_key) {
-                                    let dec = aes128_ecb_decrypt(&enc, self.master_key());
-                                    if dec.len() >= 16 {
-                                        let mut key = [0u8; 16];
-                                        key.copy_from_slice(&dec[..16]);
-                                        self.share_keys.entry(handle.to_string()).or_insert(key);
-                                        // Also populate key_manager for upgraded flows.
-                                        if self.key_manager.is_ready() {
-                                            self.key_manager.add_share_key_from_str(handle, &key);
-                                        }
-                                    }
-                                }
+                )
+            {
+                for part in kstr.split('/') {
+                    if let Some((key_handle, encrypted_key)) = part.split_once(':')
+                        && key_handle == self.user_handle
+                        && let Ok(enc) = base64url_decode(encrypted_key)
+                    {
+                        let dec = aes128_ecb_decrypt(&enc, self.master_key());
+                        if dec.len() >= 16 {
+                            let mut key = [0u8; 16];
+                            key.copy_from_slice(&dec[..16]);
+                            self.share_keys.entry(handle.to_string()).or_insert(key);
+                            // Also populate key_manager for upgraded flows.
+                            if self.key_manager.is_ready() {
+                                self.key_manager.add_share_key_from_str(handle, &key);
                             }
                         }
                     }
@@ -145,14 +144,13 @@ impl Session {
                 // Determine if RSA or AES based on key length (megatools heuristic)
                 if k.len() > 22 {
                     // RSA-encrypted share key (from another user)
-                    if let Ok(encrypted) = base64url_decode(k) {
-                        if let Some(decrypted) = self.rsa_key().decrypt(&encrypted) {
-                            if decrypted.len() >= 16 {
-                                let mut key = [0u8; 16];
-                                key.copy_from_slice(&decrypted[..16]);
-                                self.share_keys.entry(h.to_string()).or_insert(key);
-                            }
-                        }
+                    if let Ok(encrypted) = base64url_decode(k)
+                        && let Some(decrypted) = self.rsa_key().decrypt(&encrypted)
+                        && decrypted.len() >= 16
+                    {
+                        let mut key = [0u8; 16];
+                        key.copy_from_slice(&decrypted[..16]);
+                        self.share_keys.entry(h.to_string()).or_insert(key);
                     }
                 } else {
                     // AES-encrypted share key (your own share)
@@ -243,11 +241,11 @@ impl Session {
                     self.share_keys.get(key_handle).map(|k| k as &[u8; 16])
                 };
 
-                if let Some(key) = decrypt_key {
-                    if let Ok(encrypted) = base64url_decode(encrypted_key) {
-                        let decrypted = aes128_ecb_decrypt(&encrypted, key);
-                        return Some(decrypted);
-                    }
+                if let Some(key) = decrypt_key
+                    && let Ok(encrypted) = base64url_decode(encrypted_key)
+                {
+                    let decrypted = aes128_ecb_decrypt(&encrypted, key);
+                    return Some(decrypted);
                 }
             }
         }
@@ -332,11 +330,11 @@ impl Session {
         }
 
         // Find parent and prepend its path
-        if let Some(parent_handle) = &node.parent_handle {
-            if let Some(&parent_idx) = handle_map.get(parent_handle.as_str()) {
-                let parent_path = Self::build_node_path(nodes, parent_idx, handle_map, depth + 1);
-                return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
-            }
+        if let Some(parent_handle) = &node.parent_handle
+            && let Some(&parent_idx) = handle_map.get(parent_handle.as_str())
+        {
+            let parent_path = Self::build_node_path(nodes, parent_idx, handle_map, depth + 1);
+            return format!("{}/{}", parent_path.trim_end_matches('/'), node.name);
         }
 
         format!("/{}", node.name)

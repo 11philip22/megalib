@@ -111,15 +111,15 @@ impl Session {
         let response = response?;
 
         // Check for error code
-        if let Some(err_code) = response.as_i64() {
-            if err_code < 0 {
-                // Fix: Fully qualified path to ApiErrorCode
-                let error_code = crate::api::ApiErrorCode::from(err_code);
-                return Err(MegaError::ApiError {
-                    code: err_code as i32,
-                    message: error_code.description().to_string(),
-                });
-            }
+        if let Some(err_code) = response.as_i64()
+            && err_code < 0
+        {
+            // Fix: Fully qualified path to ApiErrorCode
+            let error_code = crate::api::ApiErrorCode::from(err_code);
+            return Err(MegaError::ApiError {
+                code: err_code as i32,
+                message: error_code.description().to_string(),
+            });
         }
         let _ = self.track_seqtag_from_response(&response);
 
@@ -168,9 +168,8 @@ impl Session {
             let children: Vec<String> = session
                 .nodes
                 .iter()
-                .filter_map(|n| {
-                    (n.parent_handle.as_deref() == Some(handle)).then(|| n.handle.clone())
-                })
+                .filter(|&n| n.parent_handle.as_deref() == Some(handle))
+                .map(|n| n.handle.clone())
                 .collect();
 
             for child in children {

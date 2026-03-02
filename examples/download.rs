@@ -42,7 +42,9 @@ async fn main() -> Result<()> {
     let node = session
         .stat(&args.remote_path)
         .await?
-        .ok_or_else(|| megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path)))?
+        .ok_or_else(|| {
+            megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path))
+        })?
         .clone();
 
     println!("Found node: {} ({} bytes)", node.name, node.size);

@@ -105,8 +105,8 @@ impl MegaRsaKey {
         // Let's implement a private helper here since it's needed.
 
         let mut pos = 0;
-        let m = read_mpi(&data, &mut pos).map_err(|e| e)?;
-        let e = read_mpi(&data, &mut pos).map_err(|e| e)?;
+        let m = read_mpi(&data, &mut pos)?;
+        let e = read_mpi(&data, &mut pos)?;
 
         // For public key, we don't have p, q, d, u.
         // We can fill them with zero or make them Option in struct?
@@ -225,7 +225,7 @@ pub fn read_mpi(data: &[u8], pos: &mut usize) -> Result<BigUint, String> {
     }
 
     let bit_len = u16::from_be_bytes([data[*pos], data[*pos + 1]]) as usize;
-    let byte_len = (bit_len + 7) / 8;
+    let byte_len = bit_len.div_ceil(8);
     *pos += 2;
 
     if *pos + byte_len > data.len() {
@@ -302,7 +302,7 @@ fn is_probably_prime(n: &BigUint, rounds: usize) -> bool {
         let a = loop {
             let bytes: Vec<u8> = (0..n.to_bytes_be().len()).map(|_| rng.r#gen()).collect();
             let candidate = BigUint::from_bytes_be(&bytes) % n;
-            if candidate >= BigUint::from(2u32) && candidate <= &n_minus_1 - 1u32 {
+            if candidate >= BigUint::from(2u32) && candidate < n_minus_1 {
                 break candidate;
             }
         };
@@ -374,7 +374,7 @@ fn mod_inverse(a: &BigUint, m: &BigUint) -> Option<BigUint> {
     }
 
     if old_s.is_negative() {
-        old_s = old_s + &m;
+        old_s += &m;
     }
 
     Some(old_s.to_biguint().unwrap())

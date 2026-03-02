@@ -123,7 +123,11 @@ async fn ensure_folder(session: &SessionHandle, path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn upload_and_export(session: &SessionHandle, local: &str, remote_folder: &str) -> Result<()> {
+async fn upload_and_export(
+    session: &SessionHandle,
+    local: &str,
+    remote_folder: &str,
+) -> Result<()> {
     println!("Uploading {local} to {remote_folder} ...");
     let remote_path = format!("{}/", remote_folder.trim_end_matches('/'));
     let node = session.upload(local, &remote_path).await?;
