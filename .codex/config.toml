@@ -2,6 +2,9 @@
 command = "agentic-codebase-mcp"
 args = []
 
+[mcp_servers.agentic-codebase.env]
+ACB_DEFAULT_GRAPH = "./agents/project.acb"
+
 [mcp_servers.agentic-memory]
 command = "agentic-memory-mcp"
 args = ["serve"]

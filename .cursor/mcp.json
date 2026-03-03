@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agentic-memory": {
+      "command": "agentic-memory-mcp",
+      "args": ["serve"]
+    },
+    "codebase-cpp": {
+      "command": "agentic-codebase-mcp",
+      "args": ["serve", "--graph", "./agents/sdk.acb"]
+    },
+    "codebase-rust": {
+      "command": "agentic-codebase-mcp",
+      "args": ["serve", "--graph", "./agents/project.acb"]
+    }
+  }
+}
