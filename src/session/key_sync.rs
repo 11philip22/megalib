@@ -387,6 +387,7 @@ impl Session {
         }
 
         if changed {
+            self.drain_pending_nodes();
             // clear cv warning if everyone verified
             self.maybe_clear_cv_warning();
             if persist_immediately {
@@ -750,6 +751,7 @@ impl Session {
         merged.merge_from(&self.key_manager);
         self.key_manager = merged;
         self.rebuild_share_key_cache();
+        self.drain_pending_nodes();
 
         // propagate cached blobs
         self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);

@@ -10,6 +10,9 @@ use crate::error::{MegaError, Result};
 use crate::fs::node::{Node, NodeType};
 use crate::session::Session;
 
+/// Maximum number of nodes in the deferred key queue before oldest entries are dropped.
+const MAX_PENDING_NODES: usize = 4096;
+
 impl Session {
     /// Refresh the filesystem tree from the server.
     ///
@@ -102,9 +105,10 @@ impl Session {
             }
         }
 
+        self.pending_nodes.clear();
         let mut nodes = Vec::new();
         for node_json in nodes_array {
-            if let Some(mut node) = self.parse_node(node_json) {
+            if let Some(mut node) = self.try_parse_or_stash(node_json) {
                 if let Some(link) = public_links.get(&node.handle) {
                     node.link = Some(link.clone());
                 }
@@ -117,6 +121,10 @@ impl Session {
 
         // Store nodes
         self.nodes = nodes;
+
+        // Drain any nodes that became decryptable after share keys were loaded above.
+        self.drain_pending_nodes();
+
         self.nodes_state_ready = true;
         self.recompute_state_current();
         self.action_packets_current =
@@ -229,6 +237,97 @@ impl Session {
         })
     }
 
+    /// Try to parse a node; stash its JSON in the pending queue if the key is unavailable.
+    ///
+    /// Returns the parsed [`Node`] on success. If parsing fails because the
+    /// required share key hasn't arrived yet, the raw JSON is pushed into
+    /// `self.pending_nodes` and `None` is returned. Structurally invalid or
+    /// corrupt entries are silently dropped (not stashed).
+    pub(crate) fn try_parse_or_stash(&mut self, json: &Value) -> Option<Node> {
+        // Fast path: if parse succeeds, nothing to decide.
+        if let Some(node) = self.parse_node(json) {
+            return Some(node);
+        }
+
+        // Structural validity: "h" and "t" must exist with valid types.
+        let handle = json.get("h").and_then(|v| v.as_str())?;
+        let node_type = json
+            .get("t")
+            .and_then(|v| v.as_i64())
+            .and_then(NodeType::from_i64)?;
+
+        // Only file/folder nodes are candidates for deferred key decryption.
+        if !matches!(node_type, NodeType::File | NodeType::Folder) {
+            return None;
+        }
+
+        // A "k" field is required for key decryption.
+        let key_str = json.get("k").and_then(|v| v.as_str())?;
+
+        // Check whether any handle in "k" is one we currently recognise.
+        let has_recognized_handle = key_str.split('/').any(|part| {
+            part.split_once(':')
+                .map(|(h, _)| h == self.user_handle || self.share_keys.contains_key(h))
+                .unwrap_or(false)
+        });
+
+        if !has_recognized_handle {
+            // No recognised handle — a share key may arrive later.
+            self.stash_pending_node(json.clone(), handle);
+        } else if self.decrypt_node_key(key_str).is_some() {
+            // Key decrypted but attrs could not be parsed — possibly stale share key.
+            self.stash_pending_node(json.clone(), handle);
+        }
+        // Otherwise a recognised handle exists but the key itself couldn't be
+        // decrypted (base64 / AES failure) — data is corrupt, don't stash.
+
+        None
+    }
+
+    fn stash_pending_node(&mut self, json: Value, handle: &str) {
+        if self.pending_nodes.len() >= MAX_PENDING_NODES {
+            tracing::warn!(
+                pending_count = self.pending_nodes.len(),
+                "pending_nodes queue at capacity ({MAX_PENDING_NODES}), dropping oldest entry"
+            );
+            self.pending_nodes.remove(0);
+        }
+        tracing::debug!(node_handle = handle, "stashing node with missing key");
+        self.pending_nodes.push(json);
+    }
+
+    /// Re-attempt parsing for every stashed node now that share keys may have changed.
+    ///
+    /// Nodes that still cannot be decrypted are put back in the queue.
+    /// Returns `true` if at least one node was recovered.
+    pub(crate) fn drain_pending_nodes(&mut self) -> bool {
+        if self.pending_nodes.is_empty() {
+            return false;
+        }
+        let pending = std::mem::take(&mut self.pending_nodes);
+        let count = pending.len();
+        let mut recovered = 0usize;
+        for json in pending {
+            if let Some(node) = self.parse_node(&json) {
+                tracing::debug!(node_handle = %node.handle, "recovered node from pending queue");
+                self.upsert_node(node);
+                recovered += 1;
+            } else {
+                self.pending_nodes.push(json);
+            }
+        }
+        if recovered > 0 {
+            Self::build_node_paths(&mut self.nodes);
+        }
+        tracing::debug!(
+            recovered,
+            remaining = self.pending_nodes.len(),
+            total = count,
+            "drain_pending_nodes complete"
+        );
+        recovered > 0
+    }
+
     /// Decrypt a node key from the "k" field.
     fn decrypt_node_key(&self, key_str: &str) -> Option<Vec<u8>> {
         // Key format: "handle:encrypted_key" or "handle:encrypted_key/handle2:key2"
@@ -338,5 +437,157 @@ impl Session {
         }
 
         format!("/{}", node.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::base64::base64url_encode;
+    use crate::crypto::aes::{aes128_cbc_encrypt, aes128_ecb_encrypt};
+    use crate::session::Session;
+
+    use super::MAX_PENDING_NODES;
+
+    /// Build a folder-node JSON blob whose key is encrypted under `encrypt_key`
+    /// and whose `"k"` handle is `key_handle`.
+    fn make_folder_node_json(
+        handle: &str,
+        name: &str,
+        key_handle: &str,
+        encrypt_key: &[u8; 16],
+    ) -> serde_json::Value {
+        let node_key = [0xAA; 16];
+        let enc_key = aes128_ecb_encrypt(&node_key, encrypt_key);
+        let k_field = format!("{}:{}", key_handle, base64url_encode(&enc_key));
+
+        // Attrs: "MEGA{\"n\":\"<name>\"}" zero-padded to 16-byte boundary.
+        let attrs_plain = format!("MEGA{{\"n\":\"{name}\"}}");
+        let mut padded = attrs_plain.into_bytes();
+        let rem = padded.len() % 16;
+        if rem != 0 {
+            padded.resize(padded.len() + (16 - rem), 0);
+        }
+        let attrs_enc = aes128_cbc_encrypt(&padded, &node_key);
+        let a_field = base64url_encode(&attrs_enc);
+
+        json!({
+            "h": handle,
+            "p": "root",
+            "t": 1,
+            "ts": 12345,
+            "k": k_field,
+            "a": a_field,
+        })
+    }
+
+    #[test]
+    fn drain_recovers_stashed_node_after_share_key_added() {
+        let mut session = Session::test_dummy();
+        let share_key: [u8; 16] = [0x02; 16];
+        let node_json = make_folder_node_json("nodeA", "shared_folder", "shareXYZ", &share_key);
+
+        // Share key not present — try_parse_or_stash should stash.
+        let result = session.try_parse_or_stash(&node_json);
+        assert!(result.is_none());
+        assert_eq!(session.pending_nodes.len(), 1);
+        assert!(session.nodes.is_empty());
+
+        // Add the share key.
+        session.share_keys.insert("shareXYZ".to_string(), share_key);
+
+        // Drain should recover the node.
+        assert!(session.drain_pending_nodes());
+        assert!(session.pending_nodes.is_empty());
+        assert_eq!(session.nodes.len(), 1);
+        assert_eq!(session.nodes[0].handle, "nodeA");
+        assert_eq!(session.nodes[0].name, "shared_folder");
+    }
+
+    #[test]
+    fn structurally_invalid_json_is_not_stashed() {
+        let mut session = Session::test_dummy();
+
+        // Missing "h"
+        let no_handle = json!({"t": 1, "k": "x:y", "a": "z"});
+        assert!(session.try_parse_or_stash(&no_handle).is_none());
+        assert!(session.pending_nodes.is_empty());
+
+        // Missing "t"
+        let no_type = json!({"h": "abc", "k": "x:y", "a": "z"});
+        assert!(session.try_parse_or_stash(&no_type).is_none());
+        assert!(session.pending_nodes.is_empty());
+
+        // Invalid type value
+        let bad_type = json!({"h": "abc", "t": 999, "k": "x:y", "a": "z"});
+        assert!(session.try_parse_or_stash(&bad_type).is_none());
+        assert!(session.pending_nodes.is_empty());
+
+        // Missing "k" field for a file
+        let no_key = json!({"h": "abc", "t": 0, "a": "z"});
+        assert!(session.try_parse_or_stash(&no_key).is_none());
+        assert!(session.pending_nodes.is_empty());
+    }
+
+    #[test]
+    fn corrupt_data_with_recognised_handle_is_not_stashed() {
+        let mut session = Session::test_dummy();
+
+        // Key handle matches user but encrypted key is garbage base64.
+        let corrupt = json!({
+            "h": "badnode",
+            "t": 0,
+            "p": "root",
+            "k": "myhandle:!!!invalid-base64!!!",
+            "a": "also-garbage",
+        });
+        assert!(session.try_parse_or_stash(&corrupt).is_none());
+        assert!(session.pending_nodes.is_empty());
+    }
+
+    #[test]
+    fn queue_cap_is_enforced() {
+        let mut session = Session::test_dummy();
+
+        // Fill beyond capacity.
+        for i in 0..MAX_PENDING_NODES + 10 {
+            let node = json!({
+                "h": format!("node{i}"),
+                "t": 1,
+                "p": "root",
+                "k": format!("unknown_handle{}:AAAA", i),
+                "a": "AAAA",
+            });
+            session.try_parse_or_stash(&node);
+        }
+
+        assert_eq!(session.pending_nodes.len(), MAX_PENDING_NODES);
+
+        // The oldest entries should have been dropped — the last one should be present.
+        let last_h = session
+            .pending_nodes
+            .last()
+            .and_then(|v| v.get("h"))
+            .and_then(|v| v.as_str())
+            .unwrap();
+        let expected = format!("node{}", MAX_PENDING_NODES + 9);
+        assert_eq!(last_h, expected);
+    }
+
+    #[test]
+    fn drain_with_no_pending_is_noop() {
+        let mut session = Session::test_dummy();
+        assert!(!session.drain_pending_nodes());
+    }
+
+    #[test]
+    fn root_nodes_parse_directly_without_stashing() {
+        let mut session = Session::test_dummy();
+        let root_json = json!({"h": "rootH", "t": 2, "ts": 0});
+        let node = session.try_parse_or_stash(&root_json);
+        assert!(node.is_some());
+        assert!(session.pending_nodes.is_empty());
+        assert_eq!(node.unwrap().name, "Root");
     }
 }

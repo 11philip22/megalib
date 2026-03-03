@@ -348,6 +348,7 @@ impl Session {
                 self.key_manager
                     .add_share_key_with_flags(handle, &key, true, in_use);
             }
+            self.drain_pending_nodes();
         }
 
         let sharee_id = pending.or(target);
@@ -421,7 +422,7 @@ impl Session {
 
         let mut changed = false;
         for node_json in nodes_array {
-            if let Some(node) = self.parse_node(node_json) {
+            if let Some(node) = self.try_parse_or_stash(node_json) {
                 changed |= self.upsert_node(node);
             }
         }
@@ -534,7 +535,7 @@ impl Session {
         Ok(false)
     }
 
-    fn upsert_node(&mut self, node: Node) -> bool {
+    pub(crate) fn upsert_node(&mut self, node: Node) -> bool {
         if let Some(idx) = self.nodes.iter().position(|n| n.handle == node.handle) {
             self.nodes[idx] = node;
             true

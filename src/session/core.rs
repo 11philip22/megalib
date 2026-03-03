@@ -41,6 +41,8 @@ pub(crate) struct Session {
     pub user_handle: String,
     /// Cached filesystem nodes
     pub(crate) nodes: Vec<Node>,
+    /// Raw JSON for nodes whose keys could not yet be decrypted (deferred key queue).
+    pub(crate) pending_nodes: Vec<Value>,
     /// Share keys for shared folders
     pub(crate) share_keys: HashMap<String, [u8; 16]>,
     /// Outgoing shares by node handle (sharee handle or "EXP").
@@ -144,6 +146,7 @@ impl Session {
             name,
             user_handle,
             nodes: Vec::new(),
+            pending_nodes: Vec::new(),
             share_keys: HashMap::new(),
             outshares: HashMap::new(),
             pending_outshares: HashMap::new(),
@@ -1181,6 +1184,27 @@ pub struct FolderSessionBlob {
 }
 
 #[cfg(test)]
+impl Session {
+    /// Construct a minimal Session for unit tests outside the `session` module.
+    pub(crate) fn test_dummy() -> Self {
+        use crate::crypto::MegaRsaKey;
+        Session::new_internal(
+            ApiClient::new(),
+            "test_sid".to_string(),
+            None,
+            [0x01; 16],
+            MegaRsaKey::generate().unwrap(),
+            "test@example.com".to_string(),
+            None,
+            "myhandle".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::MegaRsaKey;
@@ -1197,6 +1221,7 @@ mod tests {
             name: None,
             user_handle: "handle".to_string(),
             nodes: Vec::new(),
+            pending_nodes: Vec::new(),
             keys_downgrade_detected: false,
             share_keys: HashMap::new(),
             outshares: HashMap::new(),
