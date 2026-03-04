@@ -341,12 +341,23 @@ impl Session {
         }
 
         if let Some(key) = share_key {
-            self.share_keys.insert(handle.to_string(), key);
+            let in_use = access.is_none_or(|r| r >= 0);
+            self.key_manager
+                .add_share_key_with_flags(handle, &key, true, in_use);
             changed = true;
-            if self.key_manager.is_ready() {
-                let in_use = access.is_none_or(|r| r >= 0);
-                self.key_manager
-                    .add_share_key_with_flags(handle, &key, true, in_use);
+            // Update share metadata on the affected node.
+            if let Some(node) = self.nodes.iter_mut().find(|n| n.handle == handle) {
+                if outbound {
+                    node.is_outshare = true;
+                } else {
+                    node.is_inshare = true;
+                }
+                if let Some(r) = access {
+                    node.share_access = Some(r as i32);
+                }
+                if node.share_key.is_none() {
+                    node.share_key = Some(key);
+                }
             }
             self.drain_pending_nodes();
         }

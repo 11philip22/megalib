@@ -2,7 +2,7 @@
 
 use super::utils::normalize_path;
 use crate::error::Result;
-use crate::fs::node::Node;
+use crate::fs::node::{Node, NodeType};
 use crate::session::Session;
 
 impl Session {
@@ -150,5 +150,44 @@ impl Session {
             }
         }
         false
+    }
+
+    /// Return all inbound share root nodes.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithInShares`.
+    pub fn nodes_with_inshares(&self) -> Vec<&Node> {
+        self.nodes.iter().filter(|n| n.is_inshare).collect()
+    }
+
+    /// Return all outbound share root nodes.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithOutShares`.
+    pub fn nodes_with_outshares(&self) -> Vec<&Node> {
+        self.nodes.iter().filter(|n| n.is_outshare).collect()
+    }
+
+    /// Return nodes with pending outgoing shares (not yet accepted/confirmed).
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithPendingOutShares`.
+    pub fn nodes_with_pending_outshares(&self) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|n| self.pending_outshares.contains_key(&n.handle))
+            .collect()
+    }
+
+    /// Return the Cloud Drive root, Inbox, Trash, and all inbound share roots.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getRootNodesAndInshares`.
+    pub fn root_nodes_and_inshares(&self) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.node_type,
+                    NodeType::Root | NodeType::Inbox | NodeType::Trash
+                ) || n.is_inshare
+            })
+            .collect()
     }
 }

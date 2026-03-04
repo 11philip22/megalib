@@ -124,14 +124,17 @@ impl Session {
         let _ = self.track_seqtag_from_response(&response);
 
         // Remember the share key locally so children uploaded later can reuse it.
-        self.share_keys
-            .entry(node_handle.to_string())
-            .or_insert(share_key);
-        if self.key_manager.is_ready() {
-            let _ = self.key_manager.set_share_key_trusted(node_handle, true);
-            let _ = self.key_manager.set_share_key_in_use(node_handle, true);
-            let _ = self.persist_keys_attribute().await;
+        if self
+            .key_manager
+            .get_share_key_from_str(node_handle)
+            .is_none()
+        {
+            self.key_manager
+                .add_share_key_from_str(node_handle, &share_key);
         }
+        let _ = self.key_manager.set_share_key_trusted(node_handle, true);
+        let _ = self.key_manager.set_share_key_in_use(node_handle, true);
+        let _ = self.persist_keys_attribute().await;
 
         Ok(())
     }
@@ -141,11 +144,16 @@ impl Session {
         let mut current = Some(start_handle.to_string());
 
         while let Some(handle) = current {
-            if let Some(key) = self.share_keys.get(&handle) {
-                return Some((handle, *key));
+            // Short-circuit: if the node carries its own share key, use it.
+            if let Some(node) = self.nodes.iter().find(|n| n.handle == handle)
+                && let Some(sk) = node.share_key
+            {
+                let sh = node.share_handle.clone().unwrap_or_else(|| handle.clone());
+                return Some((sh, sk));
             }
-            if let Some(k) = self.share_key_from_manager(&handle) {
-                return Some((handle, k));
+
+            if let Some(key) = self.key_manager.get_share_key_from_str(&handle) {
+                return Some((handle, key));
             }
 
             current = self

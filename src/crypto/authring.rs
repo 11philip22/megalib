@@ -21,6 +21,17 @@ pub enum AuthState {
     Changed = 2,
 }
 
+/// Key/signature family that an authring tracks.
+///
+/// Mirrors the C++ SDK's `AuthRing::keyTypeToAuthringType` /
+/// `AuthRing::signatureTypeToAuthringType` mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthringType {
+    Ed25519,
+    Cu25519,
+    Rsa,
+}
+
 /// Stored fingerprint and verification state for a contact.
 #[derive(Debug, Clone)]
 pub struct AuthEntry {
@@ -157,6 +168,62 @@ impl AuthRing {
         out
     }
 
+    /// Check whether a user handle is tracked in this authring.
+    ///
+    /// Mirrors the C++ SDK's `AuthRing::isTracked`.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::AuthRing;
+    ///
+    /// let handle = base64url_encode(&[3u8; 8]);
+    /// let mut ring = AuthRing::default();
+    /// assert!(!ring.is_tracked(&handle));
+    /// ring.update(&handle, b"key", false);
+    /// assert!(ring.is_tracked(&handle));
+    /// ```
+    pub fn is_tracked(&self, handle_b64: &str) -> bool {
+        self.entries.contains_key(handle_b64)
+    }
+
+    /// Return all tracked user handles.
+    ///
+    /// Mirrors the C++ SDK's `AuthRing::getTrackedUsers`.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::base64::base64url_encode;
+    /// use megalib::crypto::AuthRing;
+    ///
+    /// let h1 = base64url_encode(&[4u8; 8]);
+    /// let h2 = base64url_encode(&[5u8; 8]);
+    /// let mut ring = AuthRing::default();
+    /// ring.update(&h1, b"k1", false);
+    /// ring.update(&h2, b"k2", false);
+    /// let users = ring.tracked_users();
+    /// assert_eq!(users.len(), 2);
+    /// ```
+    pub fn tracked_users(&self) -> Vec<&str> {
+        self.entries.keys().map(String::as_str).collect()
+    }
+
+    /// Get the authentication method (verification state) for a handle.
+    ///
+    /// SDK-named alias for [`get_state`](Self::get_state), mirroring
+    /// `AuthRing::getAuthMethod` in the C++ SDK.
+    pub fn get_auth_method(&self, handle_b64: &str) -> Option<AuthState> {
+        self.get_state(handle_b64)
+    }
+
+    /// Compute the SHA-256 fingerprint of a public key (SDK-named alias).
+    ///
+    /// Equivalent to [`compute_fingerprint`](Self::compute_fingerprint),
+    /// matching the C++ SDK's `AuthRing::fingerprint` naming.
+    pub fn fingerprint(pubkey: &[u8]) -> Vec<u8> {
+        Self::compute_fingerprint(pubkey)
+    }
+
     /// Deserialize from an LTLV map.
     ///
     /// Unknown or invalid entries are skipped.
@@ -228,6 +295,69 @@ impl AuthRing {
         }
         ring
     }
+}
+
+impl AuthringType {
+    /// Map a key type string to its authring type.
+    ///
+    /// Mirrors the C++ SDK's `AuthRing::keyTypeToAuthringType`.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::AuthringType;
+    ///
+    /// assert_eq!(AuthringType::from_key_type("Ed25519"), Some(AuthringType::Ed25519));
+    /// assert_eq!(AuthringType::from_key_type("Cu25519"), Some(AuthringType::Cu25519));
+    /// assert_eq!(AuthringType::from_key_type("RSA"), Some(AuthringType::Rsa));
+    /// assert_eq!(AuthringType::from_key_type("unknown"), None);
+    /// ```
+    pub fn from_key_type(key_type: &str) -> Option<Self> {
+        match key_type {
+            "Ed25519" => Some(Self::Ed25519),
+            "Cu25519" => Some(Self::Cu25519),
+            "RSA" => Some(Self::Rsa),
+            _ => None,
+        }
+    }
+
+    /// Map a signature type string to its authring type.
+    ///
+    /// Mirrors the C++ SDK's `AuthRing::signatureTypeToAuthringType`.
+    ///
+    /// # Examples
+    /// ```
+    /// use megalib::crypto::AuthringType;
+    ///
+    /// assert_eq!(AuthringType::from_signature_type("Ed25519"), Some(AuthringType::Ed25519));
+    /// assert_eq!(AuthringType::from_signature_type("RSA"), Some(AuthringType::Rsa));
+    /// assert_eq!(AuthringType::from_signature_type("unknown"), None);
+    /// ```
+    pub fn from_signature_type(sig_type: &str) -> Option<Self> {
+        match sig_type {
+            "Ed25519" => Some(Self::Ed25519),
+            "RSA" => Some(Self::Rsa),
+            _ => None,
+        }
+    }
+}
+
+/// Check whether a user attribute name refers to an authring.
+///
+/// Returns `true` for `"*!authring"`, `"*!authCu255"`, and `"*!authRSA"`.
+///
+/// Mirrors the C++ SDK's `User::isAuthring`.
+///
+/// # Examples
+/// ```
+/// use megalib::crypto::is_authring_attr;
+///
+/// assert!(is_authring_attr("*!authring"));
+/// assert!(is_authring_attr("*!authCu255"));
+/// assert!(is_authring_attr("*!authRSA"));
+/// assert!(!is_authring_attr("*!keys"));
+/// ```
+pub fn is_authring_attr(attr: &str) -> bool {
+    matches!(attr, "*!authring" | "*!authCu255" | "*!authRSA")
 }
 
 /// Parse a handle from input if it looks like a base64url user handle.

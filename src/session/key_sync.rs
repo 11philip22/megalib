@@ -11,9 +11,9 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::api::ApiErrorCode;
 use crate::base64::{base64url_decode, base64url_encode};
+use crate::crypto::AuthState;
 use crate::crypto::aes::{aes128_ecb_decrypt, aes128_ecb_encrypt};
 use crate::crypto::key_manager::{KeyManager, PendingUid};
-use crate::crypto::{AuthRing, AuthState};
 use crate::error::{MegaError, Result};
 use crate::session::Session;
 use crate::session::core::Contact;
@@ -230,17 +230,6 @@ impl Session {
         Ok((token, items))
     }
 
-    /// Rebuild the in-memory share key cache from the KeyManager share table.
-    fn rebuild_share_key_cache(&mut self) {
-        self.share_keys.clear();
-        for sk in &self.key_manager.share_keys {
-            let mut k = [0u8; 16];
-            k.copy_from_slice(&sk.key);
-            let handle_b64 = base64url_encode(&sk.handle);
-            self.share_keys.entry(handle_b64).or_insert(k);
-        }
-    }
-
     async fn promote_pending_shares_internal(&mut self, persist_immediately: bool) -> Result<bool> {
         if !self.key_manager.is_ready() {
             return Ok(false);
@@ -273,11 +262,7 @@ impl Session {
         let pending_out = self.key_manager.pending_out.clone();
         for entry in pending_out {
             let handle_b64 = base64url_encode(&entry.node_handle);
-            let Some(share_key) = self
-                .key_manager
-                .get_share_key_from_str(&handle_b64)
-                .or_else(|| self.share_keys.get(&handle_b64).copied())
-            else {
+            let Some(share_key) = self.key_manager.get_share_key_from_str(&handle_b64) else {
                 continue;
             };
 
@@ -304,34 +289,40 @@ impl Session {
 
             // Update authrings with latest pubkeys
             if !contact.cu25519.is_empty() {
-                self.authring_cu
-                    .update(&recipient_handle_b64, &contact.cu25519, contact.verified);
+                self.key_manager.authring_cu.update(
+                    &recipient_handle_b64,
+                    &contact.cu25519,
+                    contact.verified,
+                );
             }
             if !contact.ed25519.is_empty() {
-                self.authring_ed
-                    .update(&recipient_handle_b64, &contact.ed25519, contact.verified);
+                self.key_manager.authring_ed.update(
+                    &recipient_handle_b64,
+                    &contact.ed25519,
+                    contact.verified,
+                );
             }
 
-            if self.manual_verification {
-                // Require authring Cu AND Ed entries to be Verified
+            if self.key_manager.manual_verification {
                 let cu_ok = self
+                    .key_manager
                     .authring_cu
                     .get_state(&recipient_handle_b64)
                     .filter(|s| *s == AuthState::Verified)
                     .is_some();
                 let ed_ok = self
+                    .key_manager
                     .authring_ed
                     .get_state(&recipient_handle_b64)
                     .filter(|s| *s == AuthState::Verified)
                     .is_some();
                 if !(cu_ok && ed_ok) {
-                    // mark warning flag 'cv'
-                    self.warnings.set_cv(true);
+                    self.key_manager.warnings.set_cv(true);
                     continue;
                 }
             }
 
-            if self.manual_verification && !contact.verified {
+            if self.key_manager.manual_verification && !contact.verified {
                 // Manual verification required; leave pending.
                 continue;
             }
@@ -381,8 +372,6 @@ impl Session {
             let _ = self
                 .key_manager
                 .remove_pending_in(&entry.node_handle_b64, &entry.user_handle);
-            self.share_keys
-                .insert(entry.node_handle_b64.clone(), share_key);
             changed = true;
         }
 
@@ -411,11 +400,7 @@ impl Session {
             return false;
         }
         let handles: HashSet<String> = self.nodes.iter().map(|n| n.handle.clone()).collect();
-        let changed = self.key_manager.clear_in_use_not_in(&handles);
-        if changed {
-            self.rebuild_share_key_cache();
-        }
-        changed
+        self.key_manager.clear_in_use_not_in(&handles)
     }
 
     /// Remove share keys whose roots are missing from the current node graph.
@@ -438,7 +423,6 @@ impl Session {
         let mut changed = false;
         for h in removals {
             if self.key_manager.remove_share_key(&h) {
-                self.share_keys.remove(&h);
                 changed = true;
             }
         }
@@ -468,39 +452,42 @@ impl Session {
         let mut fingerprint_changed = false;
 
         if let Some(cu) = cu_pub {
-            let prev = self.authring_cu.get_state(contact_handle_b64);
-            let st = self.authring_cu.update(contact_handle_b64, cu, verified);
+            let prev = self.key_manager.authring_cu.get_state(contact_handle_b64);
+            let st = self
+                .key_manager
+                .authring_cu
+                .update(contact_handle_b64, cu, verified);
             fingerprint_changed |= prev.is_some() && st == AuthState::Changed;
         }
         if let Some(ed) = ed_pub {
-            let prev = self.authring_ed.get_state(contact_handle_b64);
-            let st = self.authring_ed.update(contact_handle_b64, ed, verified);
+            let prev = self.key_manager.authring_ed.get_state(contact_handle_b64);
+            let st = self
+                .key_manager
+                .authring_ed
+                .update(contact_handle_b64, ed, verified);
             fingerprint_changed |= prev.is_some() && st == AuthState::Changed;
         }
 
-        if self.manual_verification {
+        if self.key_manager.manual_verification {
             let cu_verified = self
+                .key_manager
                 .authring_cu
                 .get_state(contact_handle_b64)
                 .filter(|s| *s == AuthState::Verified)
                 .is_some();
             let ed_verified = self
+                .key_manager
                 .authring_ed
                 .get_state(contact_handle_b64)
                 .filter(|s| *s == AuthState::Verified)
                 .is_some();
             if !(cu_verified && ed_verified) {
-                if let Some(entry) = self.warnings.0.iter_mut().find(|(k, _)| k == "cv") {
-                    entry.1 = b"1".to_vec();
-                } else {
-                    self.warnings.0.push(("cv".to_string(), b"1".to_vec()));
-                }
+                self.key_manager.warnings.set_cv(true);
             }
         }
 
         // Clear trusted flags globally if a fingerprint changed (conservative).
         if fingerprint_changed && self.key_manager.clear_trusted_all() {
-            self.rebuild_share_key_cache();
             changed = true;
         }
 
@@ -608,19 +595,21 @@ impl Session {
 
     /// Convenience wrapper for action-packet processing to clear cv flag when all contacts verified.
     pub fn maybe_clear_cv_warning(&mut self) {
-        if self.warnings.cv_enabled() {
+        if self.key_manager.warnings.cv_enabled() {
             let any_unverified = self
+                .key_manager
                 .authring_cu
                 .entries
                 .iter()
                 .any(|(_, e)| e.state != AuthState::Verified)
                 || self
+                    .key_manager
                     .authring_ed
                     .entries
                     .iter()
                     .any(|(_, e)| e.state != AuthState::Verified);
             if !any_unverified {
-                self.warnings.set_cv(false);
+                self.key_manager.warnings.set_cv(false);
             }
         }
     }
@@ -750,15 +739,7 @@ impl Session {
         let mut merged = remote.clone();
         merged.merge_from(&self.key_manager);
         self.key_manager = merged;
-        self.rebuild_share_key_cache();
         self.drain_pending_nodes();
-
-        // propagate cached blobs
-        self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
-        self.authring_cu = AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
-        self.backups = self.key_manager.backups.clone();
-        self.warnings = self.key_manager.warnings.clone();
-        self.manual_verification = self.key_manager.manual_verification;
 
         let mut changed = false;
         if include_pending_promotions {
@@ -816,12 +797,6 @@ impl Session {
         self.keys_persist_inflight = true;
 
         let result = async {
-            // Sync cached auth/backups/warnings before encoding
-            self.key_manager.auth_ed25519 = self.authring_ed.serialize_ltlv();
-            self.key_manager.auth_cu25519 = self.authring_cu.serialize_ltlv();
-            self.key_manager.backups = self.backups.clone();
-            self.key_manager.warnings = self.warnings.clone();
-            self.key_manager.manual_verification = self.manual_verification;
             // ensure priv_rsa is in the container if session has one and km lacks it
             if self.key_manager.priv_rsa.is_empty() && self.has_valid_rsa_key() {
                 let encoded = self.rsa_key().encode_private_key(&self.master_key);
@@ -845,7 +820,6 @@ impl Session {
                 {
                     Ok(_) => {
                         self.key_manager.generation = self.key_manager.generation.saturating_add(1);
-                        self.rebuild_share_key_cache();
                         self.last_keys_blob_b64 = Some(blob_b64);
                         return Ok(());
                     }
@@ -862,7 +836,6 @@ impl Session {
                             {
                                 remote.merge_from(&desired);
                                 self.key_manager = remote;
-                                self.rebuild_share_key_cache();
                                 continue;
                             }
                         }

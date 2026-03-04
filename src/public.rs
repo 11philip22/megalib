@@ -555,6 +555,11 @@ fn parse_public_node(
         path: None,
         link: None,
         file_attr,
+        share_key: None,
+        share_handle: None,
+        is_inshare: false,
+        is_outshare: false,
+        share_access: None,
     })
 }
 

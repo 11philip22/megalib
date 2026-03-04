@@ -73,6 +73,16 @@ pub struct Node {
     pub(crate) link: Option<String>,
     /// File attributes (fa)
     pub(crate) file_attr: Option<String>,
+    /// Share key used to decrypt this node (SDK `getSharekey` parity).
+    pub(crate) share_key: Option<[u8; 16]>,
+    /// Handle of the share root this node belongs to.
+    pub(crate) share_handle: Option<String>,
+    /// Whether this node is an inbound share root.
+    pub(crate) is_inshare: bool,
+    /// Whether this node is an outbound share root.
+    pub(crate) is_outshare: bool,
+    /// Access level if shared (0=read, 1=rw, 2=full).
+    pub(crate) share_access: Option<i32>,
 }
 
 impl Node {
@@ -130,19 +140,41 @@ impl Node {
 
     /// Check if this node is writable.
     ///
-    /// For your own nodes, this always returns true. Nodes from shares
-    /// may have restricted permissions, but the current implementation
-    /// assumes all cached nodes are writable.
-    ///
-    /// # Returns
-    /// `true` if the node can be modified
+    /// Own nodes are always writable. For shared nodes, checks the
+    /// access level (2 = full access grants write).
     pub fn is_writable(&self) -> bool {
-        // For now, all user's own nodes are writable
-        // In the future, this could check share permissions
-        matches!(
-            self.node_type,
-            NodeType::File | NodeType::Folder | NodeType::Root | NodeType::Trash | NodeType::Inbox
-        )
+        if self.is_inshare {
+            self.share_access.unwrap_or(-1) >= 1
+        } else {
+            matches!(
+                self.node_type,
+                NodeType::File
+                    | NodeType::Folder
+                    | NodeType::Root
+                    | NodeType::Trash
+                    | NodeType::Inbox
+            )
+        }
+    }
+
+    /// Get the share key that was used to decrypt this node, if any.
+    pub fn share_key(&self) -> Option<&[u8; 16]> {
+        self.share_key.as_ref()
+    }
+
+    /// Check if this node is an inbound share root.
+    pub fn is_inshare(&self) -> bool {
+        self.is_inshare
+    }
+
+    /// Check if this node is an outbound share root.
+    pub fn is_outshare(&self) -> bool {
+        self.is_outshare
+    }
+
+    /// Get the access level if this node is shared (0=read, 1=rw, 2=full).
+    pub fn share_access(&self) -> Option<i32> {
+        self.share_access
     }
 }
 
@@ -211,6 +243,11 @@ mod tests {
             path: None,
             link: None,
             file_attr: None,
+            share_key: None,
+            share_handle: None,
+            is_inshare: false,
+            is_outshare: false,
+            share_access: None,
         };
 
         assert!(file_node.is_file());
@@ -228,6 +265,11 @@ mod tests {
             path: None,
             link: None,
             file_attr: None,
+            share_key: None,
+            share_handle: None,
+            is_inshare: false,
+            is_outshare: false,
+            share_access: None,
         };
 
         assert!(!folder_node.is_file());
@@ -247,6 +289,11 @@ mod tests {
             path: None,
             link: Some("LINK_HANDLE".to_string()),
             file_attr: None,
+            share_key: None,
+            share_handle: None,
+            is_inshare: false,
+            is_outshare: false,
+            share_access: None,
         };
 
         assert!(node.is_exported());

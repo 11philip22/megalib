@@ -94,9 +94,7 @@ impl Session {
                         if dec.len() >= 16 {
                             let mut key = [0u8; 16];
                             key.copy_from_slice(&dec[..16]);
-                            self.share_keys.entry(handle.to_string()).or_insert(key);
-                            // Also populate key_manager for upgraded flows.
-                            if self.key_manager.is_ready() {
+                            if self.key_manager.get_share_key_from_str(handle).is_none() {
                                 self.key_manager.add_share_key_from_str(handle, &key);
                             }
                         }
@@ -113,6 +111,58 @@ impl Session {
                     node.link = Some(link.clone());
                 }
                 nodes.push(node);
+            }
+        }
+
+        // Mark inshare/outshare flags on nodes.
+        {
+            // Build an owned handle->index map for parent lookups.
+            let handle_idx: HashMap<String, usize> = nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.handle.clone(), i))
+                .collect();
+
+            // Collect parent types so we can read them without borrowing nodes.
+            let parent_types: Vec<Option<NodeType>> = nodes
+                .iter()
+                .map(|n| {
+                    n.parent_handle
+                        .as_ref()
+                        .and_then(|ph| handle_idx.get(ph))
+                        .map(|&pidx| nodes[pidx].node_type)
+                })
+                .collect();
+
+            for i in 0..nodes.len() {
+                if self.outshares.contains_key(&nodes[i].handle)
+                    || self.pending_outshares.contains_key(&nodes[i].handle)
+                {
+                    nodes[i].is_outshare = true;
+                }
+
+                if nodes[i].share_key.is_some() && nodes[i].node_type == NodeType::Folder {
+                    let is_inshare = match parent_types[i] {
+                        None => true,
+                        Some(pt) => matches!(pt, NodeType::Root | NodeType::Network),
+                    };
+                    if is_inshare {
+                        nodes[i].is_inshare = true;
+                    }
+                }
+
+                if nodes[i].is_inshare {
+                    let handle = nodes[i].handle.clone();
+                    if let Some(node_json) = nodes_array
+                        .iter()
+                        .find(|j| j.get("h").and_then(|v| v.as_str()) == Some(&handle))
+                    {
+                        nodes[i].share_access = node_json
+                            .get("r")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| v as i32);
+                    }
+                }
             }
         }
 
@@ -149,25 +199,24 @@ impl Session {
                 ok.get("h").and_then(|v| v.as_str()),
                 ok.get("k").and_then(|v| v.as_str()),
             ) {
-                // Determine if RSA or AES based on key length (megatools heuristic)
                 if k.len() > 22 {
-                    // RSA-encrypted share key (from another user)
                     if let Ok(encrypted) = base64url_decode(k)
                         && let Some(decrypted) = self.rsa_key().decrypt(&encrypted)
                         && decrypted.len() >= 16
                     {
                         let mut key = [0u8; 16];
                         key.copy_from_slice(&decrypted[..16]);
-                        self.share_keys.entry(h.to_string()).or_insert(key);
+                        if self.key_manager.get_share_key_from_str(h).is_none() {
+                            self.key_manager.add_share_key_from_str(h, &key);
+                        }
                     }
-                } else {
-                    // AES-encrypted share key (your own share)
-                    if let Ok(encrypted) = base64url_decode(k) {
-                        let decrypted = aes128_ecb_decrypt(&encrypted, self.master_key());
-                        if decrypted.len() >= 16 {
-                            let mut key = [0u8; 16];
-                            key.copy_from_slice(&decrypted[..16]);
-                            self.share_keys.entry(h.to_string()).or_insert(key);
+                } else if let Ok(encrypted) = base64url_decode(k) {
+                    let decrypted = aes128_ecb_decrypt(&encrypted, self.master_key());
+                    if decrypted.len() >= 16 {
+                        let mut key = [0u8; 16];
+                        key.copy_from_slice(&decrypted[..16]);
+                        if self.key_manager.get_share_key_from_str(h).is_none() {
+                            self.key_manager.add_share_key_from_str(h, &key);
                         }
                     }
                 }
@@ -207,17 +256,26 @@ impl Session {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let (name, node_key) = match node_type {
-            NodeType::Root => ("Root".to_string(), Vec::new()),
-            NodeType::Inbox => ("Inbox".to_string(), Vec::new()),
-            NodeType::Trash => ("Trash".to_string(), Vec::new()),
+        let (name, node_key, share_key, share_handle) = match node_type {
+            NodeType::Root => ("Root".to_string(), Vec::new(), None, None),
+            NodeType::Inbox => ("Inbox".to_string(), Vec::new(), None, None),
+            NodeType::Trash => ("Trash".to_string(), Vec::new(), None, None),
             _ => {
-                // Decrypt attributes and node key
                 let attrs_b64 = json.get("a")?.as_str()?;
                 let key_str = json.get("k")?.as_str()?;
-                let node_key = self.decrypt_node_key(key_str)?;
+                let (node_key, used_share_key) = self.decrypt_node_key(key_str)?;
+                let sh = used_share_key.and_then(|_| {
+                    key_str.split('/').find_map(|part| {
+                        let (kh, _) = part.split_once(':')?;
+                        if kh != self.user_handle && self.key_manager.contains_share_key(kh) {
+                            Some(kh.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                });
                 match self.decrypt_node_attrs(attrs_b64, &node_key) {
-                    Some(name) => (name, node_key),
+                    Some(name) => (name, node_key, used_share_key, sh),
                     None => return None,
                 }
             }
@@ -234,6 +292,11 @@ impl Session {
             path: None,
             link: None,
             file_attr,
+            share_key,
+            share_handle,
+            is_inshare: false,
+            is_outshare: false,
+            share_access: None,
         })
     }
 
@@ -267,7 +330,7 @@ impl Session {
         // Check whether any handle in "k" is one we currently recognise.
         let has_recognized_handle = key_str.split('/').any(|part| {
             part.split_once(':')
-                .map(|(h, _)| h == self.user_handle || self.share_keys.contains_key(h))
+                .map(|(h, _)| h == self.user_handle || self.key_manager.contains_share_key(h))
                 .unwrap_or(false)
         });
 
@@ -329,22 +392,26 @@ impl Session {
     }
 
     /// Decrypt a node key from the "k" field.
-    fn decrypt_node_key(&self, key_str: &str) -> Option<Vec<u8>> {
-        // Key format: "handle:encrypted_key" or "handle:encrypted_key/handle2:key2"
+    ///
+    /// Returns `(decrypted_node_key, share_key_used)`. The second element is
+    /// `Some(key)` when a share key (not the master key) performed the decryption,
+    /// matching C++ SDK's `Node::applykey` + `getSharekey`.
+    fn decrypt_node_key(&self, key_str: &str) -> Option<(Vec<u8>, Option<[u8; 16]>)> {
         for part in key_str.split('/') {
             if let Some((key_handle, encrypted_key)) = part.split_once(':') {
-                // Try master key first (if key_handle matches user_handle)
-                let decrypt_key = if key_handle == self.user_handle {
-                    Some(self.master_key())
+                let (decrypt_key_arr, used_share_key) = if key_handle == self.user_handle {
+                    (Some(*self.master_key()), None)
+                } else if let Some(k) = self.key_manager.get_share_key_from_str(key_handle) {
+                    (Some(k), Some(k))
                 } else {
-                    self.share_keys.get(key_handle).map(|k| k as &[u8; 16])
+                    (None, None)
                 };
 
-                if let Some(key) = decrypt_key
+                if let Some(key) = decrypt_key_arr.as_ref()
                     && let Ok(encrypted) = base64url_decode(encrypted_key)
                 {
                     let decrypted = aes128_ecb_decrypt(&encrypted, key);
-                    return Some(decrypted);
+                    return Some((decrypted, used_share_key));
                 }
             }
         }
@@ -495,7 +562,9 @@ mod tests {
         assert!(session.nodes.is_empty());
 
         // Add the share key.
-        session.share_keys.insert("shareXYZ".to_string(), share_key);
+        session
+            .key_manager
+            .add_share_key_from_str("shareXYZ", &share_key);
 
         // Drain should recover the node.
         assert!(session.drain_pending_nodes());

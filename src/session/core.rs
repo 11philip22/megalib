@@ -43,26 +43,15 @@ pub(crate) struct Session {
     pub(crate) nodes: Vec<Node>,
     /// Raw JSON for nodes whose keys could not yet be decrypted (deferred key queue).
     pub(crate) pending_nodes: Vec<Value>,
-    /// Share keys for shared folders
-    pub(crate) share_keys: HashMap<String, [u8; 16]>,
     /// Outgoing shares by node handle (sharee handle or "EXP").
     pub(crate) outshares: HashMap<String, HashSet<String>>,
     /// Pending outgoing shares by node handle (pending handle).
     pub(crate) pending_outshares: HashMap<String, HashSet<String>>,
     /// Known contacts keyed by user handle (base64).
     pub(crate) contacts: HashMap<String, Contact>,
-    /// Minimal key manager for upgraded accounts (^!keys)
+    /// Minimal key manager for upgraded accounts (^!keys).
+    /// Single source of truth for authrings, warnings, backups, and manual_verification.
     pub(crate) key_manager: KeyManager,
-    /// Parsed authring Ed25519
-    pub(crate) authring_ed: AuthRing,
-    /// Parsed authring Cu25519
-    pub(crate) authring_cu: AuthRing,
-    /// Cached backups blob (opaque)
-    pub(crate) backups: Vec<u8>,
-    /// Cached warnings (LTLV map)
-    pub(crate) warnings: crate::crypto::Warnings,
-    /// Manual verification flag
-    pub(crate) manual_verification: bool,
     /// Cached user attributes from `ug` (decoded bytes), to avoid redundant `uga` calls.
     pub(crate) user_attr_cache: HashMap<String, Vec<u8>>,
     /// Cached user attribute versions for upv (e.g. ^!keys version).
@@ -147,16 +136,10 @@ impl Session {
             user_handle,
             nodes: Vec::new(),
             pending_nodes: Vec::new(),
-            share_keys: HashMap::new(),
             outshares: HashMap::new(),
             pending_outshares: HashMap::new(),
             contacts: HashMap::new(),
             key_manager: KeyManager::default(),
-            authring_ed: AuthRing::default(),
-            authring_cu: AuthRing::default(),
-            backups: Vec::new(),
-            warnings: crate::crypto::Warnings::default(),
-            manual_verification: false,
             user_attr_cache,
             user_attr_versions,
             last_keys_blob_b64: None,
@@ -369,8 +352,6 @@ impl Session {
         }
 
         self.key_manager = km;
-        self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
-        self.authring_cu = AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
         Ok(())
     }
 
@@ -445,11 +426,6 @@ impl Session {
     /// Get the master key (for internal use).
     pub(crate) fn master_key(&self) -> &[u8; 16] {
         &self.master_key
-    }
-
-    /// Get a share key from the cached KeyManager-minimal (if present).
-    pub(crate) fn share_key_from_manager(&self, handle: &str) -> Option<[u8; 16]> {
-        self.key_manager.get_share_key_from_str(handle)
     }
 
     /// Get the RSA private key (for decrypting share keys from other users).
@@ -944,13 +920,13 @@ impl Session {
 
     /// Replace authring Ed25519 blob (LTLV) and persist into ^!keys.
     pub async fn set_authring_ed25519(&mut self, blob: Vec<u8>) -> Result<()> {
-        self.authring_ed = AuthRing::deserialize_ltlv(&blob);
+        self.key_manager.authring_ed = AuthRing::deserialize_ltlv(&blob);
         self.persist_keys_attribute().await
     }
 
     /// Replace authring Cu25519 blob (LTLV) and persist into ^!keys.
     pub async fn set_authring_cu25519(&mut self, blob: Vec<u8>) -> Result<()> {
-        self.authring_cu = AuthRing::deserialize_ltlv(&blob);
+        self.key_manager.authring_cu = AuthRing::deserialize_ltlv(&blob);
         self.persist_keys_attribute().await
     }
 
@@ -961,38 +937,38 @@ impl Session {
 
     /// Replace backups blob (opaque) and persist into ^!keys.
     pub async fn set_backups_blob(&mut self, blob: Vec<u8>) -> Result<()> {
-        self.backups = blob;
+        self.key_manager.backups = blob;
         self.persist_keys_attribute().await
     }
 
     /// Update warnings (LTLV map) and persist.
     pub async fn set_warnings(&mut self, warnings: crate::crypto::Warnings) -> Result<()> {
-        self.warnings = warnings;
+        self.key_manager.warnings = warnings;
         self.persist_keys_attribute().await
     }
 
     /// Enable/disable contact verification warning flag (cv) and persist.
     pub async fn set_contact_verification_warning(&mut self, enabled: bool) -> Result<()> {
-        self.warnings.set_cv(enabled);
+        self.key_manager.warnings.set_cv(enabled);
         self.persist_keys_attribute().await
     }
 
     /// Set manual verification flag (gates share-key exchange) and persist.
     pub async fn set_manual_verification(&mut self, enabled: bool) -> Result<()> {
-        self.manual_verification = enabled;
+        self.key_manager.manual_verification = enabled;
         self.persist_keys_attribute().await
     }
 
     /// Check if contact verification warning flag is set.
     pub fn contact_verification_warning(&self) -> bool {
-        self.warnings.cv_enabled()
+        self.key_manager.warnings.cv_enabled()
     }
 
     /// Get authring state for a contact (Ed25519 / Cu25519)
     pub fn authring_state(&self, handle_b64: &str) -> (Option<AuthState>, Option<AuthState>) {
         (
-            self.authring_ed.get_state(handle_b64),
-            self.authring_cu.get_state(handle_b64),
+            self.key_manager.authring_ed.get_state(handle_b64),
+            self.key_manager.authring_cu.get_state(handle_b64),
         )
     }
 
@@ -1006,14 +982,6 @@ impl Session {
         km.decode_container(&enc_keys, &self.master_key)?;
         if km.is_ready() {
             self.last_keys_blob_b64 = Some(base64url_encode(&enc_keys));
-            // populate share_keys map for quick lookup
-            for sk in &km.share_keys {
-                let mut arr: [u8; 16] = [0u8; 16];
-                arr.copy_from_slice(&sk.key);
-                // encode handle back to base64url for map key
-                let handle_b64 = crate::base64::base64url_encode(&sk.handle);
-                self.share_keys.entry(handle_b64).or_insert(arr);
-            }
             self.key_manager = km;
             // If priv RSA is present, propagate into session crypto layer.
             if !self.key_manager.priv_rsa.is_empty()
@@ -1021,12 +989,6 @@ impl Session {
             {
                 self.rsa_key = rsa;
             }
-            // Cache authrings/backups/warnings/manual verification in session for quick access.
-            self.authring_ed = AuthRing::deserialize_ltlv(&self.key_manager.auth_ed25519);
-            self.authring_cu = AuthRing::deserialize_ltlv(&self.key_manager.auth_cu25519);
-            self.backups = self.key_manager.backups.clone();
-            self.warnings = self.key_manager.warnings.clone();
-            self.manual_verification = self.key_manager.manual_verification;
 
             // Process any pending promotions and in-use cleanup after loading.
             self.promote_pending_shares().await?;
@@ -1073,11 +1035,6 @@ impl Session {
             let copy_len = decoded_handle.len().min(8);
             ident[..copy_len].copy_from_slice(&decoded_handle[..copy_len]);
             km.identity = u64::from_le_bytes(ident);
-        }
-
-        // include any cached share_keys (legacy) into ^!keys
-        for (h, k) in self.share_keys.iter() {
-            km.add_share_key_from_str(h, k);
         }
 
         let blob = km.encode_container(&self.master_key)?;
@@ -1223,16 +1180,10 @@ mod tests {
             nodes: Vec::new(),
             pending_nodes: Vec::new(),
             keys_downgrade_detected: false,
-            share_keys: HashMap::new(),
             outshares: HashMap::new(),
             pending_outshares: HashMap::new(),
             contacts: HashMap::new(),
             key_manager: KeyManager::default(),
-            authring_ed: AuthRing::default(),
-            authring_cu: AuthRing::default(),
-            backups: Vec::new(),
-            warnings: crate::crypto::Warnings::default(),
-            manual_verification: false,
             user_attr_cache: HashMap::new(),
             user_attr_versions: HashMap::new(),
             last_keys_blob_b64: None,

@@ -121,14 +121,13 @@ impl Session {
             }
             let _ = self.track_seqtag_from_response(&share_resp);
 
-            // Persist share key into ^!keys only for upgraded accounts, once per export.
-            self.share_keys.insert(handle.clone(), share_key);
-            if self.key_manager.is_ready() {
+            // Persist share key into ^!keys.
+            {
                 let mut keys_changed = false;
                 let existing = self.key_manager.get_share_key_from_str(&handle);
                 if existing.map(|k| k != share_key).unwrap_or(true) {
                     self.key_manager
-                        .add_share_key_with_flags(&handle, &share_key, true, true); // trusted + in_use
+                        .add_share_key_with_flags(&handle, &share_key, true, true);
                     keys_changed = true;
                 }
                 keys_changed |= self.key_manager.set_share_key_in_use(&handle, true);

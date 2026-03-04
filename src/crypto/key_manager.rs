@@ -5,7 +5,7 @@
 //! identity, privkeys, authrings, share keys, pending shares) and encrypts the container with
 //! AES-128-GCM using the master key.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes128Gcm, Nonce};
@@ -14,6 +14,7 @@ use rand::RngCore;
 use sha2::Sha256;
 
 use crate::base64::base64url_decode;
+use crate::crypto::AuthRing;
 use crate::error::{MegaError, Result};
 
 // Tag constants (from SDK)
@@ -153,9 +154,11 @@ pub struct KeyManager {
     pub priv_ed25519: Vec<u8>,
     pub priv_cu25519: Vec<u8>,
     pub priv_rsa: Vec<u8>,
-    pub auth_ed25519: Vec<u8>,
-    pub auth_cu25519: Vec<u8>,
+    pub authring_ed: AuthRing,
+    pub authring_cu: AuthRing,
     pub share_keys: Vec<ShareKeyEntry>,
+    /// O(1) handle→index into `share_keys` for fast lookups.
+    share_key_index: HashMap<[u8; 6], usize>,
     pub pending_out: Vec<PendingOutEntry>,
     pub pending_in: Vec<PendingInEntry>,
     pub backups: Vec<u8>,
@@ -193,18 +196,14 @@ impl KeyManager {
         Ok(())
     }
 
-    fn union_authring(current: &[u8], incoming: &[u8]) -> Vec<u8> {
-        // merge maps, preferring existing entries
-        let mut map = Self::parse_ltlv_map(current).unwrap_or_default();
-        if let Ok(new_entries) = Self::parse_ltlv_map(incoming) {
-            for (k, v) in new_entries {
-                if !map.iter().any(|(ek, _)| ek == &k) {
-                    map.push((k, v));
-                }
-            }
+    /// Rebuild the handle→index HashMap from the `share_keys` Vec.
+    fn rebuild_share_key_index(&mut self) {
+        self.share_key_index.clear();
+        for (i, sk) in self.share_keys.iter().enumerate() {
+            self.share_key_index.insert(sk.handle, i);
         }
-        Self::serialize_ltlv_map(map)
     }
+
     /// Create a new key manager with default metadata.
     ///
     /// This sets `version = 1`, `generation = 0`, and clears the manual
@@ -293,10 +292,8 @@ impl KeyManager {
             flags |= SHAREKEY_FLAG_IN_USE;
         }
 
-        if let Some(entry) = self
-            .share_keys
-            .iter_mut()
-            .find(|e| e.handle == handle.as_slice())
+        if let Some(&idx) = self.share_key_index.get(&handle)
+            && let Some(entry) = self.share_keys.get_mut(idx)
         {
             entry.key.copy_from_slice(key);
             entry.flags |= flags;
@@ -305,11 +302,13 @@ impl KeyManager {
 
         let mut k = [0u8; 16];
         k.copy_from_slice(key);
+        let idx = self.share_keys.len();
         self.share_keys.push(ShareKeyEntry {
             handle,
             key: k,
             flags,
         });
+        self.share_key_index.insert(handle, idx);
     }
 
     /// Insert or update a share key using a base64url handle.
@@ -364,9 +363,9 @@ impl KeyManager {
     /// ```
     pub fn share_key_flags(&self, handle_b64: &str) -> Option<u8> {
         let decoded = Self::decode_handle(handle_b64)?;
-        self.share_keys
-            .iter()
-            .find(|e| e.handle == decoded)
+        self.share_key_index
+            .get(&decoded)
+            .and_then(|&idx| self.share_keys.get(idx))
             .map(|e| e.flags)
     }
 
@@ -531,10 +530,7 @@ impl KeyManager {
         self.backups = blob;
     }
 
-    /// Replace the Ed25519 authring blob.
-    ///
-    /// The blob is stored verbatim and should use the same LTLV encoding as
-    /// [`crate::crypto::AuthRing::serialize_ltlv`]. No validation is performed here.
+    /// Replace the Ed25519 authring from an LTLV blob.
     ///
     /// # Examples
     /// ```
@@ -549,13 +545,10 @@ impl KeyManager {
     /// km.set_authring_ed25519(ring.serialize_ltlv());
     /// ```
     pub fn set_authring_ed25519(&mut self, blob: Vec<u8>) {
-        self.auth_ed25519 = blob;
+        self.authring_ed = AuthRing::deserialize_ltlv(&blob);
     }
 
-    /// Replace the Cu25519 authring blob.
-    ///
-    /// The blob is stored verbatim and should use the same LTLV encoding as
-    /// [`crate::crypto::AuthRing::serialize_ltlv`]. No validation is performed here.
+    /// Replace the Cu25519 authring from an LTLV blob.
     ///
     /// # Examples
     /// ```
@@ -570,7 +563,7 @@ impl KeyManager {
     /// km.set_authring_cu25519(ring.serialize_ltlv());
     /// ```
     pub fn set_authring_cu25519(&mut self, blob: Vec<u8>) {
-        self.auth_cu25519 = blob;
+        self.authring_cu = AuthRing::deserialize_ltlv(&blob);
     }
 
     /// Borrow the warnings map.
@@ -616,17 +609,22 @@ impl KeyManager {
     /// km.add_share_key_from_str(&handle, &[6u8; 16]);
     /// assert!(km.get_share_key_from_str(&handle).is_some());
     /// ```
+    /// Check if a share key is present for the given base64url handle.
+    pub fn contains_share_key(&self, handle_b64: &str) -> bool {
+        self.get_share_key_from_str(handle_b64).is_some()
+    }
+
     pub fn get_share_key_from_str(&self, handle_b64: &str) -> Option<[u8; 16]> {
         let decoded = base64url_decode(handle_b64).ok()?;
         if decoded.len() != 6 {
             return None;
         }
-        for sk in &self.share_keys {
-            if sk.handle == decoded.as_slice() {
-                return Some(sk.key);
-            }
-        }
-        None
+        let mut h = [0u8; 6];
+        h.copy_from_slice(&decoded);
+        self.share_key_index
+            .get(&h)
+            .and_then(|&idx| self.share_keys.get(idx))
+            .map(|sk| sk.key)
     }
 
     /// Add a pending outgoing share for an email recipient.
@@ -831,10 +829,8 @@ impl KeyManager {
         let Some(handle) = Self::decode_handle(handle_b64) else {
             return false;
         };
-        if let Some(entry) = self
-            .share_keys
-            .iter_mut()
-            .find(|e| e.handle == handle.as_slice())
+        if let Some(&idx) = self.share_key_index.get(&handle)
+            && let Some(entry) = self.share_keys.get_mut(idx)
         {
             if enabled {
                 entry.flags |= flag;
@@ -874,7 +870,10 @@ impl KeyManager {
         if let Some(handle) = Self::decode_handle(handle_b64) {
             let before = self.share_keys.len();
             self.share_keys.retain(|e| e.handle != handle);
-            return self.share_keys.len() != before;
+            if self.share_keys.len() != before {
+                self.rebuild_share_key_index();
+                return true;
+            }
         }
         false
     }
@@ -1028,17 +1027,13 @@ impl KeyManager {
         // priv rsa
         out.extend_from_slice(&Self::tag_header(TAG_PRIV_RSA, self.priv_rsa.len()));
         out.extend_from_slice(&self.priv_rsa);
-        // authrings
-        out.extend_from_slice(&Self::tag_header(
-            TAG_AUTHRING_ED25519,
-            self.auth_ed25519.len(),
-        ));
-        out.extend_from_slice(&self.auth_ed25519);
-        out.extend_from_slice(&Self::tag_header(
-            TAG_AUTHRING_CU25519,
-            self.auth_cu25519.len(),
-        ));
-        out.extend_from_slice(&self.auth_cu25519);
+        // authrings (serialize AuthRing objects to LTLV blobs)
+        let auth_ed_blob = self.authring_ed.serialize_ltlv();
+        out.extend_from_slice(&Self::tag_header(TAG_AUTHRING_ED25519, auth_ed_blob.len()));
+        out.extend_from_slice(&auth_ed_blob);
+        let auth_cu_blob = self.authring_cu.serialize_ltlv();
+        out.extend_from_slice(&Self::tag_header(TAG_AUTHRING_CU25519, auth_cu_blob.len()));
+        out.extend_from_slice(&auth_cu_blob);
         // share keys
         let sk_blob = self.serialize_share_keys();
         out.extend_from_slice(&Self::tag_header(TAG_SHAREKEYS, sk_blob.len()));
@@ -1107,13 +1102,16 @@ impl KeyManager {
                 }
                 TAG_AUTHRING_ED25519 => {
                     Self::validate_authring(slice)?;
-                    self.auth_ed25519 = slice.to_vec()
+                    self.authring_ed = AuthRing::deserialize_ltlv(slice);
                 }
                 TAG_AUTHRING_CU25519 => {
                     Self::validate_authring(slice)?;
-                    self.auth_cu25519 = slice.to_vec()
+                    self.authring_cu = AuthRing::deserialize_ltlv(slice);
                 }
-                TAG_SHAREKEYS => self.share_keys = Self::parse_share_keys(slice)?,
+                TAG_SHAREKEYS => {
+                    self.share_keys = Self::parse_share_keys(slice)?;
+                    self.rebuild_share_key_index();
+                }
                 TAG_PENDING_OUTSHARES => self.pending_out = Self::parse_pending_out(slice)?,
                 TAG_PENDING_INSHARES => self.pending_in = Self::parse_pending_in(slice)?,
                 TAG_BACKUPS => {
@@ -1371,15 +1369,15 @@ impl KeyManager {
     pub fn merge_from(&mut self, other: &KeyManager) {
         // Merge share keys (overwrite key+flags if handle matches, OR together flags).
         for entry in &other.share_keys {
-            if let Some(existing) = self
-                .share_keys
-                .iter_mut()
-                .find(|e| e.handle == entry.handle)
-            {
-                existing.key = entry.key;
-                existing.flags |= entry.flags;
+            if let Some(&idx) = self.share_key_index.get(&entry.handle) {
+                if let Some(existing) = self.share_keys.get_mut(idx) {
+                    existing.key = entry.key;
+                    existing.flags |= entry.flags;
+                }
             } else {
+                let idx = self.share_keys.len();
                 self.share_keys.push(entry.clone());
+                self.share_key_index.insert(entry.handle, idx);
             }
         }
 
@@ -1420,8 +1418,8 @@ impl KeyManager {
             self.priv_rsa = other.priv_rsa.clone();
         }
         // Union authrings to retain all entries
-        self.auth_ed25519 = Self::union_authring(&self.auth_ed25519, &other.auth_ed25519);
-        self.auth_cu25519 = Self::union_authring(&self.auth_cu25519, &other.auth_cu25519);
+        self.authring_ed.merge_union(&other.authring_ed);
+        self.authring_cu.merge_union(&other.authring_cu);
         if self.backups.is_empty() {
             self.backups = other.backups.clone();
         }
@@ -1460,8 +1458,8 @@ mod tests {
         km.priv_ed25519 = vec![9u8; 32];
         km.priv_cu25519 = vec![8u8; 32];
         km.priv_rsa = Vec::new();
-        km.auth_ed25519 = vec![1, 2, 3];
-        km.auth_cu25519 = vec![4, 5, 6];
+        km.authring_ed = AuthRing::deserialize_ltlv(&[1, 2, 3]);
+        km.authring_cu = AuthRing::deserialize_ltlv(&[4, 5, 6]);
         km.share_keys.push(ShareKeyEntry {
             handle: [1u8; 6],
             key: [7u8; 16],

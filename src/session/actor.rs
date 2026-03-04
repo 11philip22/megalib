@@ -132,6 +132,18 @@ enum SessionCommand {
         ancestor_handle: String,
         reply: oneshot::Sender<Result<bool>>,
     },
+    NodesWithInshares {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    NodesWithOutshares {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    NodesWithPendingOutshares {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    RootNodesAndInshares {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
     Mkdir {
         path: String,
         reply: oneshot::Sender<Result<Node>>,
@@ -745,6 +757,90 @@ impl SessionHandle {
             reply,
         })
         .await
+    }
+
+    /// Return all inbound share root nodes.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithInShares`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::SessionHandle;
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// for node in session.nodes_with_inshares().await? {
+    ///     println!("Inshare: {} ({})", node.name, node.handle);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn nodes_with_inshares(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::NodesWithInshares { reply })
+            .await
+    }
+
+    /// Return all outbound share root nodes.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithOutShares`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::SessionHandle;
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// for node in session.nodes_with_outshares().await? {
+    ///     println!("Outshare: {} ({})", node.name, node.handle);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn nodes_with_outshares(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::NodesWithOutshares { reply })
+            .await
+    }
+
+    /// Return nodes with pending outgoing shares (not yet accepted/confirmed).
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getNodesWithPendingOutShares`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::SessionHandle;
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// for node in session.nodes_with_pending_outshares().await? {
+    ///     println!("Pending outshare: {} ({})", node.name, node.handle);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn nodes_with_pending_outshares(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::NodesWithPendingOutshares { reply })
+            .await
+    }
+
+    /// Return the Cloud Drive root, Inbox, Trash, and all inbound share roots.
+    ///
+    /// Mirrors the C++ SDK's `NodeManager::getRootNodesAndInshares`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use megalib::SessionHandle;
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.refresh().await?;
+    /// for node in session.root_nodes_and_inshares().await? {
+    ///     println!("Root/Inshare: {} ({:?})", node.name, node.node_type);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn root_nodes_and_inshares(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::RootNodesAndInshares { reply })
+            .await
     }
 
     /// Create a folder at the given path.
@@ -2118,6 +2214,42 @@ impl SessionActor {
                     }
                     _ => Ok(false),
                 };
+                let _ = reply.send(res);
+            }
+            SessionCommand::NodesWithInshares { reply } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .nodes_with_inshares()
+                    .into_iter()
+                    .cloned()
+                    .collect());
+                let _ = reply.send(res);
+            }
+            SessionCommand::NodesWithOutshares { reply } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .nodes_with_outshares()
+                    .into_iter()
+                    .cloned()
+                    .collect());
+                let _ = reply.send(res);
+            }
+            SessionCommand::NodesWithPendingOutshares { reply } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .nodes_with_pending_outshares()
+                    .into_iter()
+                    .cloned()
+                    .collect());
+                let _ = reply.send(res);
+            }
+            SessionCommand::RootNodesAndInshares { reply } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .root_nodes_and_inshares()
+                    .into_iter()
+                    .cloned()
+                    .collect());
                 let _ = reply.send(res);
             }
             SessionCommand::Mkdir { path, reply } => {
