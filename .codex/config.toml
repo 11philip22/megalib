@@ -1,10 +1,11 @@
-[mcp_servers.agentic-codebase]
-command = "agentic-codebase-mcp"
-args = []
-
-[mcp_servers.agentic-codebase.env]
-ACB_DEFAULT_GRAPH = "./agents/project.acb"
-
 [mcp_servers.agentic-memory]
 command = "agentic-memory-mcp"
 args = ["serve"]
+
+[mcp_servers.codebase-cpp]
+command = "agentic-codebase-mcp"
+args = ["serve", "--graph", "./agents/sdk.acb"]
+
+[mcp_servers.codebase-rust]
+command = "agentic-codebase-mcp"
+args = ["serve", "--graph", "./agents/project.acb"]

@@ -7,6 +7,7 @@ use clap::Parser;
 use megalib::public::{download_public_file, get_public_file_info};
 use std::fs::File;
 use std::io::BufWriter;
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
 #[command(name = "download_public")]
@@ -15,8 +16,14 @@ struct Args {
     output_file: Option<String>,
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let args = Args::parse();
 
     println!("Fetching file info...");

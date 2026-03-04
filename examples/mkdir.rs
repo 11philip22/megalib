@@ -1,6 +1,7 @@
 use clap::Parser;
 use megalib::SessionHandle;
 use megalib::error::Result;
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
 #[command(name = "mkdir")]
@@ -14,8 +15,14 @@ struct Args {
     path: String,
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_tracing();
     let args = Args::parse();
 
     println!("Logging in...");

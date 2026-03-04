@@ -8,6 +8,7 @@
 
 use clap::Parser;
 use megalib::SessionHandle;
+use tracing_subscriber::{EnvFilter, fmt};
 
 const SESSION_FILE: &str = "mega_session";
 
@@ -22,8 +23,14 @@ struct Args {
     proxy: Option<String>,
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+    fmt().with_env_filter(filter).with_target(false).init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_tracing();
     let args = Args::parse();
 
     println!("Checking for cached session...");
