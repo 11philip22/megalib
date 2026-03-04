@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated tree parsing to carry the share key used for decryption onto nodes and to derive inshare/outshare markers and share access from tree/action-packet data.
 - Updated `Node::is_writable` to respect inbound-share access levels instead of treating all cached nodes as writable.
 - Persisted export/share-created share keys through `^!keys` consistently and switched share-key lookups/updates to indexed `KeyManager` paths.
+- Added `init_tracing()` startup initialization across all runnable examples with `EnvFilter` defaulting to `off`.
+- Gated proxy-debug TLS relaxations (`danger_accept_invalid_certs` and `danger_accept_invalid_hostnames`) behind `MEGALIB_INSECURE_PROXY_TLS` env-var presence.
 
 ### Deprecated
 - None.
@@ -46,4 +48,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - None.
 
 ### Security
-- None.
+- `HttpClient::with_proxy` now keeps TLS certificate and hostname validation enabled by default; insecure proxy TLS mode is opt-in via `MEGALIB_INSECURE_PROXY_TLS`.

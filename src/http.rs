@@ -4,6 +4,8 @@ use crate::error::{MegaError, Result};
 use reqwest::Client;
 use std::time::Duration;
 
+const INSECURE_PROXY_TLS_ENV: &str = "MEGALIB_INSECURE_PROXY_TLS";
+
 /// Transport request classes, used to apply request-specific HTTP policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {
@@ -65,6 +67,10 @@ pub struct HttpClient {
     client: Client,
 }
 
+fn insecure_proxy_tls_enabled() -> bool {
+    std::env::var_os(INSECURE_PROXY_TLS_ENV).is_some()
+}
+
 impl HttpClient {
     /// Create a new HTTP client.
     pub fn new() -> Self {
@@ -78,15 +84,23 @@ impl HttpClient {
 
     /// Create a new HTTP client with a proxy.
     ///
+    /// Set `MEGALIB_INSECURE_PROXY_TLS` to any value to disable certificate and
+    /// hostname validation for proxy debugging.
     pub fn with_proxy(proxy: &str) -> Result<Self> {
         let proxy = reqwest::Proxy::all(proxy)
             .map_err(|e| MegaError::CryptoError(format!("Invalid proxy: {}", e)))?;
 
-        let client = Client::builder()
-            .danger_accept_invalid_certs(true)
-            .danger_accept_invalid_hostnames(true)
+        let mut builder = Client::builder()
             .proxy(proxy)
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+
+        if insecure_proxy_tls_enabled() {
+            builder = builder
+                .danger_accept_invalid_certs(true)
+                .danger_accept_invalid_hostnames(true);
+        }
+
+        let client = builder
             .build()
             .map_err(|e| MegaError::CryptoError(format!("Failed to build client: {}", e)))?;
 
