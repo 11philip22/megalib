@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ApiErrorCode};
 use crate::error::{MegaError, Result};
 
 const BASE_DELAY: Duration = Duration::from_millis(1_000);
@@ -39,6 +39,19 @@ pub(crate) enum ScPollerEvent {
         alerts: Vec<Value>,
         lsn: Option<String>,
     },
+    ReloadRequired {
+        reason: String,
+    },
+    ChannelStopped {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScFailureAction {
+    Retryable,
+    ReloadRequired,
+    StopChannel,
 }
 
 pub(crate) struct ScPoller {
@@ -106,15 +119,37 @@ impl ScPoller {
         }
 
         if let Err(err) = self.poll_sc_until_drained().await {
-            let previous_delay = self.delay;
-            self.delay = (self.delay * 2).min(MAX_DELAY);
-            debug!(
-                stage = "sc_long_poll",
-                error = %err,
-                previous_delay_ms = previous_delay.as_millis() as u64,
-                next_delay_ms = self.delay.as_millis() as u64,
-                "sc channel request failed; backing off"
-            );
+            match classify_sc_failure(&err) {
+                ScFailureAction::Retryable => {
+                    let previous_delay = self.delay;
+                    self.delay = (self.delay * 2).min(MAX_DELAY);
+                    debug!(
+                        stage = "sc_long_poll",
+                        error = %err,
+                        previous_delay_ms = previous_delay.as_millis() as u64,
+                        next_delay_ms = self.delay.as_millis() as u64,
+                        "sc channel request failed; backing off"
+                    );
+                }
+                ScFailureAction::ReloadRequired => {
+                    self.state.scsn = None;
+                    let _ = self
+                        .event_tx
+                        .send(ScPollerEvent::ReloadRequired {
+                            reason: err.to_string(),
+                        })
+                        .await;
+                }
+                ScFailureAction::StopChannel => {
+                    self.state.scsn = None;
+                    let _ = self
+                        .event_tx
+                        .send(ScPollerEvent::ChannelStopped {
+                            reason: err.to_string(),
+                        })
+                        .await;
+                }
+            }
             return;
         }
 
@@ -213,4 +248,65 @@ fn extract_seqtags(packets: &[Value]) -> Vec<String> {
         }
     }
     out
+}
+
+fn classify_sc_failure(err: &MegaError) -> ScFailureAction {
+    match err {
+        MegaError::ApiError { code, .. } => match ApiErrorCode::from(*code as i64) {
+            ApiErrorCode::Again | ApiErrorCode::RateLimit => ScFailureAction::Retryable,
+            // SDK: API_ETOOMANY triggers state reload/fetchnodes.
+            ApiErrorCode::TooManyIps => ScFailureAction::ReloadRequired,
+            // SDK: stopScsn on session-invalid/fatal protocol responses.
+            ApiErrorCode::Expired
+            | ApiErrorCode::NotExist
+            | ApiErrorCode::Blocked
+            | ApiErrorCode::Unknown => ScFailureAction::StopChannel,
+            _ => ScFailureAction::StopChannel,
+        },
+        // Transport and parse errors are treated as retryable channel failures.
+        MegaError::HttpError(_)
+        | MegaError::RequestError(_)
+        | MegaError::JsonError(_)
+        | MegaError::ServerBusy
+        | MegaError::InvalidResponse => ScFailureAction::Retryable,
+        _ => ScFailureAction::Retryable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_retryable_sc_errors() {
+        let err = MegaError::ApiError {
+            code: ApiErrorCode::Again as i32,
+            message: "again".to_string(),
+        };
+        assert_eq!(classify_sc_failure(&err), ScFailureAction::Retryable);
+
+        let err = MegaError::ApiError {
+            code: ApiErrorCode::RateLimit as i32,
+            message: "ratelimit".to_string(),
+        };
+        assert_eq!(classify_sc_failure(&err), ScFailureAction::Retryable);
+    }
+
+    #[test]
+    fn classify_reload_required_sc_errors() {
+        let err = MegaError::ApiError {
+            code: ApiErrorCode::TooManyIps as i32,
+            message: "too many".to_string(),
+        };
+        assert_eq!(classify_sc_failure(&err), ScFailureAction::ReloadRequired);
+    }
+
+    #[test]
+    fn classify_stop_channel_sc_errors() {
+        let err = MegaError::ApiError {
+            code: ApiErrorCode::Expired as i32,
+            message: "expired".to_string(),
+        };
+        assert_eq!(classify_sc_failure(&err), ScFailureAction::StopChannel);
+    }
 }

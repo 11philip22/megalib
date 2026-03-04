@@ -2097,6 +2097,34 @@ impl SessionActor {
                 }
                 self.session.alerts_catchup_pending = false;
             }
+            ScPollerEvent::ReloadRequired { reason } => {
+                debug!(reason, "sc poller requested state reload");
+                match self.session.refresh().await {
+                    Ok(()) => {
+                        self.sync_sc_state_to_poller().await;
+                    }
+                    Err(err) => {
+                        debug!(
+                            reason,
+                            error = %err,
+                            "sc reload failed; pausing sc channel"
+                        );
+                        self.session.scsn = None;
+                        self.session.wsc_url = None;
+                        self.session.sc_catchup = false;
+                        self.sync_sc_state_to_poller().await;
+                    }
+                }
+                self.refresh_runtime_state();
+            }
+            ScPollerEvent::ChannelStopped { reason } => {
+                debug!(reason, "sc poller stopped channel after terminal failure");
+                self.session.scsn = None;
+                self.session.wsc_url = None;
+                self.session.sc_catchup = false;
+                self.sync_sc_state_to_poller().await;
+                self.refresh_runtime_state();
+            }
         }
     }
 

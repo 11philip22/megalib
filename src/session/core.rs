@@ -62,7 +62,7 @@ pub(crate) struct Session {
     pub(crate) keys_persist_dirty: bool,
     /// Prevent re-entrant ^!keys persistence attempts.
     pub(crate) keys_persist_inflight: bool,
-    /// Last completed token for pending keys feed (pk command)
+    /// Last pending-keys delete token awaiting `pk { d: ... }` acknowledgement.
     pub(crate) pending_keys_token: Option<String>,
     /// Flag set when a ^!keys downgrade is detected
     pub(crate) keys_downgrade_detected: bool,

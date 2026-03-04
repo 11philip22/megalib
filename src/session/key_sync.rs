@@ -87,6 +87,37 @@ fn derive_pairwise_key(priv_cu: &[u8], peer_pub: &[u8]) -> Result<[u8; 16]> {
 }
 
 impl Session {
+    fn has_ed_seen_or_verified(&self, handle_b64: &str) -> bool {
+        matches!(
+            self.key_manager.authring_ed.get_state(handle_b64),
+            Some(AuthState::Seen | AuthState::Verified)
+        )
+    }
+
+    fn has_verified_credentials(&self, handle_b64: &str) -> bool {
+        let cu_verified = self
+            .key_manager
+            .authring_cu
+            .get_state(handle_b64)
+            .filter(|s| *s == AuthState::Verified)
+            .is_some();
+        let ed_verified = self
+            .key_manager
+            .authring_ed
+            .get_state(handle_b64)
+            .filter(|s| *s == AuthState::Verified)
+            .is_some();
+        cu_verified && ed_verified
+    }
+
+    fn verification_required_for_sharekey_exchange(&self, handle_b64: &str) -> bool {
+        if self.key_manager.manual_verification {
+            !self.has_verified_credentials(handle_b64)
+        } else {
+            !self.has_ed_seen_or_verified(handle_b64)
+        }
+    }
+
     /// Fetch a contact's Curve25519/Ed25519 public keys and verification flag.
     ///
     /// This is a best-effort wrapper around the `uk` command. The MEGA API
@@ -189,15 +220,11 @@ impl Session {
     }
 
     /// Fetch pending keys from the server (read variant of 'pk'). Returns lastcompleted token.
-    pub async fn fetch_pending_keys(
-        &mut self,
-        last_completed: Option<&str>,
-    ) -> Result<(String, Vec<(String, String, Vec<u8>)>)> {
-        let mut req = json!({"a": "pk"});
-        if let Some(tok) = last_completed {
-            req["d"] = json!(tok);
-        }
-        let resp = self.api_mut().request_with_allowed(req, &[-9]).await?;
+    pub async fn fetch_pending_keys(&mut self) -> Result<(String, Vec<(String, String, Vec<u8>)>)> {
+        let resp = self
+            .api_mut()
+            .request_with_allowed(json!({"a": "pk"}), &[-9])
+            .await?;
         if resp.as_i64() == Some(-9) {
             return Ok((String::new(), Vec::new()));
         }
@@ -230,21 +257,42 @@ impl Session {
         Ok((token, items))
     }
 
+    /// Delete processed pending keys from the server using the `lastcompleted` token.
+    pub async fn delete_pending_keys(&mut self, last_completed: &str) -> Result<()> {
+        if last_completed.is_empty() {
+            return Ok(());
+        }
+        let resp = self
+            .api_mut()
+            .request(json!({"a":"pk","d": last_completed}))
+            .await?;
+        if let Some(code) = resp.as_i64()
+            && code < 0
+        {
+            let err = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: err.description().to_string(),
+            });
+        }
+        Ok(())
+    }
+
     async fn promote_pending_shares_internal(&mut self, persist_immediately: bool) -> Result<bool> {
         if !self.key_manager.is_ready() {
             return Ok(false);
         }
-        let mut changed = false;
-        // Process remote pending keys feed first (pull then update KM).
-        // avoid simultaneous mutable/immutable borrow by taking token first
-        let token_in = self.pending_keys_token.clone();
-        let (token, remote_items) = self
-            .fetch_pending_keys(token_in.as_deref())
-            .await
-            .unwrap_or_default();
-        if !token.is_empty() {
-            self.pending_keys_token = Some(token);
+        if let Some(token) = self.pending_keys_token.clone()
+            && !token.is_empty()
+            && self.delete_pending_keys(&token).await.is_ok()
+        {
+            self.pending_keys_token = None;
         }
+
+        let mut changed = false;
+        let mut persisted = false;
+        // Process remote pending keys feed first (pull then update KM).
+        let (token, remote_items) = self.fetch_pending_keys().await.unwrap_or_default();
         if !remote_items.is_empty() {
             for (user_b64, share_b64, enc_key) in remote_items {
                 let mut uh = [0u8; 8];
@@ -303,27 +351,8 @@ impl Session {
                 );
             }
 
-            if self.key_manager.manual_verification {
-                let cu_ok = self
-                    .key_manager
-                    .authring_cu
-                    .get_state(&recipient_handle_b64)
-                    .filter(|s| *s == AuthState::Verified)
-                    .is_some();
-                let ed_ok = self
-                    .key_manager
-                    .authring_ed
-                    .get_state(&recipient_handle_b64)
-                    .filter(|s| *s == AuthState::Verified)
-                    .is_some();
-                if !(cu_ok && ed_ok) {
-                    self.key_manager.warnings.set_cv(true);
-                    continue;
-                }
-            }
-
-            if self.key_manager.manual_verification && !contact.verified {
-                // Manual verification required; leave pending.
+            if self.verification_required_for_sharekey_exchange(&recipient_handle_b64) {
+                self.key_manager.warnings.set_cv(true);
                 continue;
             }
 
@@ -351,6 +380,10 @@ impl Session {
                 Ok(c) => c,
                 Err(_) => continue,
             };
+            if self.verification_required_for_sharekey_exchange(&contact_handle_b64) {
+                self.key_manager.warnings.set_cv(true);
+                continue;
+            }
 
             let pairwise = derive_pairwise_key(&self.key_manager.priv_cu25519, &contact.cu25519)?;
             if entry.share_key.len() % 16 != 0 {
@@ -381,6 +414,19 @@ impl Session {
             self.maybe_clear_cv_warning();
             if persist_immediately {
                 self.persist_keys_with_retry().await?;
+                persisted = true;
+            }
+        }
+
+        if !token.is_empty() {
+            if changed && !persisted {
+                self.persist_keys_with_retry().await?;
+            }
+            if self.delete_pending_keys(&token).await.is_err() {
+                // Keep for retry on subsequent key-maintenance passes.
+                self.pending_keys_token = Some(token);
+            } else if self.pending_keys_token.is_some() {
+                self.pending_keys_token = None;
             }
         }
 

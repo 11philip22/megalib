@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persisted export/share-created share keys through `^!keys` consistently and switched share-key lookups/updates to indexed `KeyManager` paths.
 - Added `init_tracing()` startup initialization across all runnable examples with `EnvFilter` defaulting to `off`.
 - Gated proxy-debug TLS relaxations (`danger_accept_invalid_certs` and `danger_accept_invalid_hostnames`) behind `MEGALIB_INSECURE_PROXY_TLS` env-var presence.
+- Aligned SC catch-up endpoint selection with SDK behavior: catch-up polls now use `/sc/wsc`, while non-catch-up polls continue to use `w` (if present) or `/wsc`.
+- Tightened pending share-key promotion verification policy to match SDK defaults: non-manual mode now requires Ed25519 authring state at least `Seen`, while manual mode requires verified credentials.
+- Updated pending-keys processing flow to explicitly separate read and delete-ack (`pk` with `d`) paths and send immediate delete-ack after successful local processing/persist.
 
 ### Deprecated
 - None.
@@ -45,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused `Session::sync_keys_attribute` from `src/session/key_sync.rs`; callers now use `sync_keys_attribute_internal` through startup reconciliation and action-packet key maintenance paths.
 
 ### Fixed
-- None.
+- Added explicit SC poll failure classification and control-flow handling so terminal failures stop the SC channel and reload-required failures trigger a session refresh path instead of generic backoff-only behavior.
+- Added targeted tests for SC catch-up URL selection and SC failure classification to guard parity-sensitive behavior.
 
 ### Security
 - `HttpClient::with_proxy` now keeps TLS certificate and hostname validation enabled by default; insecure proxy TLS mode is opt-in via `MEGALIB_INSECURE_PROXY_TLS`.

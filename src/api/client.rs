@@ -16,7 +16,7 @@ async fn sleep(duration: Duration) {
 const API_URL: &str = "https://g.api.mega.co.nz/cs";
 /// Base URL for SC polling (action packets)
 const WSC_URL: &str = "https://g.api.mega.co.nz/wsc";
-const SC_URL: &str = "https://g.api.mega.co.nz/sc";
+const SC_WSC_URL: &str = "https://g.api.mega.co.nz/sc/wsc";
 /// Base URL for user alerts polling
 const SC_ALERTS_URL: &str = "https://g.api.mega.co.nz/sc?c=50";
 
@@ -29,6 +29,14 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    fn sc_poll_base_url(poll_catchup: bool, wsc_base: Option<&str>) -> &str {
+        if poll_catchup {
+            SC_WSC_URL
+        } else {
+            wsc_base.unwrap_or(WSC_URL)
+        }
+    }
+
     /// Create a new API client.
     pub fn new() -> Self {
         Self {
@@ -365,7 +373,7 @@ impl ApiClient {
         &mut self,
         sn: Option<&str>,
         wsc_base: Option<&str>,
-        use_sc: bool,
+        poll_catchup: bool,
     ) -> Result<(Vec<Value>, String, Option<String>, bool)> {
         let sn = sn.ok_or_else(|| MegaError::Custom("Missing SC sequence number".to_string()))?;
         let sid = self
@@ -373,11 +381,7 @@ impl ApiClient {
             .as_deref()
             .ok_or_else(|| MegaError::Custom("Session ID not set".to_string()))?;
 
-        let base = if use_sc {
-            SC_URL
-        } else {
-            wsc_base.unwrap_or(WSC_URL)
-        };
+        let base = Self::sc_poll_base_url(poll_catchup, wsc_base);
         let mut url = base.to_string();
         let sep = if url.contains('?') { "&" } else { "?" };
         url.push_str(sep);
@@ -675,5 +679,23 @@ mod tests {
         // Clear session
         client.clear_session_id();
         assert!(client.session_id().is_none());
+    }
+
+    #[test]
+    fn test_sc_poll_base_url_catchup_uses_sc_wsc() {
+        assert_eq!(ApiClient::sc_poll_base_url(true, None), SC_WSC_URL);
+        assert_eq!(
+            ApiClient::sc_poll_base_url(true, Some("https://example.invalid/wsc")),
+            SC_WSC_URL
+        );
+    }
+
+    #[test]
+    fn test_sc_poll_base_url_non_catchup_prefers_w_field() {
+        assert_eq!(
+            ApiClient::sc_poll_base_url(false, Some("https://example.invalid/wsc")),
+            "https://example.invalid/wsc"
+        );
+        assert_eq!(ApiClient::sc_poll_base_url(false, None), WSC_URL);
     }
 }
