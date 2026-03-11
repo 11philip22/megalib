@@ -2,7 +2,7 @@
   "mcpServers": {
     "agentic-memory": {
       "command": "agentic-memory-mcp",
-      "args": ["serve"]
+      "args": ["--memory", "./agent/brain.amem", "serve", "--mode", "full"]
     },
     "codebase-cpp": {
       "command": "agentic-codebase-mcp",

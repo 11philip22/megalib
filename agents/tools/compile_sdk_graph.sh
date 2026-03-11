@@ -1,0 +1,1 @@
+acb compile ../sdk/src -o ./agents/sdk.acb

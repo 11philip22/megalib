@@ -1,0 +1,1 @@
+acb compile ./src -o ./agents/project.acb
