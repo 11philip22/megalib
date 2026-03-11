@@ -4,3 +4,4 @@ Cargo.lock
 .DS_Store
 *.bin
 .acb-backups/
+.amem-backups/

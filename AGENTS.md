@@ -16,6 +16,20 @@ Agents must treat discovery outputs as supporting evidence, not as policy.
 
 ---
 
+## Project Context
+
+megalib is a Rust port of the MEGA.nz C++ SDK. The upstream C++ SDK lives at `../sdk` relative to this repository.
+
+**MCP Servers (code graphs and memory):**
+
+- **codebase-cpp** — Code graph for the C++ SDK. Use for parity checks, understanding reference behavior, and porting decisions.
+- **codebase-rust** — Code graph for megalib (this project).
+- **agentic-memory** — Persistent notes across sessions. Use to remember findings, decisions, and context for future conversations.
+
+When investigating behavior, fixing parity gaps, or adding features, consult the C++ SDK via the codebase-cpp graph to ensure correct semantics.
+
+---
+
 ## Source of Truth
 
 Primary behavioral rules are defined in:
