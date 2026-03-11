@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Public folder download no longer returns API -9 "Resource does not exist". The "g" request now includes the folder handle (`n` parameter) in the API URL, matching C++ SDK behavior via `getAuthURI()`.
+
+## [0.10.0]
+
 ### Added
 - Introduced a dedicated SC polling worker in `src/session/sc_poller.rs` to decouple SC long-polling from the actor command lane.
 - Added deferred key-work scheduling and retry/coalescing support for action-packet-driven key operations in the session actor/runtime.

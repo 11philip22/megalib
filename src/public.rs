@@ -8,7 +8,7 @@ use std::io::Write;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, ApiErrorCode};
 use crate::base64::{base64url_decode, base64url_encode};
 use crate::crypto::aes::{aes128_cbc_decrypt, aes128_ctr_decrypt, aes128_ecb_decrypt};
 use crate::error::{MegaError, Result};
@@ -309,15 +309,40 @@ impl PublicFolder {
             return Err(MegaError::Custom("Node is not a file".to_string()));
         }
 
-        // Get download URL
-        let mut api = ApiClient::new();
-        let response = api
-            .request(json!({
-                "a": "g",
-                "g": 1,
-                "n": node.handle
-            }))
-            .await?;
+        // Build URL with folder handle (required for public folder context - parity with C++ getAuthURI)
+        let url = format!(
+            "https://g.api.mega.co.nz/cs?id={}&n={}&v=3",
+            rand::random::<u32>(),
+            self.handle
+        );
+
+        let body = serde_json::to_string(&vec![json!({
+            "a": "g",
+            "g": 1,
+            "n": node.handle
+        })])?;
+
+        let http = HttpClient::new();
+        let response_text = http.post_json(&url, &body, RequestKind::PublicApi).await?;
+        let response: Value = serde_json::from_str(&response_text)?;
+
+        // MEGA returns [error_code] for failures
+        if let Some(arr) = response.as_array()
+            && arr.len() == 1
+            && let Some(code) = arr[0].as_i64()
+            && code < 0
+        {
+            let error_code = ApiErrorCode::from(code);
+            return Err(MegaError::ApiError {
+                code: code as i32,
+                message: error_code.description().to_string(),
+            });
+        }
+
+        let response = response
+            .as_array()
+            .and_then(|arr| arr.first().cloned())
+            .ok_or(MegaError::InvalidResponse)?;
 
         let url = response
             .get("g")
@@ -339,10 +364,10 @@ impl PublicFolder {
 
         // Download and decrypt
         let http = HttpClient::new();
-        let response = http.get(url, RequestKind::PublicTransfer, None).await?;
+        let download_response = http.get(url, RequestKind::PublicTransfer, None).await?;
 
         let mut offset = 0u64;
-        let mut stream = response.bytes_stream();
+        let mut stream = download_response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(MegaError::RequestError)?;
