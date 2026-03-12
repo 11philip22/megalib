@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added explicit `*_by_path` compatibility aliases for the existing path-first session APIs so callers have stable migration names for path-oriented code.
 - Added a new `node_api` example demonstrating cached-node browsing without remote path strings.
 - Added node-first recursive browsing (`descendants`) and batch export (`export_many_nodes`) helpers so remaining recursive-list/export conveniences do not require remote paths.
+- Added node-first child lookup helpers (`child_node_by_name` and `child_node_by_name_type`) for cached-parent navigation without `stat_by_path`.
 
 ### Deprecated
 - Deprecated the old canonical path-first `SessionHandle` method names such as `list`, `stat`, `mkdir`, `mv`, `rename`, `rm`, `export`, `share_folder`, and path-based upload helpers in favor of explicit `*_by_path` aliases or the newer node-first APIs.

@@ -60,4 +60,15 @@ async fn main() {
         let kind = if node.is_file() { "file" } else { "dir" };
         println!("  {} {} [{}]", kind, node.name, node.handle);
     }
+
+    if let Some(documents) = session
+        .child_node_by_name(&root, "Documents")
+        .await
+        .expect("Failed to look up child by name")
+    {
+        println!(
+            "\nFound child by name: {} [{}]",
+            documents.name, documents.handle
+        );
+    }
 }

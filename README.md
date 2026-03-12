@@ -44,7 +44,7 @@
   - Proxy support (HTTP/HTTPS/SOCKS5)
 
 - **Node Operations**:
-  - Preferred node-first browsing via `fetch_nodes`, `root_nodes`, `children`, and `descendants`
+  - Preferred node-first browsing via `fetch_nodes`, `root_nodes`, `children`, `child_node_by_name`, and `descendants`
   - Get node by handle
   - Check ancestor relationships
   - Check write permissions
@@ -85,6 +85,10 @@ async fn main() -> megalib::Result<()> {
 
     for node in session.children(&root).await? {
         println!("{} ({:?})", node.name, node.node_type);
+    }
+
+    if let Some(docs) = session.child_node_by_name(&root, "Documents").await? {
+        println!("Documents handle: {}", docs.handle);
     }
 
     Ok(())

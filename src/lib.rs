@@ -49,6 +49,10 @@
 //!     println!("{} ({:?})", file.name, file.node_type);
 //! }
 //!
+//! if let Some(docs) = session.child_node_by_name(&root, "Documents").await? {
+//!     println!("Found docs folder: {}", docs.handle);
+//! }
+//!
 //! let all_descendants = session.descendants(&root).await?;
 //! println!("{} total descendants", all_descendants.len());
 //!

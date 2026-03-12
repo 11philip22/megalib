@@ -134,6 +134,40 @@ impl Session {
         self.children_by_handle(&parent.handle)
     }
 
+    /// Return a direct child of a node handle by name.
+    pub fn child_node_by_name_handle(&self, parent_handle: &str, name: &str) -> Option<&Node> {
+        self.children_by_handle(parent_handle)
+            .into_iter()
+            .find(|node| node.name == name)
+    }
+
+    /// Return a direct child of a cached node by name.
+    pub fn child_node_by_name(&self, parent: &Node, name: &str) -> Option<&Node> {
+        self.child_node_by_name_handle(&parent.handle, name)
+    }
+
+    /// Return a direct child of a node handle by name and type.
+    pub fn child_node_by_name_type_handle(
+        &self,
+        parent_handle: &str,
+        name: &str,
+        node_type: NodeType,
+    ) -> Option<&Node> {
+        self.children_by_handle(parent_handle)
+            .into_iter()
+            .find(|node| node.name == name && node.node_type == node_type)
+    }
+
+    /// Return a direct child of a cached node by name and type.
+    pub fn child_node_by_name_type(
+        &self,
+        parent: &Node,
+        name: &str,
+        node_type: NodeType,
+    ) -> Option<&Node> {
+        self.child_node_by_name_type_handle(&parent.handle, name, node_type)
+    }
+
     /// Return all descendants of a node handle from the cached tree.
     pub fn descendants_by_handle(&self, parent_handle: &str) -> Vec<&Node> {
         let Some(parent) = self.get_node_by_handle(parent_handle) else {
@@ -328,5 +362,30 @@ mod tests {
             descendant_handles,
             vec!["nested", "deep", "file", "deep-file"]
         );
+    }
+
+    #[test]
+    fn child_lookup_by_name_and_type_uses_cached_parent() {
+        let mut session = Session::test_dummy();
+        session.nodes = vec![
+            node("Root", "root", None, NodeType::Root),
+            node("Docs", "docs-folder", Some("root"), NodeType::Folder),
+            node("Docs", "docs-file", Some("root"), NodeType::File),
+            node("Other", "other", Some("root"), NodeType::Folder),
+        ];
+
+        let root = session.get_node_by_handle("root").unwrap().clone();
+
+        let by_name = session.child_node_by_name(&root, "Docs").unwrap();
+        let by_name_type = session
+            .child_node_by_name_type(&root, "Docs", NodeType::Folder)
+            .unwrap();
+        let by_name_type_handle = session
+            .child_node_by_name_type_handle("root", "Docs", NodeType::File)
+            .unwrap();
+
+        assert_eq!(by_name.handle, "docs-folder");
+        assert_eq!(by_name_type.handle, "docs-folder");
+        assert_eq!(by_name_type_handle.handle, "docs-file");
     }
 }

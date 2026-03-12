@@ -12,7 +12,7 @@ use tracing::debug;
 
 use crate::crypto::{AuthState, Warnings};
 use crate::error::{MegaError, Result};
-use crate::fs::{Node, Quota};
+use crate::fs::{Node, NodeType, Quota};
 use crate::progress::ProgressCallback;
 use crate::session::core::{FolderSessionBlob, Session, SessionBlob};
 use crate::session::key_sync::ActionPacketKeyWork;
@@ -125,6 +125,17 @@ enum SessionCommand {
     },
     GetNodeByHandle {
         handle: String,
+        reply: oneshot::Sender<Result<Option<Node>>>,
+    },
+    ChildNodeByName {
+        parent_handle: String,
+        name: String,
+        reply: oneshot::Sender<Result<Option<Node>>>,
+    },
+    ChildNodeByNameType {
+        parent_handle: String,
+        name: String,
+        node_type: NodeType,
         reply: oneshot::Sender<Result<Option<Node>>>,
     },
     NodeHasAncestor {
@@ -793,6 +804,95 @@ impl SessionHandle {
     pub async fn get_node_by_handle(&self, handle: &str) -> Result<Option<Node>> {
         self.request(|reply| SessionCommand::GetNodeByHandle {
             handle: handle.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    /// Look up a direct child of a cached node by name.
+    ///
+    /// This is the node-first equivalent of taking a parent path and appending one
+    /// segment for cached-tree navigation.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use megalib::{NodeType, SessionHandle};
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.fetch_nodes().await?;
+    /// let root = session
+    ///     .root_nodes()
+    ///     .await?
+    ///     .into_iter()
+    ///     .find(|node| node.node_type == NodeType::Root)
+    ///     .expect("missing root");
+    /// let docs = session.child_node_by_name(&root, "Documents").await?;
+    /// # let _ = docs;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn child_node_by_name(&self, parent: &Node, name: &str) -> Result<Option<Node>> {
+        self.child_node_by_name_handle(&parent.handle, name).await
+    }
+
+    /// Look up a direct child of a cached node handle by name.
+    pub async fn child_node_by_name_handle(
+        &self,
+        parent_handle: &str,
+        name: &str,
+    ) -> Result<Option<Node>> {
+        self.request(|reply| SessionCommand::ChildNodeByName {
+            parent_handle: parent_handle.to_string(),
+            name: name.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    /// Look up a direct child of a cached node by name and type.
+    ///
+    /// Mirrors the C++ SDK's `childNodeByNameType` flow for cached navigation.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use megalib::{NodeType, SessionHandle};
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.fetch_nodes().await?;
+    /// let root = session
+    ///     .root_nodes()
+    ///     .await?
+    ///     .into_iter()
+    ///     .find(|node| node.node_type == NodeType::Root)
+    ///     .expect("missing root");
+    /// let docs = session
+    ///     .child_node_by_name_type(&root, "Documents", NodeType::Folder)
+    ///     .await?;
+    /// # let _ = docs;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn child_node_by_name_type(
+        &self,
+        parent: &Node,
+        name: &str,
+        node_type: NodeType,
+    ) -> Result<Option<Node>> {
+        self.child_node_by_name_type_handle(&parent.handle, name, node_type)
+            .await
+    }
+
+    /// Look up a direct child of a cached node handle by name and type.
+    pub async fn child_node_by_name_type_handle(
+        &self,
+        parent_handle: &str,
+        name: &str,
+        node_type: NodeType,
+    ) -> Result<Option<Node>> {
+        self.request(|reply| SessionCommand::ChildNodeByNameType {
+            parent_handle: parent_handle.to_string(),
+            name: name.to_string(),
+            node_type,
             reply,
         })
         .await
@@ -2690,6 +2790,34 @@ impl SessionActor {
             SessionCommand::GetNodeByHandle { handle, reply } => {
                 let res: Result<Option<Node>> =
                     Ok(self.session.get_node_by_handle(&handle).cloned());
+                let _ = reply.send(res);
+            }
+            SessionCommand::ChildNodeByName {
+                parent_handle,
+                name,
+                reply,
+            } => {
+                let res: Result<Option<Node>> = Ok(self
+                    .session
+                    .get_node_by_handle(&parent_handle)
+                    .and_then(|parent| self.session.child_node_by_name(parent, &name))
+                    .cloned());
+                let _ = reply.send(res);
+            }
+            SessionCommand::ChildNodeByNameType {
+                parent_handle,
+                name,
+                node_type,
+                reply,
+            } => {
+                let res: Result<Option<Node>> = Ok(self
+                    .session
+                    .get_node_by_handle(&parent_handle)
+                    .and_then(|parent| {
+                        self.session
+                            .child_node_by_name_type(parent, &name, node_type)
+                    })
+                    .cloned());
                 let _ = reply.send(res);
             }
             SessionCommand::NodeHasAncestor {
