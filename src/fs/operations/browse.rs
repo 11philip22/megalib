@@ -6,6 +6,19 @@ use crate::fs::node::{Node, NodeType};
 use crate::session::Session;
 
 impl Session {
+    /// Return the Cloud Drive root, Inbox, Trash, and Network nodes.
+    pub fn root_nodes(&self) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.node_type,
+                    NodeType::Root | NodeType::Inbox | NodeType::Trash | NodeType::Network
+                )
+            })
+            .collect()
+    }
+
     /// List files in a directory.
     ///
     /// # Arguments
@@ -108,6 +121,36 @@ impl Session {
         self.nodes.iter().find(|n| n.handle == handle)
     }
 
+    /// Return the direct children of a node handle from the cached tree.
+    pub fn children_by_handle(&self, parent_handle: &str) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|n| n.parent_handle.as_deref() == Some(parent_handle))
+            .collect()
+    }
+
+    /// Return the direct children of a cached node.
+    pub fn children(&self, parent: &Node) -> Vec<&Node> {
+        self.children_by_handle(&parent.handle)
+    }
+
+    /// Return all descendants of a node handle from the cached tree.
+    pub fn descendants_by_handle(&self, parent_handle: &str) -> Vec<&Node> {
+        let Some(parent) = self.get_node_by_handle(parent_handle) else {
+            return Vec::new();
+        };
+
+        self.nodes
+            .iter()
+            .filter(|n| n.handle != parent.handle && self.node_has_ancestor(n, parent))
+            .collect()
+    }
+
+    /// Return all descendants of a cached node.
+    pub fn descendants(&self, parent: &Node) -> Vec<&Node> {
+        self.descendants_by_handle(&parent.handle)
+    }
+
     /// Check if a node has a specific ancestor.
     ///
     /// This walks up the parent chain to check if `ancestor` is in
@@ -189,5 +232,101 @@ impl Session {
                 ) || n.is_inshare
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fs::{Node, NodeType};
+    use crate::session::Session;
+
+    fn node(name: &str, handle: &str, parent_handle: Option<&str>, node_type: NodeType) -> Node {
+        Node {
+            name: name.to_string(),
+            handle: handle.to_string(),
+            parent_handle: parent_handle.map(ToString::to_string),
+            node_type,
+            size: 0,
+            timestamp: 0,
+            key: vec![],
+            path: None,
+            link: None,
+            file_attr: None,
+            share_key: None,
+            share_handle: None,
+            is_inshare: false,
+            is_outshare: false,
+            share_access: None,
+        }
+    }
+
+    #[test]
+    fn root_nodes_returns_system_roots_only() {
+        let mut session = Session::test_dummy();
+        session.nodes = vec![
+            node("Root", "root", None, NodeType::Root),
+            node("Inbox", "inbox", None, NodeType::Inbox),
+            node("Trash", "trash", None, NodeType::Trash),
+            node("Network", "network", None, NodeType::Network),
+            node("Docs", "docs", Some("root"), NodeType::Folder),
+        ];
+
+        let handles: Vec<&str> = session
+            .root_nodes()
+            .into_iter()
+            .map(|n| n.handle.as_str())
+            .collect();
+        assert_eq!(handles, vec!["root", "inbox", "trash", "network"]);
+    }
+
+    #[test]
+    fn children_lookup_uses_parent_handle() {
+        let mut session = Session::test_dummy();
+        session.nodes = vec![
+            node("Root", "root", None, NodeType::Root),
+            node("Docs", "docs", Some("root"), NodeType::Folder),
+            node("Photos", "photos", Some("root"), NodeType::Folder),
+            node("Nested", "nested", Some("docs"), NodeType::Folder),
+        ];
+
+        let root = session.get_node_by_handle("root").unwrap().clone();
+        let child_handles: Vec<&str> = session
+            .children(&root)
+            .into_iter()
+            .map(|n| n.handle.as_str())
+            .collect();
+        let nested_handles: Vec<&str> = session
+            .children_by_handle("docs")
+            .into_iter()
+            .map(|n| n.handle.as_str())
+            .collect();
+
+        assert_eq!(child_handles, vec!["docs", "photos"]);
+        assert_eq!(nested_handles, vec!["nested"]);
+    }
+
+    #[test]
+    fn descendants_walk_entire_subtree() {
+        let mut session = Session::test_dummy();
+        session.nodes = vec![
+            node("Root", "root", None, NodeType::Root),
+            node("Docs", "docs", Some("root"), NodeType::Folder),
+            node("Nested", "nested", Some("docs"), NodeType::Folder),
+            node("Deep", "deep", Some("nested"), NodeType::Folder),
+            node("notes.txt", "file", Some("docs"), NodeType::File),
+            node("deep.txt", "deep-file", Some("deep"), NodeType::File),
+        ];
+
+        let docs = session.get_node_by_handle("docs").unwrap().clone();
+        let descendant_handles: Vec<&str> = session
+            .descendants(&docs)
+            .into_iter()
+            .map(|n| n.handle.as_str())
+            .collect();
+
+        assert_eq!(
+            descendant_handles,
+            vec!["nested", "deep", "file", "deep-file"]
+        );
     }
 }

@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.refresh().await?;
 
     println!("Moving {} to {}...", args.source, args.dest);
-    session.mv(&args.source, &args.dest).await?;
+    session.mv_by_path(&args.source, &args.dest).await?;
 
     println!("Move complete!");
 

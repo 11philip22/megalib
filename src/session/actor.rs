@@ -144,8 +144,24 @@ enum SessionCommand {
     RootNodesAndInshares {
         reply: oneshot::Sender<Result<Vec<Node>>>,
     },
+    RootNodes {
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    Children {
+        parent_handle: String,
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
+    Descendants {
+        parent_handle: String,
+        reply: oneshot::Sender<Result<Vec<Node>>>,
+    },
     Mkdir {
         path: String,
+        reply: oneshot::Sender<Result<Node>>,
+    },
+    CreateFolderIn {
+        name: String,
+        parent: Node,
         reply: oneshot::Sender<Result<Node>>,
     },
     Mv {
@@ -153,8 +169,18 @@ enum SessionCommand {
         dest: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    MoveNode {
+        node: Node,
+        new_parent: Node,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Rename {
         path: String,
+        new_name: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    RenameNode {
+        node: Node,
         new_name: String,
         reply: oneshot::Sender<Result<()>>,
     },
@@ -162,16 +188,34 @@ enum SessionCommand {
         path: String,
         reply: oneshot::Sender<Result<()>>,
     },
+    RemoveNode {
+        node: Node,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Export {
         path: String,
+        reply: oneshot::Sender<Result<String>>,
+    },
+    ExportNode {
+        node: Node,
         reply: oneshot::Sender<Result<String>>,
     },
     ExportMany {
         paths: Vec<String>,
         reply: oneshot::Sender<Result<Vec<(String, String)>>>,
     },
+    ExportManyNodes {
+        nodes: Vec<Node>,
+        reply: oneshot::Sender<Result<Vec<(Node, String)>>>,
+    },
     ShareFolder {
         handle: String,
+        email: String,
+        level: i32,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    ShareFolderNode {
+        node: Node,
         email: String,
         level: i32,
         reply: oneshot::Sender<Result<()>>,
@@ -181,10 +225,21 @@ enum SessionCommand {
         remote: String,
         reply: oneshot::Sender<Result<Node>>,
     },
+    UploadToNode {
+        local: String,
+        parent: Node,
+        reply: oneshot::Sender<Result<Node>>,
+    },
     UploadFromBytes {
         data: Vec<u8>,
         filename: String,
         remote: String,
+        reply: oneshot::Sender<Result<Node>>,
+    },
+    UploadBytesToNode {
+        data: Vec<u8>,
+        filename: String,
+        parent: Node,
         reply: oneshot::Sender<Result<Node>>,
     },
     UploadFromReader {
@@ -194,9 +249,21 @@ enum SessionCommand {
         remote: String,
         reply: oneshot::Sender<Result<Node>>,
     },
+    UploadReaderToNode {
+        reader: BoxedReader,
+        filename: String,
+        size: u64,
+        parent: Node,
+        reply: oneshot::Sender<Result<Node>>,
+    },
     UploadResumable {
         local: String,
         remote_parent: String,
+        reply: oneshot::Sender<Result<Node>>,
+    },
+    UploadResumableToNode {
+        local: String,
+        parent: Node,
         reply: oneshot::Sender<Result<Node>>,
     },
     DownloadToFile {
@@ -560,8 +627,9 @@ impl SessionHandle {
 
     /// Refresh the remote node tree and caches.
     ///
+    /// Compatibility name for [`SessionHandle::fetch_nodes`].
     /// Call this after login and after remote changes to keep path-based operations
-    /// accurate.
+    /// accurate, but prefer `fetch_nodes()` in new code.
     ///
     /// # Errors
     /// Returns an error if the refresh request fails or the actor has stopped.
@@ -579,6 +647,13 @@ impl SessionHandle {
     pub async fn refresh(&self) -> Result<()> {
         self.request(|reply| SessionCommand::Refresh { reply })
             .await
+    }
+
+    /// Fetch and rebuild the cached remote node tree.
+    ///
+    /// This is the preferred node-oriented name for [`SessionHandle::refresh`].
+    pub async fn fetch_nodes(&self) -> Result<()> {
+        self.refresh().await
     }
 
     /// Fetch the current storage quota.
@@ -603,8 +678,21 @@ impl SessionHandle {
 
     /// List files in a directory by path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::children`] with a cached parent [`Node`]. The explicit
+    /// path-based compatibility name is [`SessionHandle::list_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use list_by_path(...) for path-based access or children(...) for node-first access"
+    )]
     pub async fn list(&self, path: &str, recursive: bool) -> Result<Vec<Node>> {
+        self.list_by_path(path, recursive).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::list`].
+    pub async fn list_by_path(&self, path: &str, recursive: bool) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::List {
             path: path.to_string(),
             recursive,
@@ -615,8 +703,21 @@ impl SessionHandle {
 
     /// Get a node by path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// handle or cached-node lookups after [`SessionHandle::fetch_nodes`]. The
+    /// explicit path-based compatibility name is [`SessionHandle::stat_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use stat_by_path(...) for path-based access or cached node/handle lookups after fetch_nodes()"
+    )]
     pub async fn stat(&self, path: &str) -> Result<Option<Node>> {
+        self.stat_by_path(path).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::stat`].
+    pub async fn stat_by_path(&self, path: &str) -> Result<Option<Node>> {
         self.request(|reply| SessionCommand::Stat {
             path: path.to_string(),
             reply,
@@ -843,10 +944,77 @@ impl SessionHandle {
             .await
     }
 
+    /// Return the Cloud Drive root, Inbox, Trash, and Network nodes.
+    pub async fn root_nodes(&self) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::RootNodes { reply })
+            .await
+    }
+
+    /// Return the direct children of a cached node.
+    pub async fn children(&self, parent: &Node) -> Result<Vec<Node>> {
+        self.children_by_handle(&parent.handle).await
+    }
+
+    /// Return the direct children of a cached node handle.
+    pub async fn children_by_handle(&self, parent_handle: &str) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::Children {
+            parent_handle: parent_handle.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    /// Return all descendants of a cached node.
+    ///
+    /// This is the node-first equivalent of recursive path listing.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use megalib::{NodeType, SessionHandle};
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.fetch_nodes().await?;
+    /// let root = session
+    ///     .root_nodes()
+    ///     .await?
+    ///     .into_iter()
+    ///     .find(|node| node.node_type == NodeType::Root)
+    ///     .expect("missing root");
+    /// let descendants = session.descendants(&root).await?;
+    /// # let _ = descendants;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn descendants(&self, parent: &Node) -> Result<Vec<Node>> {
+        self.descendants_by_handle(&parent.handle).await
+    }
+
+    /// Return all descendants of a cached node handle.
+    pub async fn descendants_by_handle(&self, parent_handle: &str) -> Result<Vec<Node>> {
+        self.request(|reply| SessionCommand::Descendants {
+            parent_handle: parent_handle.to_string(),
+            reply,
+        })
+        .await
+    }
+
     /// Create a folder at the given path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::create_folder_in`]. The explicit path-based
+    /// compatibility name is [`SessionHandle::mkdir_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use mkdir_by_path(...) for path-based access or create_folder_in(...) for node-first access"
+    )]
     pub async fn mkdir(&self, path: &str) -> Result<Node> {
+        self.mkdir_by_path(path).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::mkdir`].
+    pub async fn mkdir_by_path(&self, path: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::Mkdir {
             path: path.to_string(),
             reply,
@@ -854,10 +1022,33 @@ impl SessionHandle {
         .await
     }
 
+    /// Create a folder inside a cached parent node.
+    pub async fn create_folder_in(&self, name: &str, parent: &Node) -> Result<Node> {
+        self.request(|reply| SessionCommand::CreateFolderIn {
+            name: name.to_string(),
+            parent: parent.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Move a node to a new parent path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::move_node`]. The explicit path-based compatibility
+    /// name is [`SessionHandle::mv_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use mv_by_path(...) for path-based access or move_node(...) for node-first access"
+    )]
     pub async fn mv(&self, source: &str, dest: &str) -> Result<()> {
+        self.mv_by_path(source, dest).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::mv`].
+    pub async fn mv_by_path(&self, source: &str, dest: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Mv {
             source: source.to_string(),
             dest: dest.to_string(),
@@ -866,10 +1057,33 @@ impl SessionHandle {
         .await
     }
 
+    /// Move a cached node to a new parent node.
+    pub async fn move_node(&self, node: &Node, new_parent: &Node) -> Result<()> {
+        self.request(|reply| SessionCommand::MoveNode {
+            node: node.clone(),
+            new_parent: new_parent.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Rename a node at the given path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::rename_node`]. The explicit path-based compatibility
+    /// name is [`SessionHandle::rename_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use rename_by_path(...) for path-based access or rename_node(...) for node-first access"
+    )]
     pub async fn rename(&self, path: &str, new_name: &str) -> Result<()> {
+        self.rename_by_path(path, new_name).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::rename`].
+    pub async fn rename_by_path(&self, path: &str, new_name: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Rename {
             path: path.to_string(),
             new_name: new_name.to_string(),
@@ -878,10 +1092,33 @@ impl SessionHandle {
         .await
     }
 
+    /// Rename a cached node.
+    pub async fn rename_node(&self, node: &Node, new_name: &str) -> Result<()> {
+        self.request(|reply| SessionCommand::RenameNode {
+            node: node.clone(),
+            new_name: new_name.to_string(),
+            reply,
+        })
+        .await
+    }
+
     /// Remove a node at the given path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::remove_node`]. The explicit path-based compatibility
+    /// name is [`SessionHandle::rm_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use rm_by_path(...) for path-based access or remove_node(...) for node-first access"
+    )]
     pub async fn rm(&self, path: &str) -> Result<()> {
+        self.rm_by_path(path).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::rm`].
+    pub async fn rm_by_path(&self, path: &str) -> Result<()> {
         self.request(|reply| SessionCommand::Rm {
             path: path.to_string(),
             reply,
@@ -889,10 +1126,32 @@ impl SessionHandle {
         .await
     }
 
+    /// Remove a cached node.
+    pub async fn remove_node(&self, node: &Node) -> Result<()> {
+        self.request(|reply| SessionCommand::RemoveNode {
+            node: node.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Export a node by path to create a public link.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::export_node`]. The explicit path-based compatibility
+    /// name is [`SessionHandle::export_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use export_by_path(...) for path-based access or export_node(...) for node-first access"
+    )]
     pub async fn export(&self, path: &str) -> Result<String> {
+        self.export_by_path(path).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::export`].
+    pub async fn export_by_path(&self, path: &str) -> Result<String> {
         self.request(|reply| SessionCommand::Export {
             path: path.to_string(),
             reply,
@@ -900,12 +1159,68 @@ impl SessionHandle {
         .await
     }
 
+    /// Export a cached node to a public link.
+    pub async fn export_node(&self, node: &Node) -> Result<String> {
+        self.request(|reply| SessionCommand::ExportNode {
+            node: node.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Export multiple nodes by path to create public links.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. The explicit path-based
+    /// compatibility name is [`SessionHandle::export_many_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use export_many_by_path(...) for path-based access"
+    )]
     pub async fn export_many(&self, paths: &[&str]) -> Result<Vec<(String, String)>> {
+        self.export_many_by_path(paths).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::export_many`].
+    pub async fn export_many_by_path(&self, paths: &[&str]) -> Result<Vec<(String, String)>> {
         self.request(|reply| SessionCommand::ExportMany {
             paths: paths.iter().map(|p| p.to_string()).collect(),
+            reply,
+        })
+        .await
+    }
+
+    /// Export multiple cached nodes and return `(node, url)` pairs.
+    ///
+    /// File nodes are batched. Folder nodes fall back to single-node export.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use megalib::{NodeType, SessionHandle};
+    /// # async fn example() -> megalib::Result<()> {
+    /// let session = SessionHandle::login("user@example.com", "password").await?;
+    /// session.fetch_nodes().await?;
+    /// let root = session
+    ///     .root_nodes()
+    ///     .await?
+    ///     .into_iter()
+    ///     .find(|node| node.node_type == NodeType::Root)
+    ///     .expect("missing root");
+    /// let files: Vec<_> = session
+    ///     .children(&root)
+    ///     .await?
+    ///     .into_iter()
+    ///     .filter(|node| node.is_file())
+    ///     .collect();
+    /// let exported = session.export_many_nodes(&files).await?;
+    /// # let _ = exported;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn export_many_nodes(&self, nodes: &[Node]) -> Result<Vec<(Node, String)>> {
+        self.request(|reply| SessionCommand::ExportManyNodes {
+            nodes: nodes.to_vec(),
             reply,
         })
         .await
@@ -922,12 +1237,37 @@ impl SessionHandle {
         .await
     }
 
+    /// Share a cached folder node.
+    pub async fn share_folder_node(&self, node: &Node, email: &str, level: i32) -> Result<()> {
+        self.request(|reply| SessionCommand::ShareFolderNode {
+            node: node.clone(),
+            email: email.to_string(),
+            level,
+            reply,
+        })
+        .await
+    }
+
     /// Share a folder by path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::share_folder_node`] or [`SessionHandle::share_folder_handle`].
+    /// The explicit path-based compatibility name is
+    /// [`SessionHandle::share_folder_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use share_folder_by_path(...) for path-based access or share_folder_node/share_folder_handle for node/handle-first access"
+    )]
     pub async fn share_folder(&self, path: &str, email: &str, level: i32) -> Result<()> {
+        self.share_folder_by_path(path, email, level).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::share_folder`].
+    pub async fn share_folder_by_path(&self, path: &str, email: &str, level: i32) -> Result<()> {
         let node = self
-            .stat(path)
+            .stat_by_path(path)
             .await?
             .ok_or_else(|| MegaError::Custom(format!("Folder not found: {}", path)))?;
         if !node.is_folder() {
@@ -938,8 +1278,21 @@ impl SessionHandle {
 
     /// Upload a local file into a remote parent path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::upload_to_node`]. The explicit path-based compatibility
+    /// name is [`SessionHandle::upload_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use upload_by_path(...) for path-based access or upload_to_node(...) for node-first access"
+    )]
     pub async fn upload(&self, local: &str, remote: &str) -> Result<Node> {
+        self.upload_by_path(local, remote).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::upload`].
+    pub async fn upload_by_path(&self, local: &str, remote: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::Upload {
             local: local.to_string(),
             remote: remote.to_string(),
@@ -948,10 +1301,38 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload a local file into a cached remote parent node.
+    pub async fn upload_to_node(&self, local: &str, parent: &Node) -> Result<Node> {
+        self.request(|reply| SessionCommand::UploadToNode {
+            local: local.to_string(),
+            parent: parent.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Upload raw bytes into a remote parent path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::upload_bytes_to_node`]. The explicit path-based
+    /// compatibility name is [`SessionHandle::upload_from_bytes_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use upload_from_bytes_by_path(...) for path-based access or upload_bytes_to_node(...) for node-first access"
+    )]
     pub async fn upload_from_bytes(
+        &self,
+        data: &[u8],
+        filename: &str,
+        remote: &str,
+    ) -> Result<Node> {
+        self.upload_from_bytes_by_path(data, filename, remote).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::upload_from_bytes`].
+    pub async fn upload_from_bytes_by_path(
         &self,
         data: &[u8],
         filename: &str,
@@ -966,10 +1347,49 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload raw bytes into a cached remote parent node.
+    pub async fn upload_bytes_to_node(
+        &self,
+        data: &[u8],
+        filename: &str,
+        parent: &Node,
+    ) -> Result<Node> {
+        self.request(|reply| SessionCommand::UploadBytesToNode {
+            data: data.to_vec(),
+            filename: filename.to_string(),
+            parent: parent.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Upload a reader into a remote parent path.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::upload_reader_to_node`]. The explicit path-based
+    /// compatibility name is [`SessionHandle::upload_from_reader_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use upload_from_reader_by_path(...) for path-based access or upload_reader_to_node(...) for node-first access"
+    )]
     pub async fn upload_from_reader<R>(
+        &self,
+        reader: R,
+        filename: &str,
+        size: u64,
+        remote: &str,
+    ) -> Result<Node>
+    where
+        R: AsyncRead + AsyncSeek + Unpin + Send + 'static,
+    {
+        self.upload_from_reader_by_path(reader, filename, size, remote)
+            .await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::upload_from_reader`].
+    pub async fn upload_from_reader_by_path<R>(
         &self,
         reader: R,
         filename: &str,
@@ -989,13 +1409,57 @@ impl SessionHandle {
         .await
     }
 
+    /// Upload a reader into a cached remote parent node.
+    pub async fn upload_reader_to_node<R>(
+        &self,
+        reader: R,
+        filename: &str,
+        size: u64,
+        parent: &Node,
+    ) -> Result<Node>
+    where
+        R: AsyncRead + AsyncSeek + Unpin + Send + 'static,
+    {
+        self.request(|reply| SessionCommand::UploadReaderToNode {
+            reader: Box::new(reader),
+            filename: filename.to_string(),
+            size,
+            parent: parent.clone(),
+            reply,
+        })
+        .await
+    }
+
     /// Upload a local file into a remote parent path with resume support.
     ///
-    /// Requires `refresh()` to populate the path cache.
+    /// Compatibility API over the cached tree. New code should prefer
+    /// [`SessionHandle::upload_resumable_to_node`]. The explicit path-based
+    /// compatibility name is [`SessionHandle::upload_resumable_by_path`].
+    ///
+    /// Requires `fetch_nodes()` / `refresh()` to populate the path cache.
+    #[deprecated(
+        since = "0.11.0",
+        note = "use upload_resumable_by_path(...) for path-based access or upload_resumable_to_node(...) for node-first access"
+    )]
     pub async fn upload_resumable(&self, local: &str, remote_parent: &str) -> Result<Node> {
+        self.upload_resumable_by_path(local, remote_parent).await
+    }
+
+    /// Explicit path-based compatibility alias for the deprecated [`SessionHandle::upload_resumable`].
+    pub async fn upload_resumable_by_path(&self, local: &str, remote_parent: &str) -> Result<Node> {
         self.request(|reply| SessionCommand::UploadResumable {
             local: local.to_string(),
             remote_parent: remote_parent.to_string(),
+            reply,
+        })
+        .await
+    }
+
+    /// Upload a local file with resume support into a cached remote parent node.
+    pub async fn upload_resumable_to_node(&self, local: &str, parent: &Node) -> Result<Node> {
+        self.request(|reply| SessionCommand::UploadResumableToNode {
+            local: local.to_string(),
+            parent: parent.clone(),
             reply,
         })
         .await
@@ -2280,6 +2744,39 @@ impl SessionActor {
                     .collect());
                 let _ = reply.send(res);
             }
+            SessionCommand::RootNodes { reply } => {
+                let res: Result<Vec<Node>> =
+                    Ok(self.session.root_nodes().into_iter().cloned().collect());
+                let _ = reply.send(res);
+            }
+            SessionCommand::Children {
+                parent_handle,
+                reply,
+            } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .get_node_by_handle(&parent_handle)
+                    .map(|parent| self.session.children(parent).into_iter().cloned().collect())
+                    .unwrap_or_default());
+                let _ = reply.send(res);
+            }
+            SessionCommand::Descendants {
+                parent_handle,
+                reply,
+            } => {
+                let res: Result<Vec<Node>> = Ok(self
+                    .session
+                    .get_node_by_handle(&parent_handle)
+                    .map(|parent| {
+                        self.session
+                            .descendants(parent)
+                            .into_iter()
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default());
+                let _ = reply.send(res);
+            }
             SessionCommand::Mkdir { path, reply } => {
                 let res = self.session.mkdir(&path).await;
                 let seqtag = self.session.current_seqtag.take();
@@ -2300,12 +2797,50 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::CreateFolderIn {
+                name,
+                parent,
+                reply,
+            } => {
+                let res = self.session.create_folder_in(&name, &parent).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::Mv {
                 source,
                 dest,
                 reply,
             } => {
                 let res = self.session.mv(&source, &dest).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::MoveNode {
+                node,
+                new_parent,
+                reply,
+            } => {
+                let res = self.session.move_node(&node, &new_parent).await;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -2338,6 +2873,25 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::RenameNode {
+                node,
+                new_name,
+                reply,
+            } => {
+                let res = self.session.rename_node(&node, &new_name).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::Rm { path, reply } => {
                 let res = self.session.rm(&path).await;
                 let seqtag = self.session.current_seqtag.take();
@@ -2353,8 +2907,38 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::RemoveNode { node, reply } => {
+                let res = self.session.remove_node(&node).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::Export { path, reply } => {
                 let res = self.session.export(&path).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::ExportNode { node, reply } => {
+                let res = self.session.export_node(&node).await;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -2384,6 +2968,21 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::ExportManyNodes { nodes, reply } => {
+                let res = self.session.export_many_nodes(&nodes).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::ShareFolder {
                 handle,
                 email,
@@ -2391,6 +2990,26 @@ impl SessionActor {
                 reply,
             } => {
                 let res = self.session.share_folder(&handle, &email, level).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::ShareFolderNode {
+                node,
+                email,
+                level,
+                reply,
+            } => {
+                let res = self.session.share_folder(&node.handle, &email, level).await;
                 let seqtag = self.session.current_seqtag.take();
                 self.session.current_seqtag_seen = false;
                 if let Some(tag) = seqtag {
@@ -2428,6 +3047,25 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::UploadToNode {
+                local,
+                parent,
+                reply,
+            } => {
+                let res = self.session.upload_to_node(&local, &parent).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::UploadFromBytes {
                 data,
                 filename,
@@ -2450,6 +3088,29 @@ impl SessionActor {
                                 Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::UploadBytesToNode {
+                data,
+                filename,
+                parent,
+                reply,
+            } => {
+                let res = self
+                    .session
+                    .upload_bytes_to_node(&data, &filename, &parent)
+                    .await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
                         }),
                     );
                 } else {
@@ -2485,6 +3146,30 @@ impl SessionActor {
                     let _ = reply.send(res);
                 }
             }
+            SessionCommand::UploadReaderToNode {
+                reader,
+                filename,
+                size,
+                parent,
+                reply,
+            } => {
+                let res = self
+                    .session
+                    .upload_reader_to_node(reader, &filename, size, &parent)
+                    .await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
             SessionCommand::UploadResumable {
                 local,
                 remote_parent,
@@ -2503,6 +3188,25 @@ impl SessionActor {
                                 Err(err) => session.stat(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
+                        }),
+                    );
+                } else {
+                    let _ = reply.send(res);
+                }
+            }
+            SessionCommand::UploadResumableToNode {
+                local,
+                parent,
+                reply,
+            } => {
+                let res = self.session.upload_resumable_to_node(&local, &parent).await;
+                let seqtag = self.session.current_seqtag.take();
+                self.session.current_seqtag_seen = false;
+                if let Some(tag) = seqtag {
+                    self.push_seqtag_waiter(
+                        tag,
+                        Box::new(move |_session| {
+                            let _ = reply.send(res);
                         }),
                     );
                 } else {

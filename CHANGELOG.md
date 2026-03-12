@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added node-first session APIs for cached-tree browsing and remote operations: `fetch_nodes`, `root_nodes`, `children`, `create_folder_in`, `move_node`, `rename_node`, `remove_node`, `export_node`, `share_folder_node`, and node-based upload variants.
+- Added explicit `*_by_path` compatibility aliases for the existing path-first session APIs so callers have stable migration names for path-oriented code.
+- Added a new `node_api` example demonstrating cached-node browsing without remote path strings.
+- Added node-first recursive browsing (`descendants`) and batch export (`export_many_nodes`) helpers so remaining recursive-list/export conveniences do not require remote paths.
+
+### Deprecated
+- Deprecated the old canonical path-first `SessionHandle` method names such as `list`, `stat`, `mkdir`, `mv`, `rename`, `rm`, `export`, `share_folder`, and path-based upload helpers in favor of explicit `*_by_path` aliases or the newer node-first APIs.
+
 ### Fixed
 - Public folder download no longer returns API -9 "Resource does not exist". The "g" request now includes the folder handle (`n` parameter) in the API URL, matching C++ SDK behavior via `getAuthURI()`.
 

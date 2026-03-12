@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     session.refresh().await?;
 
     println!("Creating directory: {}", args.path);
-    match session.mkdir(&args.path).await {
+    match session.mkdir_by_path(&args.path).await {
         Ok(node) => {
             println!("Directory created successfully!");
             println!("Name: {}", node.name);

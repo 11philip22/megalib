@@ -39,7 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.refresh().await?;
 
     println!("Uploading {} to {}...", args.local_file, args.remote_path);
-    match session.upload(&args.local_file, &args.remote_path).await {
+    match session
+        .upload_by_path(&args.local_file, &args.remote_path)
+        .await
+    {
         Ok(node) => {
             println!("Upload complete!");
             println!("Created node: {} ({} bytes)", node.name, node.size);

@@ -107,10 +107,10 @@ impl Session {
     /// # Arguments
     /// * `local_path` - Path to the local file to upload
     /// * `remote_parent_path` - Path to the remote parent directory
-    pub async fn upload<P: AsRef<std::path::Path>>(
+    pub async fn upload_to_node<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
-        remote_parent_path: &str,
+        parent: &Node,
     ) -> Result<Node> {
         let path = local_path.as_ref();
         let file_name = path
@@ -124,19 +124,15 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Failed to get metadata: {}", e)))?;
         let file_size = metadata.len();
 
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
-            MegaError::Custom(format!(
-                "Parent directory not found: {}",
-                remote_parent_path
-            ))
-        })?;
-        let parent_handle = parent_node.handle.clone();
+        let parent_handle = parent.handle.clone();
 
         // 1. Get upload URL
         // [{a:u, s:<SIZE>, ssl:0}]
         debug!(
             upload_preflight = "sdk-no-key-bootstrap",
-            parent_handle, remote_parent_path, "upload hot path preflight policy"
+            parent_handle,
+            parent_path = parent.path(),
+            "upload hot path preflight policy"
         );
 
         let response = self
@@ -179,6 +175,21 @@ impl Session {
         self.upload_internal(path, state, None).await
     }
 
+    pub async fn upload<P: AsRef<std::path::Path>>(
+        &mut self,
+        local_path: P,
+        remote_parent_path: &str,
+    ) -> Result<Node> {
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent = parent_node.clone();
+        self.upload_to_node(local_path, &parent).await
+    }
+
     /// Upload a file with resume support.
     ///
     /// This method saves upload state to a temporary file after each chunk,
@@ -201,10 +212,10 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn upload_resumable<P: AsRef<std::path::Path>>(
+    pub async fn upload_resumable_to_node<P: AsRef<std::path::Path>>(
         &mut self,
         local_path: P,
-        remote_parent_path: &str,
+        parent: &Node,
     ) -> Result<Node> {
         let path = local_path.as_ref();
         let state_path = UploadState::state_file_path(path);
@@ -218,7 +229,7 @@ impl Session {
                 debug!(
                     upload_preflight = "sdk-no-key-bootstrap",
                     existing_state.parent_handle,
-                    remote_parent_path,
+                    parent_path = parent.path(),
                     "upload hot path preflight policy"
                 );
                 // Resume from existing state
@@ -254,17 +265,13 @@ impl Session {
             .map_err(|e| MegaError::Custom(format!("Failed to get metadata: {}", e)))?;
         let file_size = metadata.len();
 
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
-            MegaError::Custom(format!(
-                "Parent directory not found: {}",
-                remote_parent_path
-            ))
-        })?;
-        let parent_handle = parent_node.handle.clone();
+        let parent_handle = parent.handle.clone();
 
         debug!(
             upload_preflight = "sdk-no-key-bootstrap",
-            parent_handle, remote_parent_path, "upload hot path preflight policy"
+            parent_handle,
+            parent_path = parent.path(),
+            "upload hot path preflight policy"
         );
 
         // Get upload URL
@@ -315,6 +322,21 @@ impl Session {
         self.upload_internal(path, state, Some(&state_path)).await
     }
 
+    pub async fn upload_resumable<P: AsRef<std::path::Path>>(
+        &mut self,
+        local_path: P,
+        remote_parent_path: &str,
+    ) -> Result<Node> {
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent = parent_node.clone();
+        self.upload_resumable_to_node(local_path, &parent).await
+    }
+
     /// Upload data from a byte slice to a directory.
     ///
     /// This method is useful for uploading in-memory data without writing to disk first.
@@ -339,19 +361,35 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
+    pub async fn upload_bytes_to_node(
+        &mut self,
+        data: &[u8],
+        file_name: &str,
+        parent: &Node,
+    ) -> Result<Node> {
+        self.upload_reader_to_node(
+            Cursor::new(data.to_vec()),
+            file_name,
+            data.len() as u64,
+            parent,
+        )
+        .await
+    }
+
     pub async fn upload_from_bytes(
         &mut self,
         data: &[u8],
         file_name: &str,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        self.upload_from_reader(
-            Cursor::new(data.to_vec()),
-            file_name,
-            data.len() as u64,
-            remote_parent_path,
-        )
-        .await
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent = parent_node.clone();
+        self.upload_bytes_to_node(data, file_name, &parent).await
     }
 
     /// Upload data from an async reader to a directory.
@@ -387,27 +425,23 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn upload_from_reader<R>(
+    pub async fn upload_reader_to_node<R>(
         &mut self,
         reader: R,
         file_name: &str,
         file_size: u64,
-        remote_parent_path: &str,
+        parent: &Node,
     ) -> Result<Node>
     where
         R: futures::io::AsyncRead + futures::io::AsyncSeek + Unpin + Send,
     {
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
-            MegaError::Custom(format!(
-                "Parent directory not found: {}",
-                remote_parent_path
-            ))
-        })?;
-        let parent_handle = parent_node.handle.clone();
+        let parent_handle = parent.handle.clone();
 
         debug!(
             upload_preflight = "sdk-no-key-bootstrap",
-            parent_handle, remote_parent_path, "upload hot path preflight policy"
+            parent_handle,
+            parent_path = parent.path(),
+            "upload hot path preflight policy"
         );
 
         // Get upload URL
@@ -448,6 +482,27 @@ impl Session {
         );
 
         self.upload_internal_stream(reader, state).await
+    }
+
+    pub async fn upload_from_reader<R>(
+        &mut self,
+        reader: R,
+        file_name: &str,
+        file_size: u64,
+        remote_parent_path: &str,
+    ) -> Result<Node>
+    where
+        R: futures::io::AsyncRead + futures::io::AsyncSeek + Unpin + Send,
+    {
+        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+            MegaError::Custom(format!(
+                "Parent directory not found: {}",
+                remote_parent_path
+            ))
+        })?;
+        let parent = parent_node.clone();
+        self.upload_reader_to_node(reader, file_name, file_size, &parent)
+            .await
     }
 
     /// Internal method to upload with optional state tracking.

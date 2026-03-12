@@ -12,27 +12,9 @@ use crate::fs::node::Node;
 use crate::session::Session;
 
 impl Session {
-    /// Create a new directory.
-    pub async fn mkdir(&mut self, path: &str) -> Result<Node> {
-        let (parent_path, name) = if let Some(idx) = path.rfind('/') {
-            if idx == 0 {
-                ("/", &path[1..])
-            } else {
-                (&path[..idx], &path[idx + 1..])
-            }
-        } else {
-            return Err(crate::error::MegaError::Custom("Invalid path".to_string()));
-        };
-
-        let parent_handle = self
-            .stat(parent_path)
-            .map(|n| n.handle.clone())
-            .ok_or_else(|| {
-                crate::error::MegaError::Custom(format!(
-                    "Parent directory not found: {}",
-                    parent_path
-                ))
-            })?;
+    /// Create a new directory inside a cached parent node.
+    pub async fn create_folder_in(&mut self, name: &str, parent: &Node) -> Result<Node> {
+        let parent_handle = parent.handle.clone();
 
         // 1. Generate random 128-bit node key
         let node_key = {
@@ -45,7 +27,6 @@ impl Session {
         // 2. Encrypt attributes
         let attrs = json!({ "n": name }).to_string();
         let attrs_bytes = format!("MEGA{}", attrs).into_bytes();
-        // Pad to 16 bytes
         let pad_len = 16 - (attrs_bytes.len() % 16);
         let mut padded_attrs = attrs_bytes;
         padded_attrs.extend(std::iter::repeat_n(0, pad_len));
@@ -66,8 +47,8 @@ impl Session {
                 "a": "p",
                 "t": parent_handle,
                 "n": [{
-                    "h": "xxxxxxxx", // Placeholder handle
-                    "t": 1, // Folder
+                    "h": "xxxxxxxx",
+                    "t": 1,
                     "a": attrs_b64,
                     "k": key_b64
                 }],
@@ -78,7 +59,6 @@ impl Session {
             .await?;
         let seqtag = self.track_seqtag_from_response(&response);
 
-        // 5. Parse response
         let mut created_node: Option<Node> = None;
         if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array())
             && let Some(node_obj) = nodes_array.first()
@@ -86,23 +66,22 @@ impl Session {
             let mut node = self.parse_node(node_obj).ok_or_else(|| {
                 crate::error::MegaError::Custom("Failed to parse node".to_string())
             })?;
-            node.name = name.to_string(); // Name isn't returned in 'f', set it manually
+            node.name = name.to_string();
 
-            // Add to local cache manually
             self.nodes.push(node.clone());
-            let parent_path_str = if parent_path == "/" {
-                format!("/{}", name)
+            let parent_path_str = parent.path().unwrap_or("");
+            let created_path = if !parent_path_str.is_empty() {
+                format!("{}/{}", parent_path_str.trim_end_matches('/'), name)
             } else {
-                format!("{}/{}", parent_path.trim_end_matches('/'), name)
+                format!("/{}", name)
             };
             if let Some(last_node) = self.nodes.last_mut() {
-                last_node.path = Some(parent_path_str);
+                last_node.path = Some(created_path);
             }
 
             created_node = Some(node);
         }
 
-        // Handle seqtag array response with error list (SDK-style).
         if let Some(arr) = response.as_array()
             && let Some(errors) = arr.get(1)
             && let Some(code) = first_error_code(errors)
@@ -119,34 +98,53 @@ impl Session {
         if let Some(node) = created_node {
             return Ok(node);
         }
-        if let Some(node) = self.stat(path) {
-            return Ok(node.clone());
-        }
 
         Err(MegaError::Custom(
             "Folder creation pending action packets".to_string(),
         ))
     }
 
-    /// Remove a file or directory.
-    pub async fn rm(&mut self, path: &str) -> Result<()> {
-        let node_handle = self
-            .stat(path)
-            .map(|n| n.handle.clone())
-            .ok_or_else(|| crate::error::MegaError::Custom(format!("Node not found: {}", path)))?;
+    /// Create a new directory.
+    pub async fn mkdir(&mut self, path: &str) -> Result<Node> {
+        let (parent_path, name) = if let Some(idx) = path.rfind('/') {
+            if idx == 0 {
+                ("/", &path[1..])
+            } else {
+                (&path[..idx], &path[idx + 1..])
+            }
+        } else {
+            return Err(crate::error::MegaError::Custom("Invalid path".to_string()));
+        };
 
+        let parent_handle = self.stat(parent_path).cloned().ok_or_else(|| {
+            crate::error::MegaError::Custom(format!("Parent directory not found: {}", parent_path))
+        })?;
+        self.create_folder_in(name, &parent_handle).await
+    }
+
+    /// Remove a cached node by handle.
+    pub async fn remove_node(&mut self, node: &Node) -> Result<()> {
         let session_id = self.session_id().to_string();
         let response = self
             .api_mut()
             .request(json!({
                 "a": "d",
-                "n": node_handle,
+                "n": node.handle,
                 "i": session_id
             }))
             .await?;
         let _ = self.track_seqtag_from_response(&response);
 
         Ok(())
+    }
+
+    /// Remove a file or directory.
+    pub async fn rm(&mut self, path: &str) -> Result<()> {
+        let node = self
+            .stat(path)
+            .cloned()
+            .ok_or_else(|| crate::error::MegaError::Custom(format!("Node not found: {}", path)))?;
+        self.remove_node(&node).await
     }
 
     /// Move a file or directory to a new location.
@@ -165,40 +163,38 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn mv(&mut self, source_path: &str, dest_parent_path: &str) -> Result<()> {
-        // Get source node
-        let source_node = self
-            .stat(source_path)
-            .ok_or_else(|| MegaError::Custom(format!("Source not found: {}", source_path)))?;
-        let source_handle = source_node.handle.clone();
-
-        // Get destination parent
-        let dest_parent = self.stat(dest_parent_path).ok_or_else(|| {
-            MegaError::Custom(format!("Destination not found: {}", dest_parent_path))
-        })?;
-
-        if !dest_parent.node_type.is_container() {
+    pub async fn move_node(&mut self, node: &Node, new_parent: &Node) -> Result<()> {
+        if !new_parent.node_type.is_container() {
             return Err(MegaError::Custom(
                 "Destination must be a folder".to_string(),
             ));
         }
 
-        let dest_handle = dest_parent.handle.clone();
-
-        // Call move API: {a: "m", n: source_handle, t: dest_parent_handle}
         let session_id = self.session_id().to_string();
         let response = self
             .api_mut()
             .request(json!({
                 "a": "m",
-                "n": source_handle,
-                "t": dest_handle,
+                "n": node.handle,
+                "t": new_parent.handle,
                 "i": session_id
             }))
             .await?;
         let _ = self.track_seqtag_from_response(&response);
 
         Ok(())
+    }
+
+    pub async fn mv(&mut self, source_path: &str, dest_parent_path: &str) -> Result<()> {
+        let source_node = self
+            .stat(source_path)
+            .cloned()
+            .ok_or_else(|| MegaError::Custom(format!("Source not found: {}", source_path)))?;
+        let dest_parent = self.stat(dest_parent_path).cloned().ok_or_else(|| {
+            MegaError::Custom(format!("Destination not found: {}", dest_parent_path))
+        })?;
+
+        self.move_node(&source_node, &dest_parent).await
     }
 
     /// Rename a file or directory.
@@ -217,17 +213,13 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn rename(&mut self, path: &str, new_name: &str) -> Result<()> {
-        // Get source node
-        let normalized_path = normalize_path(path);
+    pub async fn rename_node(&mut self, node: &Node, new_name: &str) -> Result<()> {
         let node_idx = self
             .nodes
             .iter()
-            .position(|n| n.path.as_deref() == Some(&normalized_path))
-            .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", path)))?;
+            .position(|n| n.handle == node.handle)
+            .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", node.handle)))?;
 
-        let node = &self.nodes[node_idx];
-        let handle = node.handle.clone();
         let key = node.key.clone();
 
         if key.is_empty() {
@@ -270,7 +262,7 @@ impl Session {
             .api_mut()
             .request(json!({
                 "a": "a",
-                "n": handle,
+                "n": node.handle,
                 "attr": attrs_b64,
                 "i": session_id
             }))
@@ -281,6 +273,18 @@ impl Session {
         self.nodes[node_idx].name = new_name.to_string();
 
         Ok(())
+    }
+
+    pub async fn rename(&mut self, path: &str, new_name: &str) -> Result<()> {
+        let normalized_path = normalize_path(path);
+        let node = self
+            .nodes
+            .iter()
+            .find(|n| n.path.as_deref() == Some(&normalized_path))
+            .cloned()
+            .ok_or_else(|| MegaError::Custom(format!("Node not found: {}", path)))?;
+
+        self.rename_node(&node, new_name).await
     }
 }
 

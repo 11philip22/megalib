@@ -1,4 +1,4 @@
-/// Example: Upload data from an async reader using upload_from_reader.
+/// Example: Upload data from an async reader using upload_from_reader_by_path.
 use clap::Parser;
 use futures::io::Cursor;
 use megalib::SessionHandle;
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     match session
-        .upload_from_reader(cursor, file_name, file_size, &args.remote_path)
+        .upload_from_reader_by_path(cursor, file_name, file_size, &args.remote_path)
         .await
     {
         Ok(node) => {

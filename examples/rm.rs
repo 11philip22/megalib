@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     session.refresh().await?;
 
     println!("Removing: {}", args.path);
-    match session.rm(&args.path).await {
+    match session.rm_by_path(&args.path).await {
         Ok(_) => {
             println!("Removed successfully!");
         }

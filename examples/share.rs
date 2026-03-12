@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     session
-        .share_folder(&args.folder, &args.recipient, args.level)
+        .share_folder_by_path(&args.folder, &args.recipient, args.level)
         .await?;
 
     println!("Share command sent successfully!");

@@ -44,6 +44,7 @@
   - Proxy support (HTTP/HTTPS/SOCKS5)
 
 - **Node Operations**:
+  - Preferred node-first browsing via `fetch_nodes`, `root_nodes`, `children`, and `descendants`
   - Get node by handle
   - Check ancestor relationships
   - Check write permissions
@@ -65,7 +66,7 @@ tokio = { version = "1", features = ["full"] }
 
 ## Quickstart
 
-Minimal login + list to confirm everything works:
+Minimal login + cached-node browsing to confirm everything works:
 
 ```rust
 use megalib::SessionHandle;
@@ -73,16 +74,26 @@ use megalib::SessionHandle;
 #[tokio::main]
 async fn main() -> megalib::Result<()> {
     let session = SessionHandle::login("user@example.com", "password").await?;
-    session.refresh().await?;
+    session.fetch_nodes().await?;
 
-    // Cloud Drive paths are rooted at /Root
-    for node in session.list("/Root", false).await? {
-        println!("{} ({} bytes)", node.name, node.size);
+    let root = session
+        .root_nodes()
+        .await?
+        .into_iter()
+        .find(|node| node.node_type == megalib::NodeType::Root)
+        .expect("missing Cloud Drive root");
+
+    for node in session.children(&root).await? {
+        println!("{} ({:?})", node.name, node.node_type);
     }
 
     Ok(())
 }
 ```
+
+Path-based methods remain available as compatibility APIs over the cached node tree, but the old canonical names are now deprecated. Use the explicit aliases such as `list_by_path`, `stat_by_path`, `mkdir_by_path`, `mv_by_path`, `rename_by_path`, `rm_by_path`, `export_by_path`, and `upload_by_path` if you still want path-oriented calls. New code should prefer the node-first APIs shown above.
+
+Node-first batch export is also available via `export_many_nodes`, which returns `(node, url)` pairs without converting back through remote paths.
 
 ## Examples
 
@@ -93,6 +104,7 @@ Run any command as shown (replace placeholder values with your own).
 cargo run --example login -- --email you@example.com --password "your-password"
 cargo run --example ls -- --email you@example.com --password "your-password" --path /Root
 cargo run --example cached_session -- --email you@example.com --password "your-password"
+cargo run --example node_api -- --email you@example.com --password "your-password"
 
 # Upload / download
 cargo run --example upload -- --email you@example.com --password "your-password" ./local-file.txt /Root

@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (quota.used as f64 / quota.total as f64) * 100.0
     );
 
-    let root_items = session.list("/Root", false).await?;
+    let root_items = session.list_by_path("/Root", false).await?;
     println!("\nRoot directory: {} items", root_items.len());
 
     Ok(())

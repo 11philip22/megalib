@@ -1,4 +1,4 @@
-/// Example: Upload data from memory using upload_from_bytes.
+/// Example: Upload data from memory using upload_from_bytes_by_path.
 ///
 /// This demonstrates uploading in-memory data without writing to disk first.
 use clap::Parser;
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.refresh().await?;
 
     // Create some in-memory data
-    let data = b"Hello from megalib!\n\nThis file was uploaded using upload_from_bytes().";
+    let data = b"Hello from megalib!\n\nThis file was uploaded using upload_from_bytes_by_path().";
     let file_name = "hello_from_memory.txt";
 
     println!(
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     match session
-        .upload_from_bytes(data, file_name, &args.remote_path)
+        .upload_from_bytes_by_path(data, file_name, &args.remote_path)
         .await
     {
         Ok(node) => {

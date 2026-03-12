@@ -43,7 +43,7 @@ async fn main() {
     session.refresh().await.expect("Refresh failed");
 
     println!("Getting info for: {}", args.path);
-    match session.stat(&args.path).await {
+    match session.stat_by_path(&args.path).await {
         Ok(Some(node)) => {
             println!("\nNode Information:");
             println!("  Name:          {}", node.name);

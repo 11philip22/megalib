@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     // Enable parallel uploads (e.g., 4 concurrent chunks)
     session.set_workers(4).await?;
 
-    if session.stat(&args.remote_parent).await?.is_none() {
+    if session.stat_by_path(&args.remote_parent).await?.is_none() {
         eprintln!("Error: Remote directory not found: {}", args.remote_parent);
         std::process::exit(1);
     }
@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
     );
 
     let node = session
-        .upload_resumable(&args.local_path, &args.remote_parent)
+        .upload_resumable_by_path(&args.local_path, &args.remote_parent)
         .await?;
 
     println!("Upload complete!");

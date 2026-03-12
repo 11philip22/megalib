@@ -21,9 +21,12 @@
 //!   - Parse and download files from public MEGA links.
 //!   - Open and browse public folders (`open_folder`) without login.
 //!
-//! Path-based operations (`list`, `stat`, `mkdir`, `export`, uploads, etc.) rely on
-//! the cached node tree, so call `SessionHandle::refresh()` after login and after
-//! remote changes to keep paths accurate.
+//! Call `SessionHandle::fetch_nodes()` after login to populate the cached node tree.
+//! Path-based helpers (`list`, `stat`, `mkdir`, `export`, uploads, etc.) remain
+//! available as compatibility APIs over the cached tree, but their old
+//! canonical names are deprecated. Use explicit `*_by_path` aliases such as
+//! `list_by_path` and `upload_by_path` if you still want path-oriented calls,
+//! or prefer working directly with cached [`Node`] values.
 //!
 //! ## Example: Basic Usage
 //!
@@ -33,18 +36,32 @@
 //! # async fn example() -> megalib::Result<()> {
 //! // Login
 //! let session = SessionHandle::login("user@example.com", "password").await?;
+//! session.fetch_nodes().await?;
 //!
-//! // List files in root (Cloud Drive root is /Root)
-//! let files = session.list("/Root", false).await?;
-//! for file in files {
-//!     println!("{} ({} bytes)", file.name, file.size);
+//! let root = session
+//!     .root_nodes()
+//!     .await?
+//!     .into_iter()
+//!     .find(|node| node.node_type == megalib::NodeType::Root)
+//!     .expect("missing cloud drive root");
+//!
+//! for file in session.children(&root).await? {
+//!     println!("{} ({:?})", file.name, file.node_type);
 //! }
 //!
+//! let all_descendants = session.descendants(&root).await?;
+//! println!("{} total descendants", all_descendants.len());
+//!
 //! // Upload a file with resume support
-//! session.upload_resumable("local_file.txt", "/Root").await?;
+//! session.upload_resumable_to_node("local_file.txt", &root).await?;
 //!
 //! // Download a file to local disk
-//! if let Some(node) = session.stat("/Root/remote_file.txt").await? {
+//! if let Some(node) = session
+//!     .children(&root)
+//!     .await?
+//!     .into_iter()
+//!     .find(|node| node.name == "remote_file.txt")
+//! {
 //!     session.download_to_file(&node, "downloaded_file.txt").await?;
 //! }
 //!

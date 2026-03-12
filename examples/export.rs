@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.refresh().await?;
 
     println!("Exporting: {}", args.path);
-    match session.export(&args.path).await {
+    match session.export_by_path(&args.path).await {
         Ok(url) => {
             println!("\nExport successful!");
             println!("\nPublic link:");

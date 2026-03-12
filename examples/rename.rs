@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.refresh().await?;
 
     println!("Renaming {} to {}...", args.path, args.new_name);
-    session.rename(&args.path, &args.new_name).await?;
+    session.rename_by_path(&args.path, &args.new_name).await?;
 
     println!("Rename complete!");
 

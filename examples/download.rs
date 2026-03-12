@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
 
     println!("Looking for: {}", args.remote_path);
     let node = session
-        .stat(&args.remote_path)
+        .stat_by_path(&args.remote_path)
         .await?
         .ok_or_else(|| {
             megalib::error::MegaError::Custom(format!("File not found: {}", args.remote_path))

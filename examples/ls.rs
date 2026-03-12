@@ -51,7 +51,7 @@ async fn main() {
 
     println!("\nListing: {}\n", args.path);
 
-    match session.list(&args.path, false).await {
+    match session.list_by_path(&args.path, false).await {
         Ok(nodes) => {
             if nodes.is_empty() {
                 println!("  (empty)");

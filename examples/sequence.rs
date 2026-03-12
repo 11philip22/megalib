@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
 }
 
 async fn ensure_folder(session: &SessionHandle, path: &str) -> Result<()> {
-    match session.mkdir(path).await {
+    match session.mkdir_by_path(path).await {
         Ok(_) => {
             println!("Created folder: {}", path);
         }
@@ -129,11 +129,11 @@ async fn upload_and_export(
 ) -> Result<()> {
     println!("Uploading {local} to {remote_folder} ...");
     let remote_path = format!("{}/", remote_folder.trim_end_matches('/'));
-    let node = session.upload(local, &remote_path).await?;
+    let node = session.upload_by_path(local, &remote_path).await?;
     println!("Uploaded as {} ({} bytes)", node.name, node.size);
 
     println!("Exporting {} ...", remote_folder);
-    let link = session.export(remote_folder).await?;
+    let link = session.export_by_path(remote_folder).await?;
     println!("Public link: {link}");
     Ok(())
 }
