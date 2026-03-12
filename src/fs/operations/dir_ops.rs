@@ -116,7 +116,7 @@ impl Session {
             return Err(crate::error::MegaError::Custom("Invalid path".to_string()));
         };
 
-        let parent_handle = self.stat(parent_path).cloned().ok_or_else(|| {
+        let parent_handle = self.stat_by_path(parent_path).cloned().ok_or_else(|| {
             crate::error::MegaError::Custom(format!("Parent directory not found: {}", parent_path))
         })?;
         self.create_folder_in(name, &parent_handle).await
@@ -141,7 +141,7 @@ impl Session {
     /// Remove a file or directory.
     pub async fn rm(&mut self, path: &str) -> Result<()> {
         let node = self
-            .stat(path)
+            .stat_by_path(path)
             .cloned()
             .ok_or_else(|| crate::error::MegaError::Custom(format!("Node not found: {}", path)))?;
         self.remove_node(&node).await
@@ -187,12 +187,15 @@ impl Session {
 
     pub async fn mv(&mut self, source_path: &str, dest_parent_path: &str) -> Result<()> {
         let source_node = self
-            .stat(source_path)
+            .stat_by_path(source_path)
             .cloned()
             .ok_or_else(|| MegaError::Custom(format!("Source not found: {}", source_path)))?;
-        let dest_parent = self.stat(dest_parent_path).cloned().ok_or_else(|| {
-            MegaError::Custom(format!("Destination not found: {}", dest_parent_path))
-        })?;
+        let dest_parent = self
+            .stat_by_path(dest_parent_path)
+            .cloned()
+            .ok_or_else(|| {
+                MegaError::Custom(format!("Destination not found: {}", dest_parent_path))
+            })?;
 
         self.move_node(&source_node, &dest_parent).await
     }

@@ -82,14 +82,14 @@ impl Session {
         self.nodes.iter().filter(|n| n.is_contact()).collect()
     }
 
-    /// Get information about a file or folder.
+    /// Get information about a file or folder by path.
     ///
     /// # Arguments
     /// * `path` - The path to stat
     ///
     /// # Returns
     /// Node information if found
-    pub fn stat(&self, path: &str) -> Option<&Node> {
+    pub fn stat_by_path(&self, path: &str) -> Option<&Node> {
         let normalized_path = normalize_path(path);
 
         self.nodes
@@ -173,11 +173,6 @@ impl Session {
             .iter()
             .filter(|n| n.handle != parent.handle && self.node_has_ancestor(n, parent))
             .collect()
-    }
-
-    /// Return all descendants of a cached node.
-    pub fn descendants(&self, parent: &Node) -> Vec<&Node> {
-        self.descendants_by_handle(&parent.handle)
     }
 
     /// Check if a node has a specific ancestor.
@@ -345,9 +340,8 @@ mod tests {
             node("deep.txt", "deep-file", Some("deep"), NodeType::File),
         ];
 
-        let docs = session.get_node_by_handle("docs").unwrap().clone();
         let descendant_handles: Vec<&str> = session
-            .descendants(&docs)
+            .descendants_by_handle("docs")
             .into_iter()
             .map(|n| n.handle.as_str())
             .collect();

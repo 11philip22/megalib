@@ -2770,7 +2770,7 @@ impl SessionActor {
                 let _ = reply.send(res);
             }
             SessionCommand::Stat { path, reply } => {
-                let res = Ok(self.session.stat(&path).cloned());
+                let res = Ok(self.session.stat_by_path(&path).cloned());
                 let _ = reply.send(res);
             }
             SessionCommand::Nodes { reply } => {
@@ -2895,15 +2895,10 @@ impl SessionActor {
             } => {
                 let res: Result<Vec<Node>> = Ok(self
                     .session
-                    .get_node_by_handle(&parent_handle)
-                    .map(|parent| {
-                        self.session
-                            .descendants(parent)
-                            .into_iter()
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default());
+                    .descendants_by_handle(&parent_handle)
+                    .into_iter()
+                    .cloned()
+                    .collect());
                 let _ = reply.send(res);
             }
             SessionCommand::Mkdir { path, reply } => {
@@ -2917,7 +2912,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session.stat(&path_clone).cloned().ok_or(err),
+                                Err(err) => session.stat_by_path(&path_clone).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -3167,7 +3162,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
+                                Err(err) => session.stat_by_path(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -3214,7 +3209,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
+                                Err(err) => session.stat_by_path(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -3266,7 +3261,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
+                                Err(err) => session.stat_by_path(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),
@@ -3314,7 +3309,7 @@ impl SessionActor {
                         Box::new(move |session| {
                             let final_res = match res {
                                 Ok(node) => Ok(node),
-                                Err(err) => session.stat(&target_path).cloned().ok_or(err),
+                                Err(err) => session.stat_by_path(&target_path).cloned().ok_or(err),
                             };
                             let _ = reply.send(final_res);
                         }),

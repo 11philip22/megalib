@@ -180,7 +180,7 @@ impl Session {
         local_path: P,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+        let parent_node = self.stat_by_path(remote_parent_path).ok_or_else(|| {
             MegaError::Custom(format!(
                 "Parent directory not found: {}",
                 remote_parent_path
@@ -327,7 +327,7 @@ impl Session {
         local_path: P,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+        let parent_node = self.stat_by_path(remote_parent_path).ok_or_else(|| {
             MegaError::Custom(format!(
                 "Parent directory not found: {}",
                 remote_parent_path
@@ -382,7 +382,7 @@ impl Session {
         file_name: &str,
         remote_parent_path: &str,
     ) -> Result<Node> {
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+        let parent_node = self.stat_by_path(remote_parent_path).ok_or_else(|| {
             MegaError::Custom(format!(
                 "Parent directory not found: {}",
                 remote_parent_path
@@ -494,7 +494,7 @@ impl Session {
     where
         R: futures::io::AsyncRead + futures::io::AsyncSeek + Unpin + Send,
     {
-        let parent_node = self.stat(remote_parent_path).ok_or_else(|| {
+        let parent_node = self.stat_by_path(remote_parent_path).ok_or_else(|| {
             MegaError::Custom(format!(
                 "Parent directory not found: {}",
                 remote_parent_path
@@ -956,7 +956,7 @@ impl Session {
             .unwrap_or_else(|| "/".to_string());
         let target_path = format!("{}/{}", parent_path.trim_end_matches('/'), file_name);
 
-        if let Some(existing) = self.stat(&target_path) {
+        if let Some(existing) = self.stat_by_path(&target_path) {
             return Ok(existing.clone());
         }
 
