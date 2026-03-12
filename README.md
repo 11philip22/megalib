@@ -44,7 +44,7 @@
   - Proxy support (HTTP/HTTPS/SOCKS5)
 
 - **Node Operations**:
-  - Preferred node-first browsing via `fetch_nodes`, `root_nodes`, `children`, `child_node_by_name`, and `descendants`
+  - Preferred cached-tree browsing via `fetch_nodes`, `root_nodes`, `children_by_handle`, `child_node_by_name`, and `descendants`
   - Get node by handle
   - Check ancestor relationships
   - Check write permissions
@@ -83,7 +83,7 @@ async fn main() -> megalib::Result<()> {
         .find(|node| node.node_type == megalib::NodeType::Root)
         .expect("missing Cloud Drive root");
 
-    for node in session.children(&root).await? {
+    for node in session.children_by_handle(&root.handle).await? {
         println!("{} ({:?})", node.name, node.node_type);
     }
 

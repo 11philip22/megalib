@@ -45,7 +45,7 @@
 //!     .find(|node| node.node_type == megalib::NodeType::Root)
 //!     .expect("missing cloud drive root");
 //!
-//! for file in session.children(&root).await? {
+//! for file in session.children_by_handle(&root.handle).await? {
 //!     println!("{} ({:?})", file.name, file.node_type);
 //! }
 //!
@@ -61,7 +61,7 @@
 //!
 //! // Download a file to local disk
 //! if let Some(node) = session
-//!     .children(&root)
+//!     .children_by_handle(&root.handle)
 //!     .await?
 //!     .into_iter()
 //!     .find(|node| node.name == "remote_file.txt")

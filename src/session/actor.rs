@@ -1050,11 +1050,6 @@ impl SessionHandle {
             .await
     }
 
-    /// Return the direct children of a cached node.
-    pub async fn children(&self, parent: &Node) -> Result<Vec<Node>> {
-        self.children_by_handle(&parent.handle).await
-    }
-
     /// Return the direct children of a cached node handle.
     pub async fn children_by_handle(&self, parent_handle: &str) -> Result<Vec<Node>> {
         self.request(|reply| SessionCommand::Children {
@@ -1308,7 +1303,7 @@ impl SessionHandle {
     ///     .find(|node| node.node_type == NodeType::Root)
     ///     .expect("missing root");
     /// let files: Vec<_> = session
-    ///     .children(&root)
+    ///     .children_by_handle(&root.handle)
     ///     .await?
     ///     .into_iter()
     ///     .filter(|node| node.is_file())
@@ -2884,7 +2879,13 @@ impl SessionActor {
                 let res: Result<Vec<Node>> = Ok(self
                     .session
                     .get_node_by_handle(&parent_handle)
-                    .map(|parent| self.session.children(parent).into_iter().cloned().collect())
+                    .map(|parent| {
+                        self.session
+                            .children_by_handle(&parent.handle)
+                            .into_iter()
+                            .cloned()
+                            .collect()
+                    })
                     .unwrap_or_default());
                 let _ = reply.send(res);
             }

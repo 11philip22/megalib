@@ -48,7 +48,7 @@ async fn main() {
     println!("Cloud Drive root: {} ({})", root.name, root.handle);
 
     let children = session
-        .children(&root)
+        .children_by_handle(&root.handle)
         .await
         .expect("Failed to list children");
     if children.is_empty() {

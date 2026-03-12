@@ -129,11 +129,6 @@ impl Session {
             .collect()
     }
 
-    /// Return the direct children of a cached node.
-    pub fn children(&self, parent: &Node) -> Vec<&Node> {
-        self.children_by_handle(&parent.handle)
-    }
-
     /// Return a direct child of a node handle by name.
     pub fn child_node_by_name_handle(&self, parent_handle: &str, name: &str) -> Option<&Node> {
         self.children_by_handle(parent_handle)
@@ -323,9 +318,8 @@ mod tests {
             node("Nested", "nested", Some("docs"), NodeType::Folder),
         ];
 
-        let root = session.get_node_by_handle("root").unwrap().clone();
         let child_handles: Vec<&str> = session
-            .children(&root)
+            .children_by_handle("root")
             .into_iter()
             .map(|n| n.handle.as_str())
             .collect();
