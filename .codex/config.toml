@@ -1,6 +1,6 @@
 [mcp_servers.agentic-memory]
 command = "agentic-memory-mcp"
-args = ["serve"]
+args = ["--memory", "./agents/brain.amem", "serve", "--mode", "full"]
 
 [mcp_servers.codebase-cpp]
 command = "agentic-codebase-mcp"
