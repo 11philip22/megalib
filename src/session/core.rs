@@ -3,6 +3,7 @@
 //! This module handles user login, session state, and logout.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -19,6 +20,11 @@ use crate::crypto::keyring::{Keyring, encrypt_tlv_records};
 use crate::crypto::{AuthRing, AuthState, MegaRsaKey, make_random_key, parse_raw_private_key};
 use crate::error::{MegaError, Result};
 use crate::fs::Node;
+use crate::fs::upload_state::UploadState;
+use crate::session::runtime::persistence::{
+    ENGINE_STATE_SCHEMA_VERSION, PersistedAlertsState, PersistedEngineState, PersistedScState,
+    PersistenceRuntime, PersistenceScope, TransferPersistenceKey,
+};
 use crate::session::runtime::request::{RequestClass, RequestOutcome, RequestRuntime};
 
 /// MEGA user session.
@@ -29,6 +35,9 @@ pub(crate) struct Session {
     pub(crate) api: ApiClient,
     /// Session-owned request runtime boundary for future request orchestration work.
     pub(crate) request_runtime: RequestRuntime,
+    /// Session-owned persistence runtime boundary for future durable engine state.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) persistence: PersistenceRuntime,
     /// Session ID
     session_id: String,
     session_key: Option<[u8; 16]>,
@@ -131,6 +140,7 @@ impl Session {
         Session {
             api,
             request_runtime: RequestRuntime::new(),
+            persistence: PersistenceRuntime::disabled(),
             session_id,
             session_key,
             master_key,
@@ -216,6 +226,96 @@ impl Session {
     ) -> Result<RequestOutcome> {
         let (request_runtime, api) = (&mut self.request_runtime, &mut self.api);
         request_runtime.submit_batch(api, class, payloads).await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn persistence_scope(&self) -> PersistenceScope {
+        PersistenceScope::new(self.user_handle.clone())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn capture_engine_state(&self) -> PersistedEngineState {
+        PersistedEngineState {
+            schema_version: ENGINE_STATE_SCHEMA_VERSION,
+            sc: PersistedScState {
+                scsn: self.scsn.clone(),
+            },
+            alerts: PersistedAlertsState {
+                alerts_catchup_pending: self.alerts_catchup_pending,
+                user_alert_lsn: self.user_alert_lsn.clone(),
+                user_alerts: self.user_alerts.clone(),
+            },
+            tree: None,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn persist_engine_state(&self) -> Result<()> {
+        let scope = self.persistence_scope();
+        let state = self.capture_engine_state();
+        self.persistence.save_engine_state(&scope, &state)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn restore_persisted_engine_state(&mut self) -> Result<bool> {
+        let scope = self.persistence_scope();
+        let Some(state) = self.persistence.load_engine_state(&scope)? else {
+            return Ok(false);
+        };
+        self.apply_engine_state(state)?;
+        Ok(true)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn upload_persistence_key(&self, source_path: &Path) -> TransferPersistenceKey {
+        let fingerprint = UploadState::state_file_path(source_path)
+            .to_string_lossy()
+            .into_owned();
+        TransferPersistenceKey::upload(fingerprint)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn load_persisted_upload_state_for_path(
+        &self,
+        source_path: &Path,
+    ) -> Result<Option<UploadState>> {
+        let scope = self.persistence_scope();
+        let key = self.upload_persistence_key(source_path);
+        self.persistence.load_upload_state(&scope, &key)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn save_persisted_upload_state_for_path(
+        &self,
+        source_path: &Path,
+        state: &UploadState,
+    ) -> Result<()> {
+        let scope = self.persistence_scope();
+        let key = self.upload_persistence_key(source_path);
+        self.persistence.save_upload_state(&scope, &key, state)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn clear_persisted_upload_state_for_path(&self, source_path: &Path) -> Result<()> {
+        let scope = self.persistence_scope();
+        let key = self.upload_persistence_key(source_path);
+        self.persistence.clear_upload_state(&scope, &key)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_engine_state(&mut self, state: PersistedEngineState) -> Result<()> {
+        state.validate_schema_version()?;
+
+        self.scsn = state.sc.scsn;
+        self.user_alert_lsn = state.alerts.user_alert_lsn;
+        self.user_alerts = state.alerts.user_alerts;
+        self.alerts_catchup_pending = state.alerts.alerts_catchup_pending;
+        self.wsc_url = None;
+        self.sc_catchup = self.scsn.is_some();
+        self.current_seqtag = None;
+        self.current_seqtag_seen = false;
+        self.reset_state_current_tracking();
+        Ok(())
     }
 
     pub(crate) fn apply_request_seqtag(&mut self, seqtag: Option<String>) -> Option<String> {
@@ -1145,13 +1245,15 @@ impl Session {
             return Err(MegaError::Custom("Empty session file".to_string()));
         }
 
-        let session = match Self::login_with_session(session_b64, proxy).await {
+        let mut session = match Self::login_with_session(session_b64, proxy).await {
             Ok(session) => session,
             Err(_) => {
                 let _ = std::fs::remove_file(path);
                 return Ok(None);
             }
         };
+
+        session.restore_persisted_engine_state()?;
 
         Ok(Some(session))
     }
@@ -1196,18 +1298,28 @@ impl Session {
             None,
         )
     }
+
+    pub(crate) fn with_persistence_for_tests(mut self, persistence: PersistenceRuntime) -> Self {
+        self.persistence = persistence;
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::crypto::MegaRsaKey;
+    use crate::fs::upload_state::UploadState;
+    use crate::session::runtime::persistence::MemoryPersistenceBackend;
 
     // Helper to create a dummy session for testing configuration methods
     fn create_dummy_session() -> Session {
         Session {
             api: ApiClient::new(),
             request_runtime: RequestRuntime::new(),
+            persistence: PersistenceRuntime::disabled(),
             session_id: "dummy_session".to_string(),
             session_key: None,
             master_key: [0u8; 16],
@@ -1313,5 +1425,210 @@ mod tests {
         assert_eq!(applied, None);
         assert_eq!(session.current_seqtag.as_deref(), Some("existing"));
         assert!(session.current_seqtag_seen);
+    }
+
+    #[test]
+    fn test_capture_engine_state_uses_story_3_round_trip_fields_only() {
+        let mut session = create_dummy_session();
+        session.scsn = Some("scsn-123".to_string());
+        session.user_alert_lsn = Some("lsn-456".to_string());
+        session.user_alerts = vec![json!({"id": 1}), json!({"id": 2})];
+        session.alerts_catchup_pending = true;
+        session.nodes_state_ready = true;
+        session.sc_batch_catchup_done = true;
+        session.state_current = true;
+        session.action_packets_current = true;
+
+        let snapshot = session.capture_engine_state();
+
+        assert_eq!(snapshot.schema_version, ENGINE_STATE_SCHEMA_VERSION);
+        assert_eq!(snapshot.sc.scsn.as_deref(), Some("scsn-123"));
+        assert_eq!(snapshot.alerts.user_alert_lsn.as_deref(), Some("lsn-456"));
+        assert_eq!(snapshot.alerts.user_alerts.len(), 2);
+        assert!(snapshot.alerts.alerts_catchup_pending);
+        assert!(snapshot.tree.is_none());
+    }
+
+    #[test]
+    fn test_apply_engine_state_restores_markers_and_recomputes_runtime_flags() {
+        let mut session = create_dummy_session();
+        session.wsc_url = Some("https://wsc.example.test".to_string());
+        session.current_seqtag = Some("seqtag-123".to_string());
+        session.current_seqtag_seen = true;
+        session.nodes_state_ready = true;
+        session.sc_batch_catchup_done = true;
+        session.state_current = true;
+        session.action_packets_current = true;
+
+        let persisted = PersistedEngineState {
+            schema_version: ENGINE_STATE_SCHEMA_VERSION,
+            sc: PersistedScState {
+                scsn: Some("restored-scsn".to_string()),
+            },
+            alerts: PersistedAlertsState {
+                alerts_catchup_pending: true,
+                user_alert_lsn: Some("restored-lsn".to_string()),
+                user_alerts: vec![json!({"id": "alert-1"})],
+            },
+            tree: None,
+        };
+
+        session
+            .apply_engine_state(persisted)
+            .expect("engine state should apply");
+
+        assert_eq!(session.scsn.as_deref(), Some("restored-scsn"));
+        assert_eq!(session.user_alert_lsn.as_deref(), Some("restored-lsn"));
+        assert_eq!(session.user_alerts.len(), 1);
+        assert!(session.alerts_catchup_pending);
+        assert!(session.sc_catchup);
+        assert_eq!(session.wsc_url, None);
+        assert_eq!(session.current_seqtag, None);
+        assert!(!session.current_seqtag_seen);
+        assert!(!session.nodes_state_ready);
+        assert!(!session.sc_batch_catchup_done);
+        assert!(!session.state_current);
+        assert!(!session.action_packets_current);
+    }
+
+    #[test]
+    fn test_apply_engine_state_rejects_incompatible_schema_version() {
+        let mut session = create_dummy_session();
+        let persisted = PersistedEngineState {
+            schema_version: ENGINE_STATE_SCHEMA_VERSION + 1,
+            sc: PersistedScState { scsn: None },
+            alerts: PersistedAlertsState {
+                alerts_catchup_pending: false,
+                user_alert_lsn: None,
+                user_alerts: Vec::new(),
+            },
+            tree: None,
+        };
+
+        let err = session
+            .apply_engine_state(persisted)
+            .expect_err("schema mismatch should fail");
+
+        match err {
+            MegaError::Custom(message) => {
+                assert!(message.contains("Unsupported persistence schema version"));
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_persist_engine_state_uses_test_injection_path() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = create_dummy_session().with_persistence_for_tests(persistence);
+        session.scsn = Some("persisted-scsn".to_string());
+        session.user_alert_lsn = Some("persisted-lsn".to_string());
+        session.user_alerts = vec![json!({"id": "persisted-alert"})];
+        session.alerts_catchup_pending = true;
+
+        session
+            .persist_engine_state()
+            .expect("engine state should persist");
+
+        let restored = session
+            .persistence
+            .load_engine_state(&session.persistence_scope())
+            .expect("memory backend should load state")
+            .expect("snapshot should exist");
+
+        assert_eq!(restored.schema_version, ENGINE_STATE_SCHEMA_VERSION);
+        assert_eq!(restored.sc.scsn.as_deref(), Some("persisted-scsn"));
+        assert_eq!(
+            restored.alerts.user_alert_lsn.as_deref(),
+            Some("persisted-lsn")
+        );
+        assert_eq!(restored.alerts.user_alerts.len(), 1);
+        assert!(restored.alerts.alerts_catchup_pending);
+    }
+
+    #[test]
+    fn test_restore_persisted_engine_state_is_noop_for_empty_store() {
+        let mut session = create_dummy_session();
+        session.scsn = Some("existing-scsn".to_string());
+
+        let restored = session
+            .restore_persisted_engine_state()
+            .expect("empty-store restore should succeed");
+
+        assert!(!restored);
+        assert_eq!(session.scsn.as_deref(), Some("existing-scsn"));
+    }
+
+    #[test]
+    fn test_restore_persisted_engine_state_loads_snapshot_from_runtime() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        persisted.scsn = Some("persisted-scsn".to_string());
+        persisted.user_alert_lsn = Some("persisted-lsn".to_string());
+        persisted.user_alerts = vec![json!({"id": "persisted-alert"})];
+        persisted.alerts_catchup_pending = true;
+        persisted
+            .persist_engine_state()
+            .expect("engine state should persist");
+
+        let mut restored_session = create_dummy_session().with_persistence_for_tests(persistence);
+        restored_session.scsn = Some("fresh-server-scsn".to_string());
+        restored_session.user_alerts = vec![json!({"id": "fresh-alert"})];
+        restored_session.nodes_state_ready = true;
+        restored_session.state_current = true;
+
+        let restored = restored_session
+            .restore_persisted_engine_state()
+            .expect("restore should succeed");
+
+        assert!(restored);
+        assert_eq!(restored_session.scsn.as_deref(), Some("persisted-scsn"));
+        assert_eq!(
+            restored_session.user_alert_lsn.as_deref(),
+            Some("persisted-lsn")
+        );
+        assert_eq!(restored_session.user_alerts.len(), 1);
+        assert!(restored_session.alerts_catchup_pending);
+        assert!(!restored_session.nodes_state_ready);
+        assert!(!restored_session.state_current);
+    }
+
+    #[test]
+    fn test_upload_state_persistence_round_trips_through_session_helpers() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let session = create_dummy_session().with_persistence_for_tests(persistence);
+        let source_path = Path::new("/tmp/story-3-upload.bin");
+        let state = UploadState::new(
+            "https://upload.example.test".to_string(),
+            [0x11; 16],
+            [0x22; 8],
+            4096,
+            "story-3-upload.bin".to_string(),
+            "parent-handle".to_string(),
+            "file-hash-123".to_string(),
+        );
+
+        session
+            .save_persisted_upload_state_for_path(source_path, &state)
+            .expect("upload state should persist through session helper");
+
+        let restored = session
+            .load_persisted_upload_state_for_path(source_path)
+            .expect("load through session helper should succeed")
+            .expect("upload state should exist");
+
+        assert_eq!(restored.upload_url, state.upload_url);
+        assert_eq!(restored.file_hash, state.file_hash);
+
+        session
+            .clear_persisted_upload_state_for_path(source_path)
+            .expect("upload state should clear through session helper");
+
+        assert!(
+            session
+                .load_persisted_upload_state_for_path(source_path)
+                .expect("load after clear should succeed")
+                .is_none()
+        );
     }
 }

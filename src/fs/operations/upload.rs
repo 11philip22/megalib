@@ -23,6 +23,76 @@ use crate::session::Session;
 use tracing::debug;
 
 impl Session {
+    fn load_resumable_upload_state(
+        &self,
+        source_path: &std::path::Path,
+        state_path: &std::path::Path,
+    ) -> Result<Option<UploadState>> {
+        if let Some(state) = UploadState::load(state_path)? {
+            return Ok(Some(state));
+        }
+
+        match self.load_persisted_upload_state_for_path(source_path) {
+            Ok(state) => Ok(state),
+            Err(err) => {
+                debug!(
+                    ?err,
+                    path = %source_path.display(),
+                    "failed to load mirrored upload state from persistence runtime"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    fn save_resumable_upload_state(
+        &self,
+        source_path: &std::path::Path,
+        state_path: &std::path::Path,
+        state: &UploadState,
+    ) -> Result<()> {
+        state.save(state_path)?;
+        if let Err(err) = self.save_persisted_upload_state_for_path(source_path, state) {
+            debug!(
+                ?err,
+                path = %source_path.display(),
+                "failed to mirror upload state into persistence runtime"
+            );
+        }
+        Ok(())
+    }
+
+    fn try_save_resumable_upload_state(
+        &self,
+        source_path: &std::path::Path,
+        state_path: &std::path::Path,
+        state: &UploadState,
+    ) {
+        if let Err(err) = self.save_resumable_upload_state(source_path, state_path, state) {
+            debug!(
+                ?err,
+                path = %source_path.display(),
+                "failed to persist resumable upload state"
+            );
+        }
+    }
+
+    fn clear_resumable_upload_state(
+        &self,
+        source_path: &std::path::Path,
+        state_path: &std::path::Path,
+    ) -> Result<()> {
+        UploadState::delete(state_path)?;
+        if let Err(err) = self.clear_persisted_upload_state_for_path(source_path) {
+            debug!(
+                ?err,
+                path = %source_path.display(),
+                "failed to clear mirrored upload state from persistence runtime"
+            );
+        }
+        Ok(())
+    }
+
     /// Upload a node attribute (thumbnail, preview) to MEGA's attribute storage.
     ///
     /// This is used internally when `enable_previews(true)` is set, but can also
@@ -220,8 +290,9 @@ impl Session {
         let path = local_path.as_ref();
         let state_path = UploadState::state_file_path(path);
 
-        // Check for existing state file
-        if let Some(existing_state) = UploadState::load(&state_path)? {
+        // Check for existing state via the current sidecar file first, then the
+        // new persistence runtime mirror if no sidecar is present.
+        if let Some(existing_state) = self.load_resumable_upload_state(path, &state_path)? {
             // Verify the state is valid
             let current_hash = calculate_file_hash(path)?;
 
@@ -244,12 +315,12 @@ impl Session {
                         //     _e
                         // );
                         // Delete invalid state and fall through to fresh upload
-                        UploadState::delete(&state_path)?;
+                        self.clear_resumable_upload_state(path, &state_path)?;
                     }
                 }
             } else {
                 // State is invalid (different file or expired), delete and start fresh
-                UploadState::delete(&state_path)?;
+                self.clear_resumable_upload_state(path, &state_path)?;
             }
         }
 
@@ -315,8 +386,9 @@ impl Session {
             file_hash,
         );
 
-        // Save initial state
-        state.save(&state_path)?;
+        // Save initial state to the current sidecar file and mirror it into the
+        // new persistence runtime without changing resumable-upload semantics.
+        self.save_resumable_upload_state(path, &state_path, &state)?;
 
         // Continue with stateful upload
         self.upload_internal(path, state, Some(&state_path)).await
@@ -655,7 +727,7 @@ impl Session {
                     if let Some(sp) = state_path {
                         state.chunk_macs = chunk_macs.clone();
                         state.offset = offset;
-                        state.save(sp)?;
+                        self.save_resumable_upload_state(path, sp, &state)?;
                     }
 
                     // Report progress
@@ -666,7 +738,7 @@ impl Session {
                         if let Some(sp) = state_path {
                             state.chunk_macs = chunk_macs.clone();
                             state.offset = offset;
-                            let _ = state.save(sp);
+                            self.try_save_resumable_upload_state(path, sp, &state);
                         }
                         return Err(MegaError::Custom("Upload cancelled by user".to_string()));
                     }
@@ -676,7 +748,7 @@ impl Session {
                     if let Some(sp) = state_path {
                         state.chunk_macs = chunk_macs.clone();
                         state.offset = offset;
-                        let _ = state.save(sp);
+                        self.try_save_resumable_upload_state(path, sp, &state);
                     }
                     return Err(e);
                 }
@@ -728,7 +800,7 @@ impl Session {
 
         // Delete state file on success
         if let Some(sp) = state_path {
-            UploadState::delete(sp)?;
+            self.clear_resumable_upload_state(path, sp)?;
         }
 
         Ok(node)
@@ -993,4 +1065,150 @@ fn first_error_code(errors: &serde_json::Value) -> Option<i64> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::session::runtime::persistence::{
+        PersistedEngineState, PersistenceBackend, PersistenceRuntime, PersistenceScope,
+        TransferPersistenceKey,
+    };
+
+    #[derive(Debug, Default)]
+    struct FailingUploadStateBackend;
+
+    impl PersistenceBackend for FailingUploadStateBackend {
+        fn load_engine_state(
+            &self,
+            _scope: &PersistenceScope,
+        ) -> Result<Option<PersistedEngineState>> {
+            Ok(None)
+        }
+
+        fn save_engine_state(
+            &self,
+            _scope: &PersistenceScope,
+            _state: &PersistedEngineState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear_engine_state(&self, _scope: &PersistenceScope) -> Result<()> {
+            Ok(())
+        }
+
+        fn load_upload_state(
+            &self,
+            _scope: &PersistenceScope,
+            _key: &TransferPersistenceKey,
+        ) -> Result<Option<UploadState>> {
+            Err(MegaError::Custom(
+                "corrupt mirrored upload state".to_string(),
+            ))
+        }
+
+        fn save_upload_state(
+            &self,
+            _scope: &PersistenceScope,
+            _key: &TransferPersistenceKey,
+            _state: &UploadState,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn clear_upload_state(
+            &self,
+            _scope: &PersistenceScope,
+            _key: &TransferPersistenceKey,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn sample_state(hash: &str) -> UploadState {
+        UploadState::new(
+            "https://upload.example.test".to_string(),
+            [0x11; 16],
+            [0x22; 8],
+            4096,
+            "story-3-upload.bin".to_string(),
+            "parent-handle".to_string(),
+            hash.to_string(),
+        )
+    }
+
+    fn unique_test_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join("megalib-story-3-tests")
+            .join(format!("{name}-{unique}"))
+    }
+
+    fn ensure_parent_dir(path: &Path) {
+        let parent = path
+            .parent()
+            .expect("test path should always have a parent directory");
+        fs::create_dir_all(parent).expect("test directory creation should succeed");
+    }
+
+    #[test]
+    fn resumable_upload_load_prefers_sidecar_and_empty_store_is_compatible() {
+        let source_path = unique_test_path("resumable-sidecar");
+        let state_path = UploadState::state_file_path(&source_path);
+        ensure_parent_dir(&source_path);
+
+        let runtime_state = sample_state("runtime-hash");
+        let sidecar_state = sample_state("sidecar-hash");
+
+        let persistence = PersistenceRuntime::new(Arc::new(
+            crate::session::runtime::persistence::MemoryPersistenceBackend::default(),
+        ));
+        let session = Session::test_dummy().with_persistence_for_tests(persistence);
+
+        session
+            .save_persisted_upload_state_for_path(&source_path, &runtime_state)
+            .expect("runtime-mirrored upload state should persist");
+        sidecar_state
+            .save(&state_path)
+            .expect("sidecar upload state should save");
+
+        let loaded = session
+            .load_resumable_upload_state(&source_path, &state_path)
+            .expect("resumable upload state load should succeed")
+            .expect("sidecar state should be available");
+
+        assert_eq!(loaded.file_hash, sidecar_state.file_hash);
+
+        UploadState::delete(&state_path).expect("sidecar cleanup should succeed");
+
+        let empty_store_loaded = Session::test_dummy()
+            .load_resumable_upload_state(&source_path, &state_path)
+            .expect("empty-store load should succeed");
+
+        assert!(empty_store_loaded.is_none());
+    }
+
+    #[test]
+    fn resumable_upload_load_treats_runtime_errors_as_invalid_mirror() {
+        let source_path = unique_test_path("resumable-runtime-error");
+        let state_path = UploadState::state_file_path(&source_path);
+
+        let persistence = PersistenceRuntime::new(Arc::new(FailingUploadStateBackend));
+        let session = Session::test_dummy().with_persistence_for_tests(persistence);
+
+        let loaded = session
+            .load_resumable_upload_state(&source_path, &state_path)
+            .expect("runtime mirror errors should be swallowed");
+
+        assert!(loaded.is_none());
+    }
 }

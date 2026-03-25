@@ -19,9 +19,27 @@ Companion artifacts:
 
 ## Status
 
-Planned.
+Completed.
 
-Story 3 is not complete until the persistence runtime exists in code, `Session` can route persistence through it, a minimal backend exists for tests and incremental wiring, and the Story 3 acceptance criteria below pass.
+Current implementation status on 2026-03-25:
+
+- Task 3.1 is complete in code
+- Task 3.2 is complete in code
+- Task 3.3 is complete in code
+- Task 3.4 is complete in code
+- the persistence runtime exists at `src/session/runtime/persistence.rs`
+- `Session` owns `persistence: PersistenceRuntime` at construction time
+- the first live-wired engine-state round-trip is limited to:
+  - `schema_version`
+  - `scsn`
+  - `alerts_catchup_pending`
+  - `user_alert_lsn`
+  - `user_alerts`
+- no-op and memory backends exist and are covered by tests
+- saved-session startup now invokes persisted engine-state restore through the new boundary before returning `Session`
+- resumable upload now mirrors load/save/clear through the persistence SPI while keeping the sidecar file authoritative
+- focused compatibility coverage now proves empty-store transfer behavior, sidecar precedence, and non-fatal mirrored-record load failure
+- Story 3 acceptance criteria are satisfied without public API changes
 
 ---
 
@@ -786,5 +804,4 @@ Treat this document as the coding contract for Story 3.
 
 The next implementation slice should be:
 
-- Task 3.1 plus Task 3.2 in one PR if the write scope stays inside `src/session/runtime/persistence.rs` and `src/session/core.rs`
-- otherwise land Task 3.1 first, then Task 3.2 as the next slice
+- Story 4 planning or execution, using Story 3 as the persistence contract baseline for durable tree/cache coherency
