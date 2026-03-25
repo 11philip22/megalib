@@ -18,9 +18,22 @@ Companion artifacts:
 
 ## Status
 
-Planned.
+Completed.
 
-Story 2 is not complete until the request-runtime boundary exists in code, at least one read path and one mutating path use it, and the Story 2 acceptance criteria below pass.
+Current implementation status on 2026-03-25:
+
+- Task 2.1 is complete in code
+- Task 2.2 is also complete in the same slice
+- Task 2.3 is complete in code
+- Task 2.4 is complete in code
+- the request-runtime boundary exists at `src/session/runtime/request.rs`
+- `Session` owns `request_runtime: RequestRuntime`
+- the quota read path already uses the new boundary
+- `create_folder_in` and `mkdir` now use the new boundary for a real actor-visible mutating flow
+- actor-side seqtag waiter handling still consumes `Session.current_seqtag` after the mutating call returns
+- internal mutating submission helpers also use the boundary for account-key update requests
+- targeted regression coverage now covers the request-runtime seam, session-side seqtag application, and AP-side observation of the current seqtag contract
+- Story 2 acceptance criteria are satisfied without public API changes
 
 ---
 
@@ -534,13 +547,13 @@ Risk control:
 
 ---
 
-## Open Questions
+## Resolved Foundation Decisions
 
-These do not block the Story 2 spec, but implementation should answer them explicitly in code review:
+The first implementation slice has already fixed these design choices:
 
-1. should `RequestRuntime` hold future queue/retry state immediately, or start stateless and become stateful in later stories
-2. should batch submission live in the same initial type or behind a second helper inside `request.rs`
-3. whether response-to-seqtag extraction belongs fully inside request runtime or remains split with existing session helpers for the first slice
+1. `RequestRuntime` starts effectively stateless and may grow queue or retry state in later stories
+2. batch submission stays in the same type and is exposed through thin `submit_batch(...)` convenience wrappers over `submit(...)`
+3. response-to-seqtag extraction lives inside `src/session/runtime/request.rs` as a private helper and returns `RequestOutcome.seqtag` without mutating session state
 
 ---
 
@@ -548,7 +561,8 @@ These do not block the Story 2 spec, but implementation should answer them expli
 
 Treat this document as the coding contract for Story 2.
 
+Task 2.1, Task 2.2, Task 2.3, and Task 2.4 are complete.
+
 The next implementation slice should be:
 
-- Task 2.1 plus Task 2.2 in one PR if the seam stays small
-- otherwise Task 2.1 first, then Task 2.2 and Task 2.3 as the next slice
+- start Story 3 and keep the same pattern: one narrow internal boundary, one or two migrated consumers, and focused regression coverage

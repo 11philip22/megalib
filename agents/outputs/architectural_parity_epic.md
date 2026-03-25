@@ -138,6 +138,10 @@ Outcome:
 
 - add a first-class storage boundary for node state, alert state, transfer state, and SCSN/current-state metadata
 
+Detailed spec:
+
+- `agents/outputs/architectural_parity_story_3_persistence_spi.md`
+
 Affected modules:
 
 - `src/session/core.rs`

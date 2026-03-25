@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added node-first recursive browsing (`descendants`) and batch export (`export_many_nodes`) helpers so remaining recursive-list/export conveniences do not require remote paths.
 - Added node-first child lookup helpers (`child_node_by_name` and `child_node_by_name_type`) for cached-parent navigation without `stat_by_path`.
 
+### Changed
+- Introduced an internal request-runtime seam under `src/session/runtime/request.rs` and made `Session` own request submission through that boundary instead of coupling migrated flows directly to raw `ApiClient` calls.
+- Routed quota and the actor-visible folder-creation path (`create_folder_in` / `mkdir`) through the new request runtime while preserving actor-side seqtag waiter handling.
+- Added focused regression coverage for request-runtime seqtag parsing, session-side seqtag application, and action-packet observation of the current seqtag contract.
+
 ### Deprecated
 - Deprecated the old canonical path-first `SessionHandle` method names such as `list`, `stat`, `mkdir`, `mv`, `rename`, `rm`, `export`, `share_folder`, and path-based upload helpers in favor of explicit `*_by_path` aliases or the newer node-first APIs.
 

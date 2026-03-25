@@ -7,6 +7,7 @@ mod core;
 mod device_id;
 pub mod key_sync;
 pub mod registration;
+pub(crate) mod runtime;
 mod sc_poller;
 mod sharing;
 

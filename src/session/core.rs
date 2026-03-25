@@ -19,6 +19,7 @@ use crate::crypto::keyring::{Keyring, encrypt_tlv_records};
 use crate::crypto::{AuthRing, AuthState, MegaRsaKey, make_random_key, parse_raw_private_key};
 use crate::error::{MegaError, Result};
 use crate::fs::Node;
+use crate::session::runtime::request::{RequestClass, RequestOutcome, RequestRuntime};
 
 /// MEGA user session.
 ///
@@ -26,6 +27,8 @@ use crate::fs::Node;
 pub(crate) struct Session {
     /// API client for making requests
     pub(crate) api: ApiClient,
+    /// Session-owned request runtime boundary for future request orchestration work.
+    pub(crate) request_runtime: RequestRuntime,
     /// Session ID
     session_id: String,
     session_key: Option<[u8; 16]>,
@@ -127,6 +130,7 @@ impl Session {
         let alerts_catchup_pending = scsn.is_some();
         Session {
             api,
+            request_runtime: RequestRuntime::new(),
             session_id,
             session_key,
             master_key,
@@ -194,6 +198,31 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn submit_request_single(
+        &mut self,
+        class: RequestClass,
+        payload: Value,
+    ) -> Result<RequestOutcome> {
+        let (request_runtime, api) = (&mut self.request_runtime, &mut self.api);
+        request_runtime.submit_single(api, class, payload).await
+    }
+
+    pub(crate) async fn submit_request_batch(
+        &mut self,
+        class: RequestClass,
+        payloads: Vec<Value>,
+    ) -> Result<RequestOutcome> {
+        let (request_runtime, api) = (&mut self.request_runtime, &mut self.api);
+        request_runtime.submit_batch(api, class, payloads).await
+    }
+
+    pub(crate) fn apply_request_seqtag(&mut self, seqtag: Option<String>) -> Option<String> {
+        let seqtag = seqtag?;
+        self.current_seqtag = Some(seqtag.clone());
+        self.current_seqtag_seen = false;
+        Some(seqtag)
     }
 
     pub(super) async fn attach_account_keys_if_missing(&mut self) -> Result<()> {
@@ -325,7 +354,11 @@ impl Session {
         }
 
         if !commands.is_empty() {
-            let resp = self.api.request_batch(commands).await?;
+            let outcome = self
+                .submit_request_batch(RequestClass::Mutating, commands)
+                .await?;
+            let _ = outcome.seqtag.as_deref();
+            let resp = outcome.response;
             Self::validate_upv_batch(resp.clone())?;
             if let Some(ver) = Self::extract_attr_version(&resp, "^!keys") {
                 self.user_attr_versions.insert("^!keys".to_string(), ver);
@@ -358,14 +391,18 @@ impl Session {
     async fn upload_rsa_keypair(&mut self, rsa_key: &MegaRsaKey) -> Result<()> {
         let privk = rsa_key.encode_private_key(&self.master_key);
         let pubk = rsa_key.encode_public_key();
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "up",
-                "privk": privk,
-                "pubk": pubk
-            }))
+        let outcome = self
+            .submit_request_single(
+                RequestClass::Mutating,
+                json!({
+                    "a": "up",
+                    "privk": privk,
+                    "pubk": pubk
+                }),
+            )
             .await?;
+        let _ = outcome.seqtag.as_deref();
+        let response = outcome.response;
 
         if let Some(err) = response.as_i64().filter(|v| *v < 0) {
             let code = crate::api::ApiErrorCode::from(err);
@@ -1170,6 +1207,7 @@ mod tests {
     fn create_dummy_session() -> Session {
         Session {
             api: ApiClient::new(),
+            request_runtime: RequestRuntime::new(),
             session_id: "dummy_session".to_string(),
             session_key: None,
             master_key: [0u8; 16],
@@ -1250,5 +1288,30 @@ mod tests {
         // Let's just test basic setting for now.
         session.set_workers(10);
         assert_eq!(session.workers(), 10);
+    }
+
+    #[test]
+    fn test_apply_request_seqtag_sets_current_seqtag_and_resets_seen() {
+        let mut session = create_dummy_session();
+        session.current_seqtag_seen = true;
+
+        let applied = session.apply_request_seqtag(Some("seqtag-123".to_string()));
+
+        assert_eq!(applied.as_deref(), Some("seqtag-123"));
+        assert_eq!(session.current_seqtag.as_deref(), Some("seqtag-123"));
+        assert!(!session.current_seqtag_seen);
+    }
+
+    #[test]
+    fn test_apply_request_seqtag_none_is_noop() {
+        let mut session = create_dummy_session();
+        session.current_seqtag = Some("existing".to_string());
+        session.current_seqtag_seen = true;
+
+        let applied = session.apply_request_seqtag(None);
+
+        assert_eq!(applied, None);
+        assert_eq!(session.current_seqtag.as_deref(), Some("existing"));
+        assert!(session.current_seqtag_seen);
     }
 }

@@ -33,10 +33,7 @@ impl Session {
     }
 
     pub(crate) fn track_seqtag_from_response(&mut self, response: &Value) -> Option<String> {
-        let st = Self::extract_seqtag_from_response(response)?;
-        self.current_seqtag = Some(st.clone());
-        self.current_seqtag_seen = false;
-        Some(st)
+        self.apply_request_seqtag(Self::extract_seqtag_from_response(response))
     }
 
     pub(crate) async fn dispatch_action_packets(
@@ -745,5 +742,28 @@ impl Session {
         }
 
         Ok(Some((user, ed, cu, verified, Some(contact))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::session::Session;
+
+    #[tokio::test]
+    async fn matching_action_packet_marks_current_seqtag_seen() {
+        let mut session = Session::test_dummy();
+        let _ = session.apply_request_seqtag(Some("seqtag-123".to_string()));
+
+        let result = session
+            .dispatch_action_packets(&[json!({"st": "seqtag-123"})])
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!result.ap_pk_seen);
+        assert!(!result.pending_keys_fetch);
+        assert!(result.deferred_key_work.is_none());
+        assert!(session.current_seqtag_seen);
     }
 }

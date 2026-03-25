@@ -10,6 +10,7 @@ use crate::crypto::aes::aes128_cbc_encrypt;
 use crate::error::{MegaError, Result};
 use crate::fs::node::Node;
 use crate::session::Session;
+use crate::session::runtime::request::RequestClass;
 
 impl Session {
     /// Create a new directory inside a cached parent node.
@@ -41,23 +42,27 @@ impl Session {
 
         // 4. Call API
         let session_id = self.session_id().to_string();
-        let response = self
-            .api_mut()
-            .request(json!({
-                "a": "p",
-                "t": parent_handle,
-                "n": [{
-                    "h": "xxxxxxxx",
-                    "t": 1,
-                    "a": attrs_b64,
-                    "k": key_b64
-                }],
-                "v": 4,
-                "sm": 1,
-                "i": session_id
-            }))
+        let outcome = self
+            .submit_request_single(
+                RequestClass::Mutating,
+                json!({
+                    "a": "p",
+                    "t": parent_handle,
+                    "n": [{
+                        "h": "xxxxxxxx",
+                        "t": 1,
+                        "a": attrs_b64,
+                        "k": key_b64
+                    }],
+                    "v": 4,
+                    "sm": 1,
+                    "i": session_id
+                }),
+            )
             .await?;
-        let seqtag = self.track_seqtag_from_response(&response);
+        let seqtag = outcome.seqtag;
+        let response = outcome.response;
+        let _ = self.apply_request_seqtag(seqtag);
 
         let mut created_node: Option<Node> = None;
         if let Some(nodes_array) = response.get("f").and_then(|v| v.as_array())
@@ -92,8 +97,6 @@ impl Session {
                 message: api.description().to_string(),
             });
         }
-
-        let _ = seqtag;
 
         if let Some(node) = created_node {
             return Ok(node);
