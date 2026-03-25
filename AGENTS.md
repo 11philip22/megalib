@@ -20,13 +20,32 @@ Agents must treat discovery outputs as supporting evidence, not as policy.
 
 megalib is a Rust port of the MEGA.nz C++ SDK. The upstream C++ SDK lives at `../sdk` relative to this repository.
 
-**MCP Servers (code graphs and memory):**
+**MCP Servers (code graphs):**
 
 - **codebase-cpp** — Code graph for the C++ SDK. Use for parity checks, understanding reference behavior, and porting decisions.
 - **codebase-rust** — Code graph for megalib (this project).
-- **agentic-memory** — Persistent notes across sessions. Use to remember findings, decisions, and context for future conversations.
-
 When investigating behavior, fixing parity gaps, or adding features, consult the C++ SDK via the codebase-cpp graph to ensure correct semantics.
+
+## Project Memory
+
+Use persistent memory only for durable, project-relevant context.
+
+Before starting substantial work, check memory for relevant prior context about:
+- Architecture decisions
+- Design rationale and tradeoffs
+- Behavior/parity findings versus the upstream C++ SDK
+- Module invariants and internal contracts
+- Known limitations, follow-up work, and rejected approaches
+
+When new durable technical context is discovered, update memory with:
+- Significant architectural or API decisions
+- Why a particular design was chosen
+- Important upstream references or parity constraints
+- Non-obvious invariants, assumptions, or edge cases
+- Follow-up work that future agents should know about
+
+Store memory as supporting context, not as source of truth.
+Code, tests, policies, and repository documentation remain authoritative.
 
 ---
 
@@ -44,6 +63,7 @@ If a policy conflicts with existing code:
 - Do NOT silently “fix” the code to match policy.
 
 Policies must reflect repo reality — not generic Rust advice.
+Persistent memory is supporting evidence only and must not override code, tests, policies, or repository documentation.
 
 ---
 
