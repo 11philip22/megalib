@@ -137,6 +137,7 @@ Dependencies:
 Outcome:
 
 - add a first-class storage boundary for node state, alert state, transfer state, and SCSN/current-state metadata
+- define the persistence contract for tree/cache and transfer state even where first live consumer wiring is deferred to later stories
 
 Detailed spec:
 
@@ -153,8 +154,14 @@ Agent-sized tasks:
 
 1. Define storage traits and durable data models.
 2. Add a minimal backend suitable for tests and incremental wiring.
-3. Wire session startup and shutdown to the persistence boundary.
+3. Wire session startup and explicit internal persistence helpers to the persistence boundary.
 4. Add tests for empty-store, restore, and incompatible-store handling.
+
+Explicit deferrals to later stories:
+
+- cached-node, pending-node, outshare, and durable tree/SCSN coherency wiring belongs to Story 4
+- transfer resume/runtime consumer migration belongs to Story 5
+- Story 3 may define those domains in the SPI without fully wiring them yet
 
 Acceptance criteria:
 
@@ -170,6 +177,7 @@ Dependencies:
 Outcome:
 
 - create the Rust architectural equivalent of `NodeManager + DB + SCSN`
+- make durable cached tree state, statecache-style metadata, and SC/AP-driven commits one coherent subsystem rather than separate features
 
 Affected modules:
 
@@ -183,13 +191,18 @@ Agent-sized tasks:
 
 1. Persist node tree state and restore it on session bootstrap.
 2. Persist SCSN/current-state markers alongside node state.
-3. Make tree refresh and action-packet application commit coherently.
-4. Add recovery tests for restart, partial refresh, and stale-state detection.
+3. Make tree refresh and action-packet application commit coherently under one persistence domain, with `scsn` driving commit boundaries.
+4. Add recovery tests for restart, partial refresh, stale-state detection, and cache-vs-server divergence.
+
+Consumes from Story 3:
+
+- the tree snapshot and engine-metadata persistence domains defined by the Story 3 SPI
 
 Acceptance criteria:
 
 - cached tree state can survive restart
 - SC/AP progress and node persistence stay coherent
+- tree persistence behaves like one `statecache + nodes + scsn` subsystem rather than independent snapshots
 
 Dependencies:
 
@@ -200,6 +213,7 @@ Dependencies:
 Outcome:
 
 - move queueing, retry, concurrency policy, and durable transfer state into a dedicated transfer subsystem
+- establish the Rust equivalent of transfer-cache plus runtime-owned transfer/file state rather than operation-local sidecars
 
 Affected modules:
 
@@ -212,14 +226,19 @@ Affected modules:
 Agent-sized tasks:
 
 1. Extract scheduler/runtime types from upload/download operation code.
-2. Move resume state behind the persistence SPI.
-3. Define concurrency and retry policy hooks.
-4. Add tests for cancel, resume, restart, and failure recovery.
+2. Move resume state behind the persistence SPI and replace operation-local durability assumptions with runtime-owned transfer persistence.
+3. Define concurrency and retry policy hooks plus typed persistence identity for transfer records.
+4. Add tests for cancel, resume, restart, failure recovery, and transfer-cache restore behavior.
+
+Consumes from Story 3:
+
+- the transfer resume persistence domain defined by the Story 3 SPI
 
 Acceptance criteria:
 
 - upload/download modules become thinner orchestration layers
 - transfer policy is centrally owned
+- transfer durability is owned by the transfer subsystem rather than `UploadState` sidecar files
 
 Dependencies:
 

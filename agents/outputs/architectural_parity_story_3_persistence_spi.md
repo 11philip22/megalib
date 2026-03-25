@@ -70,7 +70,7 @@ In scope:
 - introduce `src/session/runtime/persistence.rs`
 - define the internal persistence API and durable data models
 - add at least one minimal backend suitable for tests and incremental wiring
-- wire `Session` startup and shutdown through the persistence boundary
+- wire `Session` startup and explicit internal persistence helper paths through the boundary
 - define persistence domains for:
   - engine metadata
   - alert metadata
@@ -88,6 +88,13 @@ Out of scope:
 - public APIs for selecting or configuring persistence backends
 
 This is a persistence-boundary story, not the full durable cache story.
+
+Implementation ownership after Story 3:
+
+- Story 3 defines the persistence contract and may live-wire engine metadata plus alert metadata
+- Story 4 owns durable cached-node, pending-node, outshare, and SCSN/tree coherency behavior
+- Story 5 owns migration of transfer resume/runtime state behind the persistence SPI
+- key-manager and `^!keys` local durability remain outside Story 3 unless a later story explicitly adds them
 
 ---
 
@@ -165,7 +172,20 @@ Consequence:
   - an in-memory backend for unit/integration tests
 - DB/file backends can come later without changing the calling contract
 
-### Decision 4. Define all major persistence domains now, even if only some are wired immediately
+### Decision 4. Persistence runtime should be owned by `Session` at construction time
+
+Why:
+
+- upstream DB access is injected when the client is constructed, not bolted on by late mutation
+- constructor-time ownership makes the runtime part of engine state rather than optional ambient state
+
+Consequence:
+
+- `Session::new_internal()` should initialize `PersistenceRuntime::disabled()`
+- tests may use an internal helper or test-only constructor path to inject a memory backend
+- Story 3 should not add public setters or public backend-configuration APIs
+
+### Decision 5. Define all major persistence domains now, even if only some are wired immediately
 
 Why:
 
@@ -178,7 +198,7 @@ Consequence:
 - the initial API should include engine snapshot and transfer resume persistence
 - first live wiring may stay narrow, but the contract must already name both domains
 
-### Decision 5. Node persistence should use an internal durable model, not the public `Node` type
+### Decision 6. Node persistence should use an internal durable model, not the public `Node` type
 
 Why:
 
@@ -190,6 +210,104 @@ Consequence:
 - Story 3 should define `PersistedNodeRecord` as an internal storage model
 - `path` should be rebuilt after restore
 - `pending_nodes` may remain raw JSON because they are already a deferred parse/decrypt queue
+
+### Decision 7. Story 3 should prove explicit save/load helpers, not broad autosave or shutdown-only flushing
+
+Why:
+
+- upstream persistence is incremental and runtime-driven, not a final teardown dump
+- Story 3 is too early to decide the complete persistence cadence for tree/AP/transfer domains
+
+Consequence:
+
+- startup restore should be wired through the new boundary
+- Story 3 should add explicit internal capture/save/apply helpers
+- Story 3 should not rely on shutdown as the primary persistence mechanism
+- broad autosave policy is deferred to later stories that own coherency semantics
+
+### Decision 8. Transfer persistence keys should be typed, not raw strings
+
+Why:
+
+- upstream transfer persistence is account-scoped and record-oriented, not stringly typed
+- a typed key avoids spreading ad hoc key formats before Story 5
+
+Consequence:
+
+- Story 3 should introduce an internal `TransferPersistenceKey`
+- the first key type only needs upload support, but it should leave room for downloads later
+
+### Decision 9. Persist full alert cache state in Story 3
+
+Why:
+
+- upstream restores alerts from cache rather than relying only on catch-up markers
+- `megalib` already keeps alerts in memory as `Vec<Value>`
+
+Consequence:
+
+- Story 3 should persist `alerts_catchup_pending`, `user_alert_lsn`, and `user_alerts`
+- alert catch-up booleans remain markers, while runtime delivery state is still derived
+
+### Decision 10. Use strict schema-version rejection in the first slice
+
+Why:
+
+- upstream handles DB compatibility explicitly rather than attempting partial best-effort restores
+- partial restore on incompatible state would create difficult-to-debug contradictions
+
+Consequence:
+
+- Story 3 should start with `schema_version = 1`
+- unknown schema versions should fail cleanly
+- version mismatch should prevent partial engine-state apply
+
+### Decision 11. Restore should run only after authenticated identity is known and before SC runtime coordination starts
+
+Why:
+
+- the persistence scope is account-owned, so restore must not guess before authenticated identity exists
+- upstream cached startup restores state before live SC catch-up resumes against that state
+- restoring after SC runtime coordination starts would create ordering races for `scsn`, alerts, and current-state recomputation
+
+Consequence:
+
+- Story 3 restore should run only for authenticated session flows
+- restore should happen after the account handle is known and `Session` exists
+- restore should happen before SC poller state is spawned or synchronized from the restored session state
+- public-link runtime remains out of scope for Story 3 persistence
+
+### Decision 12. Test backend injection should use a `#[cfg(test)]` internal helper rather than widening production constructors
+
+Why:
+
+- Rust code should keep production constructors narrow unless broader construction is part of the design contract
+- Story 3 needs deterministic tests, not a broader public or production-only configuration surface
+
+Consequence:
+
+- `Session::new_internal()` remains the production constructor path
+- tests may use a `#[cfg(test)]` internal helper such as `with_persistence_for_tests(...)`
+- Story 3 should not add public setters or expose backend wiring through the public API
+
+### Decision 13. The first live-wired persisted engine-state round-trip should be minimal and binding
+
+Why:
+
+- Story 3 needs a narrow, verifiable first persistence slice
+- Story 4 and Story 5 need the broader contract, but Story 3 should not pretend all domains are fully live
+- making the first round-trip set explicit avoids widening the first PR during implementation
+
+Consequence:
+
+- the first implementation slice must round-trip:
+  - `schema_version`
+  - `scsn`
+  - `alerts_catchup_pending`
+  - `user_alert_lsn`
+  - `user_alerts`
+- tree snapshot types and transfer persistence hooks may exist in the SPI without becoming live restore/apply behavior yet
+- any additional live-wired fields should require explicit justification in code review
 
 ---
 
@@ -209,6 +327,7 @@ Recommended initial contents:
 - `PersistedAlertsState`
 - `PersistedTreeState`
 - `PersistedNodeRecord`
+- `TransferPersistenceKey`
 - transfer resume persistence using the current `UploadState` model
 - `NoopPersistenceBackend`
 - `MemoryPersistenceBackend`
@@ -228,6 +347,17 @@ use crate::fs::NodeType;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PersistenceScope {
     pub(crate) account_handle: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct TransferPersistenceKey {
+    pub(crate) kind: TransferPersistenceKind,
+    pub(crate) local_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) enum TransferPersistenceKind {
+    Upload,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,9 +411,9 @@ pub(crate) trait PersistenceBackend: Send + Sync {
     fn save_engine_state(&self, scope: &PersistenceScope, state: &PersistedEngineState) -> Result<()>;
     fn clear_engine_state(&self, scope: &PersistenceScope) -> Result<()>;
 
-    fn load_upload_state(&self, scope: &PersistenceScope, key: &str) -> Result<Option<UploadState>>;
-    fn save_upload_state(&self, scope: &PersistenceScope, key: &str, state: &UploadState) -> Result<()>;
-    fn clear_upload_state(&self, scope: &PersistenceScope, key: &str) -> Result<()>;
+    fn load_upload_state(&self, scope: &PersistenceScope, key: &TransferPersistenceKey) -> Result<Option<UploadState>>;
+    fn save_upload_state(&self, scope: &PersistenceScope, key: &TransferPersistenceKey, state: &UploadState) -> Result<()>;
+    fn clear_upload_state(&self, scope: &PersistenceScope, key: &TransferPersistenceKey) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -305,7 +435,8 @@ Important contract rules:
 - the runtime API should stay synchronous in Story 3
 - the initial backend contract should not require a new async trait dependency
 - `UploadState` may remain the transfer-domain durable model in Story 3
-- later stories may replace the string transfer key with a richer type if needed
+- transfer persistence should be account-scoped through `PersistenceScope`
+- the runtime should start at `schema_version = 1` and reject mismatches strictly
 
 ---
 
@@ -315,10 +446,11 @@ Session integration for the first slice should be:
 
 - `Session` owns `persistence: PersistenceRuntime`
 - `Session::new_internal()` initializes it with `PersistenceRuntime::disabled()`
-- tests may inject `MemoryPersistenceBackend`
+- tests may inject `MemoryPersistenceBackend` through an internal helper or test-only constructor path
 - `Session` gets internal helpers for:
   - building a `PersistenceScope`
   - capturing a `PersistedEngineState`
+  - saving a `PersistedEngineState`
   - applying a restored `PersistedEngineState`
 
 Recommended helper shape:
@@ -327,18 +459,23 @@ Recommended helper shape:
 impl Session {
     pub(crate) fn persistence_scope(&self) -> PersistenceScope;
     pub(crate) fn capture_engine_state(&self) -> PersistedEngineState;
+    pub(crate) fn persist_engine_state(&self) -> Result<()>;
     pub(crate) fn apply_engine_state(&mut self, state: PersistedEngineState) -> Result<()>;
 }
 ```
 
 Restore/apply rules for the first slice:
 
+- restore only after authenticated identity and account handle are known
+- restore before SC poller state is spawned or synchronized from the `Session`
 - restore `scsn`
 - restore alert metadata
 - restore tree snapshot only if present, but do not claim full Story 4 coherency yet
-- recompute `sc_catchup`, `alerts_catchup_pending`, and current-state booleans from restored markers
+- recompute `sc_catchup` and current-state booleans from restored markers and restored tree state
 - do not restore `current_seqtag` or seqtag waiters
 - do not persist `wsc_url`
+- do not require shutdown-time persistence to make the feature correct
+- do not restore any Story 3 persistence state for `src/public.rs` / public-link runtime
 
 ---
 
@@ -353,6 +490,14 @@ First durable fields:
 - `user_alert_lsn`
 - `user_alerts`
 
+First live-wired round-trip in Story 3:
+
+- `schema_version`
+- `scsn`
+- `alerts_catchup_pending`
+- `user_alert_lsn`
+- `user_alerts`
+
 Explicitly not persisted in Story 3:
 
 - `current_seqtag`
@@ -362,6 +507,11 @@ Explicitly not persisted in Story 3:
 - `state_current`
 - `action_packets_current`
 - actor-local counters or waiter queues
+
+Story ownership:
+
+- Story 3 should define and may live-wire this domain immediately
+- later stories may extend it, but they should not change the separation between durable markers and derived booleans
 
 ### Tree snapshot domain
 
@@ -381,6 +531,12 @@ Explicitly deferred:
 - contact cache persistence
 - authring and `^!keys` local persistence
 
+Story ownership:
+
+- Story 3 must define this domain in the SPI and durable models
+- Story 3 does not need to restore cached nodes yet
+- Story 4 is the story that actually wires cached-node restore/apply behavior, `pending_nodes`, outshare state, and durable tree/SCSN coherency
+
 ### Transfer resume domain
 
 First durable model:
@@ -397,6 +553,12 @@ Explicitly deferred:
 - download resume state parity
 - scheduler-owned transfer state
 - cross-transfer queue persistence
+
+Story ownership:
+
+- Story 3 must define this domain in the SPI so transfer state has a stable persistence contract
+- Story 3 may leave the current sidecar-file behavior in place
+- Story 5 is the story that migrates real transfer consumers behind this persistence boundary
 
 ---
 
@@ -416,6 +578,7 @@ Recommended first-slice behavior:
 - incompatible engine snapshot => return `MegaError::Custom(...)` with a clear compatibility message
 - missing engine snapshot => treat as empty store
 - malformed transfer resume record => treat that record as invalid, but do not poison the whole session
+- use `schema_version = 1` for the first persisted engine-state format
 
 ---
 
@@ -440,12 +603,16 @@ Done when:
 Deliverables:
 
 - add `Session` helpers for capture/apply/scope
+- add explicit internal engine-state save helper(s)
 - initialize the runtime under `Session`
 - prove restore behavior against the memory backend
 
 Done when:
 
 - engine metadata can round-trip through the persistence boundary without public API changes
+- the round-trip set is limited to `schema_version`, `scsn`, `alerts_catchup_pending`, `user_alert_lsn`, and `user_alerts`
+- restore ordering is proven before SC poller coordination begins
+- cached-node restore is still explicitly deferred
 
 ### Phase 3. Define transfer-state hooks
 
@@ -504,6 +671,8 @@ Story 3 is complete when:
 - a no-op backend exists for default behavior
 - a memory backend exists for tests
 - session restore logic can consume persisted engine state through the new boundary
+- session persistence is driven by explicit internal helpers rather than shutdown-only behavior
+- tree snapshot and transfer resume domains are present in the SPI even if live consumer wiring is deferred
 - incompatible-store handling is tested
 - no public Rust API changed
 
@@ -557,6 +726,7 @@ Write scope:
 Done when:
 
 - engine metadata can round-trip through the SPI in tests
+- test coverage proves the `#[cfg(test)]` backend injection path without widening public constructors
 
 ### Task 3.3
 
