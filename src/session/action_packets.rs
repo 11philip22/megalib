@@ -14,6 +14,7 @@ use crate::session::key_sync::{ActionPacketContactUpdate, ActionPacketKeyWork};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActionPacketDispatchResult {
+    pub(crate) durable_tree_changed: bool,
     pub(crate) ap_pk_seen: bool,
     pub(crate) pending_keys_fetch: bool,
     pub(crate) deferred_key_work: Option<ActionPacketKeyWork>,
@@ -43,6 +44,7 @@ impl Session {
         let mut changed_handles = Vec::new();
         let mut contact_updates: Vec<ActionPacketContactUpdate> = Vec::new();
         let mut share_changed = false;
+        let mut durable_tree_changed = false;
         let mut key_event = false;
         let mut saw_pk = false;
         let mut share_packets = Vec::new();
@@ -90,7 +92,7 @@ impl Session {
                     share_changed = true;
                     share_packets.push(Value::Object(obj.clone()));
                 } else if self.handle_actionpacket_nodes(obj)? {
-                    // node cache already updated inline by handler
+                    durable_tree_changed = true;
                 }
             }
         }
@@ -144,6 +146,7 @@ impl Session {
         });
 
         Ok(ActionPacketDispatchResult {
+            durable_tree_changed,
             ap_pk_seen: saw_pk,
             pending_keys_fetch,
             deferred_key_work,
@@ -762,6 +765,7 @@ mod tests {
             .expect("dispatch should succeed");
 
         assert!(!result.ap_pk_seen);
+        assert!(!result.durable_tree_changed);
         assert!(!result.pending_keys_fetch);
         assert!(result.deferred_key_work.is_none());
         assert!(session.current_seqtag_seen);

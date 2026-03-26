@@ -203,10 +203,81 @@ Acceptance criteria:
 - cached tree state can survive restart
 - SC/AP progress and node persistence stay coherent
 - tree persistence behaves like one `statecache + nodes + scsn` subsystem rather than independent snapshots
+- story 4 may complete against the minimal/test-oriented backend from story 3, with production-backend rollout and production-backed hardening explicitly deferred to stories 4B and 4C
+
+Detailed spec:
+
+- `agents/outputs/architectural_parity_story_4_tree_cache_coherency.md`
 
 Dependencies:
 
 - stories 1 and 3
+
+### Story 4B. Roll out production persistence backend
+
+Outcome:
+
+- replace the minimal/test-oriented persistence backend with a real authenticated-session production backend
+- make `PersistenceRuntime` own durable on-disk state for engine, tree/cache, and later transfer domains under stable schema and file-layout rules
+
+Affected modules:
+
+- `src/session/runtime/persistence.rs`
+- `src/session/core.rs`
+- backend/storage modules introduced for persistence implementation
+
+Agent-sized tasks:
+
+1. Add a real on-disk backend implementation behind `PersistenceRuntime`.
+2. Define authenticated-session scope mapping, file layout, and backend lifecycle rules.
+3. Wire constructor-time backend selection for authenticated sessions while preserving no-op backends for unsupported/public/test contexts.
+4. Add corruption, restart, and schema-compatibility tests against real on-disk storage.
+
+Acceptance criteria:
+
+- authenticated sessions can use a real durable persistence backend without test-only injection
+- persistence schema/version handling is explicit and enforced for production storage
+- no-op and memory backends remain available for unsupported/public/test contexts
+
+Detailed spec:
+
+- `agents/outputs/architectural_parity_story_4b_production_persistence_backend.md`
+
+Dependencies:
+
+- stories 1 and 3
+
+### Story 4C. Reconcile tree/cache coherency with the production backend
+
+Outcome:
+
+- validate and fix Story 4 tree/cache behavior against the real production persistence backend
+- close the gap between “coherency logic works in the seam” and “coherency behaves correctly with real durable storage”
+
+Affected modules:
+
+- `src/session/core.rs`
+- `src/session/action_packets.rs`
+- `src/session/actor.rs`
+- `src/fs/operations/tree.rs`
+- `src/session/runtime/persistence.rs`
+
+Agent-sized tasks:
+
+1. Re-run startup restore, refresh commit, and AP commit behavior against the production backend and fix any lifecycle mismatches.
+2. Verify stale-cache fallback, malformed snapshot handling, and schema-upgrade failure behavior on real disk state.
+3. Tighten transaction/flush boundaries so refresh and AP persistence remain one coherent domain under the production backend.
+4. Add restart, corruption, and divergence coverage that specifically exercises the production backend rather than test-only backends.
+
+Acceptance criteria:
+
+- Story 4 behavior remains correct when backed by the production persistence backend
+- durable tree/cache coherency survives real process restart and malformed/corrupt on-disk state
+- the epic can truthfully claim production-backed `statecache + nodes + scsn` parity rather than seam-only parity
+
+Dependencies:
+
+- stories 1, 3, 4, and 4B
 
 ### Story 5. Separate transfer runtime from operation code
 
@@ -242,7 +313,7 @@ Acceptance criteria:
 
 Dependencies:
 
-- stories 1 and 3
+- stories 1, 3, and 4B
 
 ### Story 6. Add public event subsystem
 
@@ -316,7 +387,7 @@ Affected modules:
 - `src/fs/operations/browse.rs`
 - `src/fs/node.rs`
 - `src/fs/runtime/query.rs`
-- persistence/index modules from stories 3 and 4
+- persistence/index modules from stories 3, 4B, and 4C
 
 Agent-sized tasks:
 
@@ -332,7 +403,7 @@ Acceptance criteria:
 
 Dependencies:
 
-- stories 3 and 4
+- stories 3, 4B, and 4C
 
 ### Story 9. Implement sync engine MVP
 
@@ -345,7 +416,7 @@ Affected modules:
 - new sync module under `src/`
 - filesystem runtime from story 7
 - transfer runtime from story 5
-- persistence/query layers from stories 3, 4, and 8
+- persistence/query layers from stories 3, 4B, 4C, and 8
 
 Agent-sized tasks:
 
@@ -400,7 +471,7 @@ Affected modules:
 
 - new mount module under `src/`
 - query/index layer from story 8
-- persistence layer from stories 3 and 4
+- persistence layer from stories 3, 4B, and 4C
 - filesystem runtime from story 7
 
 Agent-sized tasks:
@@ -417,7 +488,7 @@ Acceptance criteria:
 
 Dependencies:
 
-- stories 4, 7, and 8
+- stories 4C, 7, and 8
 
 ### Story 12. Add parity validation harness
 
@@ -445,7 +516,7 @@ Acceptance criteria:
 Dependencies:
 
 - starts after story 2 for core flows
-- expands after stories 4, 5, 6, 9, 10, and 11
+- expands after stories 4B, 4C, 5, 6, 9, 10, and 11
 
 ---
 
@@ -457,28 +528,31 @@ Dependencies:
 2. Story 2
 3. Story 3
 4. Story 4
+5. Story 4B
+6. Story 4C
 
 ### Runtime-hardening phase
 
-5. Story 5
-6. Story 6
-7. Story 7
-8. Story 8
+7. Story 5
+8. Story 6
+9. Story 7
+10. Story 8
 
 ### Desktop-subsystem phase
 
-9. Story 9
-10. Story 10
-11. Story 11
+11. Story 9
+12. Story 10
+13. Story 11
 
 ### Validation phase
 
-12. Story 12
+14. Story 12
 
 Parallelism notes:
 
-- stories 5 and 6 can run in parallel after stories 2 and 3 are stable
-- stories 7 and 8 can run in parallel after stories 3 and 4 are stable
+- story 4B may begin once story 3 is stable, but story 4C must wait for both story 4 and story 4B
+- stories 5 and 6 can run in parallel after stories 2, 3, and 4B are stable
+- stories 7 and 8 can run in parallel after stories 4B and 4C are stable
 - story 12 should begin early for core flows and expand with each completed foundation story
 
 ---

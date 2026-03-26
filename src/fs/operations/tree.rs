@@ -14,6 +14,14 @@ use crate::session::Session;
 const MAX_PENDING_NODES: usize = 4096;
 
 impl Session {
+    fn finalize_refreshed_tree_cache_state(&mut self) -> Result<()> {
+        self.nodes_state_ready = true;
+        self.recompute_state_current();
+        self.action_packets_current =
+            self.state_current && (self.current_seqtag.is_none() || self.current_seqtag_seen);
+        self.persist_tree_cache_state()
+    }
+
     /// Refresh the filesystem tree from the server.
     ///
     /// This fetches all nodes (SDK-style `f`), share keys, and public links, then decrypts
@@ -175,10 +183,7 @@ impl Session {
         // Drain any nodes that became decryptable after share keys were loaded above.
         self.drain_pending_nodes();
 
-        self.nodes_state_ready = true;
-        self.recompute_state_current();
-        self.action_packets_current =
-            self.state_current && (self.current_seqtag.is_none() || self.current_seqtag_seen);
+        self.finalize_refreshed_tree_cache_state()?;
 
         // Clear in-use flags for share keys no longer present, persist if changed.
         if self.clear_inuse_flags_for_missing_shares() {
@@ -509,11 +514,16 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
     use serde_json::json;
 
     use crate::base64::base64url_encode;
     use crate::crypto::aes::{aes128_cbc_encrypt, aes128_ecb_encrypt};
+    use crate::fs::{Node, NodeType};
     use crate::session::Session;
+    use crate::session::runtime::persistence::{MemoryPersistenceBackend, PersistenceRuntime};
 
     use super::MAX_PENDING_NODES;
 
@@ -658,5 +668,150 @@ mod tests {
         assert!(node.is_some());
         assert!(session.pending_nodes.is_empty());
         assert_eq!(node.unwrap().name, "Root");
+    }
+
+    #[test]
+    fn finalize_refreshed_tree_cache_state_persists_coherent_snapshot() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = Session::test_dummy().with_persistence_for_tests(persistence.clone());
+        session.scsn = Some("refresh-scsn".to_string());
+        session.nodes = vec![
+            Node {
+                name: "Root".to_string(),
+                handle: "root".to_string(),
+                parent_handle: None,
+                node_type: NodeType::Root,
+                size: 0,
+                timestamp: 0,
+                key: Vec::new(),
+                path: Some("/Root".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            },
+            Node {
+                name: "docs".to_string(),
+                handle: "docs".to_string(),
+                parent_handle: Some("root".to_string()),
+                node_type: NodeType::Folder,
+                size: 0,
+                timestamp: 1,
+                key: vec![0x11; 16],
+                path: Some("/Root/docs".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: true,
+                share_access: None,
+            },
+        ];
+        session.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        session.outshares =
+            HashMap::from([("docs".to_string(), HashSet::from(["EXP".to_string()]))]);
+
+        session
+            .finalize_refreshed_tree_cache_state()
+            .expect("refresh finalization should persist");
+
+        let stored = persistence
+            .load_engine_state(&session.persistence_scope())
+            .expect("load should succeed")
+            .expect("tree/cache snapshot should exist");
+        let tree = stored.tree.expect("refresh should persist tree snapshot");
+
+        assert_eq!(stored.sc.scsn.as_deref(), Some("refresh-scsn"));
+        assert!(session.nodes_state_ready);
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.pending_nodes.len(), 1);
+        assert_eq!(
+            tree.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+    }
+
+    #[test]
+    fn finalized_refresh_snapshot_restores_after_restart() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = Session::test_dummy().with_persistence_for_tests(persistence.clone());
+        session.scsn = Some("refresh-scsn".to_string());
+        session.nodes = vec![
+            Node {
+                name: "Root".to_string(),
+                handle: "root".to_string(),
+                parent_handle: None,
+                node_type: NodeType::Root,
+                size: 0,
+                timestamp: 0,
+                key: Vec::new(),
+                path: Some("/Root".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            },
+            Node {
+                name: "docs".to_string(),
+                handle: "docs".to_string(),
+                parent_handle: Some("root".to_string()),
+                node_type: NodeType::Folder,
+                size: 0,
+                timestamp: 1,
+                key: vec![0x11; 16],
+                path: Some("/Root/docs".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: true,
+                share_access: None,
+            },
+        ];
+        session.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        session.outshares =
+            HashMap::from([("docs".to_string(), HashSet::from(["EXP".to_string()]))]);
+        session.pending_outshares = HashMap::from([(
+            "docs".to_string(),
+            HashSet::from(["pending-user".to_string()]),
+        )]);
+
+        session
+            .finalize_refreshed_tree_cache_state()
+            .expect("refresh finalization should persist");
+
+        let mut restored = Session::test_dummy().with_persistence_for_tests(persistence);
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("restored refresh snapshot should load");
+
+        assert!(loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("refresh-scsn"));
+        assert_eq!(restored.nodes.len(), 2);
+        assert_eq!(
+            restored
+                .nodes
+                .iter()
+                .find(|node| node.handle == "docs")
+                .and_then(Node::path),
+            Some("/Root/docs")
+        );
+        assert_eq!(restored.pending_nodes.len(), 1);
+        assert_eq!(
+            restored.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+        assert_eq!(
+            restored.pending_outshares.get("docs"),
+            Some(&HashSet::from(["pending-user".to_string()]))
+        );
     }
 }

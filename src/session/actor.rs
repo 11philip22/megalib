@@ -2632,6 +2632,15 @@ impl SessionActor {
                         if dispatch.pending_keys_fetch {
                             self.enqueue_pending_keys_fetch();
                         }
+                        if dispatch.durable_tree_changed
+                            && let Err(err) = self.session.persist_tree_cache_state()
+                        {
+                            debug!(
+                                error = %err,
+                                ap_packets = packets.len(),
+                                "failed to persist coherent tree/cache snapshot after action packet batch"
+                            );
+                        }
                     }
                     Err(err) => {
                         debug!(
@@ -3449,4 +3458,204 @@ fn build_target_path(remote_parent: &str, local_path: &str) -> String {
         .and_then(|v| v.to_str())
         .unwrap_or(local_path);
     join_remote_path(remote_parent, file_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::session::runtime::persistence::{MemoryPersistenceBackend, PersistenceRuntime};
+
+    fn sample_actor_nodes() -> Vec<Node> {
+        vec![
+            Node {
+                name: "Root".to_string(),
+                handle: "root".to_string(),
+                parent_handle: None,
+                node_type: NodeType::Root,
+                size: 0,
+                timestamp: 0,
+                key: Vec::new(),
+                path: Some("/Root".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            },
+            Node {
+                name: "notes.txt".to_string(),
+                handle: "file".to_string(),
+                parent_handle: Some("root".to_string()),
+                node_type: NodeType::File,
+                size: 512,
+                timestamp: 1,
+                key: vec![0x22; 32],
+                path: Some("/Root/notes.txt".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            },
+        ]
+    }
+
+    fn test_actor(session: Session) -> SessionActor {
+        let (_tx, rx) = mpsc::channel(1);
+        let (_sc_event_tx, sc_event_rx) = mpsc::channel(1);
+        let (sc_control_tx, _sc_control_rx) = mpsc::channel(1);
+        SessionActor {
+            last_key_generation: session.key_manager.generation,
+            session,
+            rx,
+            sc_event_rx,
+            sc_control_tx,
+            sc_poller_task: Some(tokio::spawn(async {})),
+            seqtag_waiters: HashMap::new(),
+            key_work_queue: VecDeque::new(),
+            deferred_key_work_enqueued: 0,
+            deferred_key_work_coalesced: 0,
+            deferred_key_work_started: 0,
+            deferred_key_work_retried: 0,
+            deferred_key_work_dropped: 0,
+            deferred_key_work_queue_hwm: 0,
+            ap_pk_seen: 0,
+            pending_keys_fetch_queued: 0,
+            pending_keys_fetch_started: 0,
+            state_current_transitions: 0,
+            action_packets_current_transitions: 0,
+            deferred_pk_bursts: 0,
+            startup_reconciliation_requested: false,
+            startup_reconciliation_queued: false,
+            startup_reconciliation_enqueued: 0,
+            startup_reconciliation_started: 0,
+            startup_reconciliation_completed: 0,
+            startup_reconciliation_retried: 0,
+            startup_reconciliation_dropped: 0,
+            persist_requested: 0,
+            persist_started: 0,
+            persist_coalesced: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn sc_batch_persists_tree_cache_state_after_durable_tree_change() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = Session::test_dummy().with_persistence_for_tests(persistence.clone());
+        session.scsn = Some("initial-scsn".to_string());
+        session.nodes = sample_actor_nodes();
+        session.outshares =
+            HashMap::from([("file".to_string(), HashSet::from(["EXP".to_string()]))]);
+        let scope = session.persistence_scope();
+        let mut actor = test_actor(session);
+
+        actor
+            .handle_sc_event(ScPollerEvent::ScBatch {
+                packets: vec![json!({"a": "fa", "h": "file", "fa": "924:1*thumb"})],
+                seqtags: Vec::new(),
+                next_sn: "next-scsn".to_string(),
+                next_wsc_url: None,
+                ir: false,
+                poll_catchup: false,
+            })
+            .await;
+
+        let stored = persistence
+            .load_engine_state(&scope)
+            .expect("tree/cache state should load")
+            .expect("tree/cache snapshot should exist");
+        let tree = stored.tree.expect("AP batch should persist tree snapshot");
+        let stored_file = tree
+            .nodes
+            .iter()
+            .find(|node| node.handle == "file")
+            .expect("file node should persist");
+
+        assert_eq!(stored.sc.scsn.as_deref(), Some("next-scsn"));
+        assert_eq!(stored_file.file_attr.as_deref(), Some("924:1*thumb"));
+        assert_eq!(
+            tree.outshares.get("file"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+    }
+
+    #[tokio::test]
+    async fn sc_batch_does_not_persist_when_tree_state_did_not_change() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = Session::test_dummy().with_persistence_for_tests(persistence.clone());
+        session.scsn = Some("initial-scsn".to_string());
+        session.current_seqtag = Some("seqtag-123".to_string());
+        let scope = session.persistence_scope();
+        let mut actor = test_actor(session);
+
+        actor
+            .handle_sc_event(ScPollerEvent::ScBatch {
+                packets: vec![json!({"st": "seqtag-123"})],
+                seqtags: vec!["seqtag-123".to_string()],
+                next_sn: "next-scsn".to_string(),
+                next_wsc_url: None,
+                ir: false,
+                poll_catchup: false,
+            })
+            .await;
+
+        assert!(
+            persistence
+                .load_engine_state(&scope)
+                .expect("tree/cache state load should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_sc_batch_does_not_overwrite_existing_tree_cache_snapshot() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut session = Session::test_dummy().with_persistence_for_tests(persistence.clone());
+        session.scsn = Some("initial-scsn".to_string());
+        session.nodes = sample_actor_nodes();
+        session
+            .persist_tree_cache_state()
+            .expect("initial tree/cache state should persist");
+        let scope = session.persistence_scope();
+        let mut actor = test_actor(session);
+
+        actor
+            .handle_sc_event(ScPollerEvent::ScBatch {
+                packets: vec![
+                    json!({"a": "fa", "h": "file", "fa": "924:1*thumb"}),
+                    json!({"u": "contact-handle", "prCu255": "!!!"}),
+                ],
+                seqtags: Vec::new(),
+                next_sn: "next-scsn".to_string(),
+                next_wsc_url: None,
+                ir: false,
+                poll_catchup: false,
+            })
+            .await;
+
+        let stored = persistence
+            .load_engine_state(&scope)
+            .expect("tree/cache state should load")
+            .expect("existing tree/cache snapshot should remain");
+        let tree = stored
+            .tree
+            .expect("failed batch should not remove existing tree snapshot");
+        let stored_file = tree
+            .nodes
+            .iter()
+            .find(|node| node.handle == "file")
+            .expect("file node should remain in persisted snapshot");
+
+        assert_eq!(stored.sc.scsn.as_deref(), Some("initial-scsn"));
+        assert_eq!(stored_file.file_attr, None);
+    }
 }

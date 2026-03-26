@@ -22,8 +22,9 @@ use crate::error::{MegaError, Result};
 use crate::fs::Node;
 use crate::fs::upload_state::UploadState;
 use crate::session::runtime::persistence::{
-    ENGINE_STATE_SCHEMA_VERSION, PersistedAlertsState, PersistedEngineState, PersistedScState,
-    PersistenceRuntime, PersistenceScope, TransferPersistenceKey,
+    ENGINE_STATE_SCHEMA_VERSION, PersistedAlertsState, PersistedEngineState, PersistedNodeRecord,
+    PersistedScState, PersistedTreeState, PersistenceRuntime, PersistenceScope,
+    TransferPersistenceKey,
 };
 use crate::session::runtime::request::{RequestClass, RequestOutcome, RequestRuntime};
 
@@ -180,6 +181,11 @@ impl Session {
         }
     }
 
+    pub(crate) fn install_default_persistence_runtime(&mut self) -> Result<()> {
+        self.persistence = PersistenceRuntime::production_default()?;
+        Ok(())
+    }
+
     fn build_upv_command(attrs: Vec<(&str, String, Option<String>)>) -> Value {
         let mut obj = serde_json::Map::new();
         obj.insert("a".into(), Value::from("upv"));
@@ -247,6 +253,126 @@ impl Session {
             },
             tree: None,
         }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn capture_tree_state(&self) -> PersistedTreeState {
+        PersistedTreeState {
+            nodes: self.nodes.iter().map(PersistedNodeRecord::from).collect(),
+            pending_nodes: self.pending_nodes.clone(),
+            outshares: self.outshares.clone(),
+            pending_outshares: self.pending_outshares.clone(),
+        }
+    }
+
+    fn validate_tree_state(tree: &PersistedTreeState) -> Result<()> {
+        let known_handles: HashSet<&str> =
+            tree.nodes.iter().map(|node| node.handle.as_str()).collect();
+        if known_handles.len() != tree.nodes.len() {
+            return Err(MegaError::Custom(
+                "Persisted tree snapshot contains duplicate node handles".to_string(),
+            ));
+        }
+
+        for node in &tree.nodes {
+            if let Some(parent_handle) = node.parent_handle.as_deref() {
+                if parent_handle == node.handle {
+                    return Err(MegaError::Custom(format!(
+                        "Persisted tree snapshot contains a self-parenting node: {}",
+                        node.handle
+                    )));
+                }
+                if !known_handles.contains(parent_handle) {
+                    return Err(MegaError::Custom(format!(
+                        "Persisted tree snapshot is missing parent {parent_handle} for node {}",
+                        node.handle
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn apply_tree_state(&mut self, tree: PersistedTreeState) -> Result<()> {
+        Self::validate_tree_state(&tree)?;
+
+        let PersistedTreeState {
+            nodes,
+            pending_nodes,
+            outshares,
+            pending_outshares,
+        } = tree;
+        let mut restored_nodes: Vec<Node> = nodes
+            .into_iter()
+            .map(PersistedNodeRecord::into_node)
+            .collect();
+        Self::build_node_paths(&mut restored_nodes);
+
+        self.nodes = restored_nodes;
+        self.pending_nodes = pending_nodes;
+        self.outshares = outshares;
+        self.pending_outshares = pending_outshares;
+        self.nodes_state_ready = true;
+        self.recompute_state_current();
+        self.action_packets_current =
+            self.state_current && (self.current_seqtag.is_none() || self.current_seqtag_seen);
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn capture_coherent_tree_cache_state(&self) -> PersistedEngineState {
+        let mut state = self.capture_engine_state();
+        state.tree = Some(self.capture_tree_state());
+        state
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn persist_tree_cache_state(&self) -> Result<()> {
+        let scope = self.persistence_scope();
+        let state = self.capture_coherent_tree_cache_state();
+        self.persistence.save_engine_state(&scope, &state)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn restore_tree_cache_state(&mut self) -> Result<bool> {
+        let scope = self.persistence_scope();
+        let loaded = match self.persistence.load_engine_state(&scope) {
+            Ok(state) => state,
+            Err(MegaError::Custom(message))
+                if message.contains("Unsupported persistence schema version") =>
+            {
+                return Ok(false);
+            }
+            Err(err) => return Err(err),
+        };
+        let Some(state) = loaded else {
+            return Ok(false);
+        };
+
+        let PersistedEngineState {
+            schema_version,
+            sc,
+            alerts,
+            tree,
+        } = state;
+        let Some(tree) = tree else {
+            return Ok(false);
+        };
+        if sc.scsn.is_none() || Self::validate_tree_state(&tree).is_err() {
+            return Ok(false);
+        }
+
+        let markers = PersistedEngineState {
+            schema_version,
+            sc,
+            alerts,
+            tree: None,
+        };
+        self.apply_engine_state(markers)?;
+        self.apply_tree_state(tree)?;
+        Ok(true)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1253,7 +1379,7 @@ impl Session {
             }
         };
 
-        session.restore_persisted_engine_state()?;
+        let _ = session.restore_tree_cache_state()?;
 
         Ok(Some(session))
     }
@@ -1303,16 +1429,58 @@ impl Session {
         self.persistence = persistence;
         self
     }
+
+    pub(crate) fn install_persistence_runtime_at_for_tests(
+        mut self,
+        root: std::path::PathBuf,
+    ) -> Self {
+        self.persistence = PersistenceRuntime::production_at(root);
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
     use crate::crypto::MegaRsaKey;
+    use crate::fs::NodeType;
     use crate::fs::upload_state::UploadState;
-    use crate::session::runtime::persistence::MemoryPersistenceBackend;
+    use crate::session::runtime::persistence::{MemoryPersistenceBackend, PersistenceBackend};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "megalib-session-persistence-{}-{}-{}",
+                label,
+                std::process::id(),
+                unique
+            ));
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     // Helper to create a dummy session for testing configuration methods
     fn create_dummy_session() -> Session {
@@ -1357,6 +1525,62 @@ mod tests {
             previews_enabled: false,
             workers: 1,
         }
+    }
+
+    fn sample_tree_nodes() -> Vec<Node> {
+        vec![
+            Node {
+                name: "Root".to_string(),
+                handle: "root".to_string(),
+                parent_handle: None,
+                node_type: NodeType::Root,
+                size: 0,
+                timestamp: 0,
+                key: Vec::new(),
+                path: Some("/Root".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            },
+            Node {
+                name: "Documents".to_string(),
+                handle: "docs".to_string(),
+                parent_handle: Some("root".to_string()),
+                node_type: NodeType::Folder,
+                size: 0,
+                timestamp: 1,
+                key: vec![0x11; 16],
+                path: Some("/Root/Documents".to_string()),
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: true,
+                share_access: None,
+            },
+            Node {
+                name: "notes.txt".to_string(),
+                handle: "file".to_string(),
+                parent_handle: Some("docs".to_string()),
+                node_type: NodeType::File,
+                size: 512,
+                timestamp: 2,
+                key: vec![0x22; 32],
+                path: Some("/Root/Documents/notes.txt".to_string()),
+                link: Some("public-file-link".to_string()),
+                file_attr: Some("924:1*thumb".to_string()),
+                share_key: Some([0x33; 16]),
+                share_handle: Some("docs".to_string()),
+                is_inshare: true,
+                is_outshare: false,
+                share_access: Some(1),
+            },
+        ]
     }
 
     #[test]
@@ -1447,6 +1671,133 @@ mod tests {
         assert_eq!(snapshot.alerts.user_alerts.len(), 2);
         assert!(snapshot.alerts.alerts_catchup_pending);
         assert!(snapshot.tree.is_none());
+    }
+
+    #[test]
+    fn test_capture_tree_state_round_trips_story_4_fields() {
+        let mut session = create_dummy_session();
+        session.nodes = sample_tree_nodes();
+        session.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        session
+            .outshares
+            .insert("docs".to_string(), HashSet::from(["EXP".to_string()]));
+        session.pending_outshares.insert(
+            "docs".to_string(),
+            HashSet::from(["pending-user".to_string()]),
+        );
+
+        let tree = session.capture_tree_state();
+
+        assert_eq!(tree.nodes.len(), 3);
+        assert_eq!(tree.pending_nodes.len(), 1);
+        assert_eq!(
+            tree.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+        assert_eq!(
+            tree.pending_outshares.get("docs"),
+            Some(&HashSet::from(["pending-user".to_string()]))
+        );
+
+        let file = tree
+            .nodes
+            .iter()
+            .find(|node| node.handle == "file")
+            .expect("file record should be captured");
+        assert_eq!(file.parent_handle.as_deref(), Some("docs"));
+        assert_eq!(file.link.as_deref(), Some("public-file-link"));
+        assert_eq!(file.share_handle.as_deref(), Some("docs"));
+        assert_eq!(file.share_access, Some(1));
+    }
+
+    #[test]
+    fn test_apply_tree_state_restores_nodes_rebuilds_paths_and_recomputes_flags() {
+        let mut session = create_dummy_session();
+        session.sc_batch_catchup_done = true;
+
+        let tree = PersistedTreeState {
+            nodes: sample_tree_nodes()
+                .iter()
+                .map(PersistedNodeRecord::from)
+                .collect(),
+            pending_nodes: vec![json!({"h": "pending", "p": "docs", "t": 0})],
+            outshares: HashMap::from([("docs".to_string(), HashSet::from(["EXP".to_string()]))]),
+            pending_outshares: HashMap::from([(
+                "docs".to_string(),
+                HashSet::from(["pending-user".to_string()]),
+            )]),
+        };
+
+        session
+            .apply_tree_state(tree)
+            .expect("tree snapshot should apply");
+
+        assert_eq!(session.nodes.len(), 3);
+        assert_eq!(session.pending_nodes.len(), 1);
+        assert_eq!(
+            session
+                .nodes
+                .iter()
+                .find(|node| node.handle == "docs")
+                .and_then(Node::path),
+            Some("/Root/Documents")
+        );
+        assert_eq!(
+            session
+                .nodes
+                .iter()
+                .find(|node| node.handle == "file")
+                .and_then(Node::path),
+            Some("/Root/Documents/notes.txt")
+        );
+        assert_eq!(
+            session.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+        assert_eq!(
+            session.pending_outshares.get("docs"),
+            Some(&HashSet::from(["pending-user".to_string()]))
+        );
+        assert!(session.nodes_state_ready);
+        assert!(session.state_current);
+        assert!(session.action_packets_current);
+    }
+
+    #[test]
+    fn test_apply_tree_state_rejects_missing_parent_topology() {
+        let mut session = create_dummy_session();
+        let tree = PersistedTreeState {
+            nodes: vec![PersistedNodeRecord {
+                name: "orphan".to_string(),
+                handle: "orphan".to_string(),
+                parent_handle: Some("missing".to_string()),
+                node_type: NodeType::Folder,
+                size: 0,
+                timestamp: 0,
+                key: vec![0x44; 16],
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            }],
+            pending_nodes: Vec::new(),
+            outshares: HashMap::new(),
+            pending_outshares: HashMap::new(),
+        };
+
+        let err = session
+            .apply_tree_state(tree)
+            .expect_err("missing parent should be rejected");
+
+        match err {
+            MegaError::Custom(message) => {
+                assert!(message.contains("missing parent"));
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
     }
 
     #[test]
@@ -1547,6 +1898,266 @@ mod tests {
     }
 
     #[test]
+    fn test_persist_tree_cache_state_round_trips_tree_through_runtime() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        persisted.scsn = Some("persisted-scsn".to_string());
+        persisted.user_alert_lsn = Some("persisted-lsn".to_string());
+        persisted.user_alerts = vec![json!({"id": "persisted-alert"})];
+        persisted.alerts_catchup_pending = true;
+        persisted.nodes = sample_tree_nodes();
+        persisted.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        persisted
+            .outshares
+            .insert("docs".to_string(), HashSet::from(["EXP".to_string()]));
+        persisted.pending_outshares.insert(
+            "docs".to_string(),
+            HashSet::from(["pending-user".to_string()]),
+        );
+
+        persisted
+            .persist_tree_cache_state()
+            .expect("tree/cache state should persist");
+
+        let scope = persisted.persistence_scope();
+        let stored = persisted
+            .persistence
+            .load_engine_state(&scope)
+            .expect("memory backend should load tree/cache state")
+            .expect("tree/cache snapshot should exist");
+
+        assert_eq!(stored.sc.scsn.as_deref(), Some("persisted-scsn"));
+        assert!(stored.tree.is_some());
+
+        let mut restored = create_dummy_session().with_persistence_for_tests(persistence);
+        let persisted_tree = stored
+            .tree
+            .clone()
+            .expect("persisted tree snapshot should exist");
+        restored
+            .apply_engine_state(stored)
+            .expect("engine markers should apply");
+        restored.sc_batch_catchup_done = true;
+        restored
+            .apply_tree_state(persisted_tree)
+            .expect("persisted tree snapshot should apply");
+
+        assert_eq!(restored.nodes.len(), 3);
+        assert_eq!(
+            restored
+                .nodes
+                .iter()
+                .find(|node| node.handle == "file")
+                .and_then(Node::path),
+            Some("/Root/Documents/notes.txt")
+        );
+        assert_eq!(restored.pending_nodes.len(), 1);
+        assert_eq!(
+            restored.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+        assert_eq!(
+            restored.pending_outshares.get("docs"),
+            Some(&HashSet::from(["pending-user".to_string()]))
+        );
+    }
+
+    #[test]
+    fn test_restore_tree_cache_state_restores_cached_tree_before_runtime_use() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        persisted.scsn = Some("persisted-scsn".to_string());
+        persisted.user_alert_lsn = Some("persisted-lsn".to_string());
+        persisted.user_alerts = vec![json!({"id": "persisted-alert"})];
+        persisted.alerts_catchup_pending = true;
+        persisted.nodes = sample_tree_nodes();
+        persisted.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        persisted
+            .outshares
+            .insert("docs".to_string(), HashSet::from(["EXP".to_string()]));
+        persisted.pending_outshares.insert(
+            "docs".to_string(),
+            HashSet::from(["pending-user".to_string()]),
+        );
+        persisted
+            .persist_tree_cache_state()
+            .expect("tree/cache state should persist");
+
+        let mut restored = create_dummy_session().with_persistence_for_tests(persistence);
+        restored.scsn = Some("fresh-server-scsn".to_string());
+        restored.alerts_catchup_pending = false;
+
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("tree/cache restore should succeed");
+
+        assert!(loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("persisted-scsn"));
+        assert_eq!(restored.user_alert_lsn.as_deref(), Some("persisted-lsn"));
+        assert_eq!(restored.user_alerts.len(), 1);
+        assert!(restored.alerts_catchup_pending);
+        assert!(restored.sc_catchup);
+        assert_eq!(restored.nodes.len(), 3);
+        assert_eq!(
+            restored
+                .nodes
+                .iter()
+                .find(|node| node.handle == "file")
+                .and_then(Node::path),
+            Some("/Root/Documents/notes.txt")
+        );
+        assert_eq!(restored.pending_nodes.len(), 1);
+        assert!(restored.nodes_state_ready);
+        assert!(!restored.state_current);
+        assert!(!restored.action_packets_current);
+    }
+
+    #[test]
+    fn test_restore_tree_cache_state_is_noop_when_tree_snapshot_is_missing() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let mut persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        persisted.scsn = Some("persisted-scsn".to_string());
+        persisted.user_alert_lsn = Some("persisted-lsn".to_string());
+        persisted.alerts_catchup_pending = true;
+        persisted
+            .persist_engine_state()
+            .expect("marker-only engine state should persist");
+
+        let mut restored = create_dummy_session().with_persistence_for_tests(persistence);
+        restored.scsn = Some("fresh-server-scsn".to_string());
+        restored.user_alerts = vec![json!({"id": "fresh-alert"})];
+
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("missing-tree restore should not fail");
+
+        assert!(!loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("fresh-server-scsn"));
+        assert_eq!(restored.user_alerts.len(), 1);
+        assert!(restored.nodes.is_empty());
+        assert!(!restored.nodes_state_ready);
+    }
+
+    #[test]
+    fn test_restore_tree_cache_state_falls_back_on_invalid_tree_snapshot() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        let invalid_tree = PersistedTreeState {
+            nodes: vec![PersistedNodeRecord {
+                name: "orphan".to_string(),
+                handle: "orphan".to_string(),
+                parent_handle: Some("missing".to_string()),
+                node_type: NodeType::Folder,
+                size: 0,
+                timestamp: 0,
+                key: vec![0x44; 16],
+                link: None,
+                file_attr: None,
+                share_key: None,
+                share_handle: None,
+                is_inshare: false,
+                is_outshare: false,
+                share_access: None,
+            }],
+            pending_nodes: vec![json!({"h": "pending", "p": "orphan", "t": 0})],
+            outshares: HashMap::new(),
+            pending_outshares: HashMap::new(),
+        };
+        let invalid_state = PersistedEngineState {
+            schema_version: ENGINE_STATE_SCHEMA_VERSION,
+            sc: PersistedScState {
+                scsn: Some("persisted-scsn".to_string()),
+            },
+            alerts: PersistedAlertsState {
+                alerts_catchup_pending: true,
+                user_alert_lsn: Some("persisted-lsn".to_string()),
+                user_alerts: vec![json!({"id": "persisted-alert"})],
+            },
+            tree: Some(invalid_tree),
+        };
+        persisted
+            .persistence
+            .save_engine_state(&persisted.persistence_scope(), &invalid_state)
+            .expect("invalid test snapshot should save");
+
+        let mut restored = create_dummy_session().with_persistence_for_tests(persistence);
+        restored.scsn = Some("fresh-server-scsn".to_string());
+        restored.user_alerts = vec![json!({"id": "fresh-alert"})];
+
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("invalid snapshot should fall back cleanly");
+
+        assert!(!loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("fresh-server-scsn"));
+        assert_eq!(restored.user_alerts.len(), 1);
+        assert!(restored.nodes.is_empty());
+        assert!(restored.pending_nodes.is_empty());
+        assert!(restored.outshares.is_empty());
+        assert!(restored.pending_outshares.is_empty());
+    }
+
+    #[test]
+    fn test_restore_tree_cache_state_falls_back_on_incompatible_schema() {
+        let persistence = PersistenceRuntime::new(Arc::new(MemoryPersistenceBackend::default()));
+        let persisted = create_dummy_session().with_persistence_for_tests(persistence.clone());
+        let incompatible_state = PersistedEngineState {
+            schema_version: ENGINE_STATE_SCHEMA_VERSION + 1,
+            sc: PersistedScState {
+                scsn: Some("persisted-scsn".to_string()),
+            },
+            alerts: PersistedAlertsState {
+                alerts_catchup_pending: true,
+                user_alert_lsn: Some("persisted-lsn".to_string()),
+                user_alerts: vec![json!({"id": "persisted-alert"})],
+            },
+            tree: Some(PersistedTreeState {
+                nodes: sample_tree_nodes()
+                    .iter()
+                    .map(PersistedNodeRecord::from)
+                    .collect(),
+                pending_nodes: vec![json!({"h": "pending", "p": "docs", "t": 0})],
+                outshares: HashMap::from([(
+                    "docs".to_string(),
+                    HashSet::from(["EXP".to_string()]),
+                )]),
+                pending_outshares: HashMap::from([(
+                    "docs".to_string(),
+                    HashSet::from(["pending-user".to_string()]),
+                )]),
+            }),
+        };
+        persisted
+            .persistence
+            .save_engine_state(&persisted.persistence_scope(), &incompatible_state)
+            .expect_err("runtime save path should reject incompatible schema");
+        persisted
+            .persistence
+            .clear_engine_state(&persisted.persistence_scope())
+            .expect("clear should succeed");
+        // Bypass runtime validation so restore covers the fallback path for stale on-disk data.
+        let backend = MemoryPersistenceBackend::default();
+        let scope = persisted.persistence_scope();
+        backend
+            .save_engine_state(&scope, &incompatible_state)
+            .expect("raw backend save should allow incompatible test fixture");
+        let runtime = PersistenceRuntime::new(Arc::new(backend));
+
+        let mut restored = create_dummy_session().with_persistence_for_tests(runtime);
+        restored.scsn = Some("fresh-server-scsn".to_string());
+        restored.user_alerts = vec![json!({"id": "fresh-alert"})];
+
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("incompatible snapshot should fall back cleanly");
+
+        assert!(!loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("fresh-server-scsn"));
+        assert_eq!(restored.user_alerts.len(), 1);
+        assert!(restored.nodes.is_empty());
+    }
+
+    #[test]
     fn test_restore_persisted_engine_state_is_noop_for_empty_store() {
         let mut session = create_dummy_session();
         session.scsn = Some("existing-scsn".to_string());
@@ -1630,5 +2241,116 @@ mod tests {
                 .expect("load after clear should succeed")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_real_disk_tree_cache_restore_round_trips_through_session_helpers() {
+        let dir = TestDir::new("tree-cache");
+        let mut persisted = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        persisted.scsn = Some("persisted-scsn".to_string());
+        persisted.user_alert_lsn = Some("persisted-lsn".to_string());
+        persisted.user_alerts = vec![json!({"id": "persisted-alert"})];
+        persisted.alerts_catchup_pending = true;
+        persisted.nodes = sample_tree_nodes();
+        persisted.pending_nodes = vec![json!({"h": "pending", "p": "docs", "t": 0})];
+        persisted
+            .outshares
+            .insert("docs".to_string(), HashSet::from(["EXP".to_string()]));
+        persisted.pending_outshares.insert(
+            "docs".to_string(),
+            HashSet::from(["pending-user".to_string()]),
+        );
+
+        persisted
+            .persist_tree_cache_state()
+            .expect("tree/cache state should persist to disk");
+
+        let mut restored = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        restored.scsn = Some("fresh-server-scsn".to_string());
+
+        let loaded = restored
+            .restore_tree_cache_state()
+            .expect("disk-backed tree/cache restore should succeed");
+
+        assert!(loaded);
+        assert_eq!(restored.scsn.as_deref(), Some("persisted-scsn"));
+        assert_eq!(restored.user_alert_lsn.as_deref(), Some("persisted-lsn"));
+        assert_eq!(restored.user_alerts.len(), 1);
+        assert_eq!(restored.nodes.len(), 3);
+        assert_eq!(
+            restored
+                .nodes
+                .iter()
+                .find(|node| node.handle == "file")
+                .and_then(Node::path),
+            Some("/Root/Documents/notes.txt")
+        );
+        assert_eq!(restored.pending_nodes.len(), 1);
+        assert_eq!(
+            restored.outshares.get("docs"),
+            Some(&HashSet::from(["EXP".to_string()]))
+        );
+        assert_eq!(
+            restored.pending_outshares.get("docs"),
+            Some(&HashSet::from(["pending-user".to_string()]))
+        );
+    }
+
+    #[test]
+    fn test_real_disk_session_helpers_preserve_scope_isolation() {
+        let dir = TestDir::new("scope-isolation");
+        let mut session_a = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        session_a.user_handle = "account-a".to_string();
+        session_a.scsn = Some("persisted-scsn".to_string());
+        session_a.nodes = sample_tree_nodes();
+
+        session_a
+            .persist_tree_cache_state()
+            .expect("scope A should persist tree/cache state to disk");
+
+        let mut session_b = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        session_b.user_handle = "account-b".to_string();
+
+        let loaded = session_b
+            .restore_tree_cache_state()
+            .expect("scope B restore should not fail");
+
+        assert!(!loaded);
+        assert!(session_b.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_real_disk_upload_state_round_trips_through_session_helpers() {
+        let dir = TestDir::new("upload-state");
+        let session = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        let source_path = Path::new("/tmp/story-4b-upload.bin");
+        let state = UploadState::new(
+            "https://upload.example.test".to_string(),
+            [0x11; 16],
+            [0x22; 8],
+            4096,
+            "story-4b-upload.bin".to_string(),
+            "parent-handle".to_string(),
+            "file-hash-123".to_string(),
+        );
+
+        session
+            .save_persisted_upload_state_for_path(source_path, &state)
+            .expect("upload state should persist to disk through session helper");
+
+        let restored_session = create_dummy_session()
+            .install_persistence_runtime_at_for_tests(dir.path().to_path_buf());
+        let restored = restored_session
+            .load_persisted_upload_state_for_path(source_path)
+            .expect("disk-backed upload state load should succeed")
+            .expect("upload state should exist");
+
+        assert_eq!(restored.upload_url, state.upload_url);
+        assert_eq!(restored.file_hash, state.file_hash);
     }
 }

@@ -220,6 +220,7 @@ impl Session {
             user_attr_versions,
             scsn,
         );
+        session.install_default_persistence_runtime()?;
 
         let account_is_v2 = login_variant == 2
             || matches!(
@@ -514,6 +515,7 @@ impl Session {
             user_attr_versions,
             scsn,
         );
+        session.install_default_persistence_runtime()?;
 
         let account_is_v2 = user_info.get("aav").and_then(|v| v.as_i64()) == Some(2);
         if account_is_v2 {
