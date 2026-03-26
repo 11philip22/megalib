@@ -6,6 +6,6 @@ args = ["serve", "--graph", "./agents/sdk.acb"]
 command = "agentic-codebase-mcp"
 args = ["serve", "--graph", "./agents/project.acb"]
 
-[mcp_servers.agentic-memory]
-command = "agentic-memory-mcp"
-args = ["--memory", "./agents/brain.amem", "serve", "--mode", "full"]
+[mcp_servers.sequential-thinking]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]

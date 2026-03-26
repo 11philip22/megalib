@@ -37,6 +37,38 @@ Current implementation status on 2026-03-25:
 
 ---
 
+## Validation Findings
+
+Overall verdict:
+
+- partially grounded / partially speculative
+
+Grounded against the upstream C++ SDK:
+
+- `MegaClient` owns engine-level `RequestDispatcher` instances (`reqs` and `mReqsLockless`) and queues commands into them via `queueCommand(...)`
+- `RequestDispatcher` owns batching, inflight retention, retry-on-failure behavior, and response processing
+- seqtag handling spans `Request::processSeqTag(...)` and `MegaClient::sc_checkSequenceTag(...)`, and mutating commands such as `CommandPutNodes` are explicitly seqtag-bearing while quota reads such as `CommandGetUserQuota` are ordinary queued commands
+
+Partially grounded / Rust-local adaptation:
+
+- a Rust `RequestRuntime` that submits requests and returns `RequestOutcome.seqtag` is a reasonable seam, but upstream seqtag handling is more intertwined with `MegaClient` state and action-packet progression than this story's Rust boundary
+- keeping seqtag waiter ownership in the actor is a megalib design choice, not a direct upstream abstraction
+- using quota plus mkdir as the first migrated read/write pair is sensible, but upstream does not prescribe that exact slice
+
+Unsupported as an upstream claim:
+
+- the inspected upstream request-runtime files do not establish persistence hooks or event-emission hooks as required follow-ons from this seam
+
+Primary upstream evidence consulted:
+
+- `../sdk/include/mega/request.h`
+- `../sdk/src/request.cpp`
+- `../sdk/include/mega/megaclient.h`
+- `../sdk/src/megaclient.cpp`
+- `../sdk/src/commands.cpp`
+
+---
+
 ## Story Goal
 
 Introduce an internal request-runtime abstraction at `src/session/runtime/request.rs` so authenticated actor flows stop coupling directly to raw `ApiClient` request calls.
@@ -68,8 +100,8 @@ Representative current hotspots:
 
 Upstream parity target:
 
-- the C++ SDK has a dedicated `RequestDispatcher`
-- request batching, inflight retention, and retry semantics are runtime concerns rather than incidental transport usage
+- the C++ SDK routes client-server commands through engine-owned `RequestDispatcher` instances in `MegaClient`
+- batching, inflight retention, retry behavior, and response processing are runtime concerns there rather than incidental transport usage
 
 Story 2 does not try to replicate the full upstream dispatcher. It creates the first internal seam that later stories can extend.
 
@@ -143,14 +175,14 @@ Implementation direction:
 Reason:
 
 - request policy is engine behavior, not transport behavior
-- later persistence and event stories will need engine-owned request metadata
+- keeping the seam session-owned leaves room for later runtime-policy work; the inspected upstream files do not by themselves require persistence or event hooks here
 
 ### Decision 2. Seqtag waiters stay in the actor for Story 2
 
 Implementation direction:
 
-- `RequestRuntime` parses seqtag from the response and returns it in `RequestOutcome`
-- actor remains responsible for waiter registration and high-watermark resolution
+- for the Rust slice, `RequestRuntime` parses seqtag from the response and returns it in `RequestOutcome`
+- actor remains responsible for waiter registration and high-watermark resolution as a megalib ownership rule; upstream instead mutates `MegaClient` seqtag state during request/AP processing
 
 Reason:
 
@@ -172,7 +204,7 @@ Recommended migration targets:
 Reason:
 
 - quota is simple and non-mutating
-- mkdir exercises seqtag extraction and waiter handling
+- mkdir is a reasonable mutating target because upstream folder creation ultimately goes through seqtag-bearing `CommandPutNodes`
 - both are meaningful without dragging in tree bootstrap, upload state, or share complexity
 
 ### Decision 4. Out-of-actor request flows remain unchanged in Story 2
@@ -342,13 +374,12 @@ Practical implementation note:
 - for Story 2, response-format parsing can move into `request.rs` even if `src/session/action_packets.rs` still keeps its own helper for AP-side logic
 - avoid a speculative shared helper module unless the first implementation actually needs one
 
-That gives later stories a place to add:
+That gives later stories a place to add, if later Rust slices need them:
 
 - retry policy
 - inflight tracking
 - batching policy
-- event emission
-- persistence hooks
+- event or persistence integration as Rust-local extensions, not as direct upstream requirements from the inspected request dispatcher
 
 without reworking every command handler again.
 

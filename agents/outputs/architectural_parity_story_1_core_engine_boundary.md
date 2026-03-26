@@ -1,6 +1,6 @@
 # Story 1 Spec: Define the Rust Core-Engine Target Boundary
 
-Validated on 2026-03-25 against the current `megalib` tree, the Rust graph `project`, the upstream C++ graph `sdk`, and the sibling upstream SDK at `../sdk`.
+Validated on 2026-03-26 against the current `megalib` tree, the Rust graph `project`, the upstream C++ graph `sdk`, and the sibling upstream SDK at `../sdk`.
 
 This document refines Story 1 from `agents/outputs/architectural_parity_epic.md` into an implementation-ready design story. It is a documentation-first story: its purpose is to define the target internal architecture and delivery boundaries for the rest of the epic without changing Rust runtime behavior yet.
 
@@ -28,8 +28,33 @@ Story 1 is complete as a documentation-first foundation story because it now pro
 - foundation-phase invariants and non-goals
 - downstream story dependencies
 - an epic cross-link for later story execution
+- the ownership baseline for the structural follow-on stories added after the epic was expanded
 
 Story 1 does not produce runtime behavior changes. Its output is the ownership and dependency contract that later implementation stories must follow.
+
+---
+
+## Validation Findings
+
+Overall verdict: partially grounded / partially speculative.
+
+Grounded in the upstream MEGA C++ SDK:
+
+- `MegaApiImpl` is explicitly the intermediate outward layer: it owns the blocking thread, request queues, transfer queues, and request/transfer/global listener registration and dispatch (`../sdk/src/megaapi_impl.cpp`, `../sdk/src/megaapi.cpp`, `../sdk/include/megaapi.h`).
+- `MegaClient` is the engine core and directly owns key internal state and services including `NodeManager`, `DbAccess`, `sctable`, `SCSN`, filesystem access, transfers, syncs, gfx processing, file service, and FUSE service (`../sdk/include/mega/megaclient.h`, `../sdk/src/megaclient.cpp`).
+- `NodeManager` is DB-backed for node-state/query work via `DBTableNodes`, including `getChildren`, `getRecentNodes`, `searchNodes`, and folder-link root handling (`../sdk/include/mega/nodemanager.h`, `../sdk/src/nodemanager.cpp`, `../sdk/src/megaclient.cpp`).
+- Filesystem access and directory notification are foundational support layers for the SDK event loop and sync-capable platforms (`../sdk/src/megaclient.cpp`, `../sdk/include/mega/win32/megafs.h`, `../sdk/include/mega/android/androidFileSystem.h`).
+- Public-folder login is a first-class mode with dedicated folder-link state and cache-resume behavior, even though it still runs through `MegaApiImpl` and `MegaClient` rather than through a wholly separate engine type (`../sdk/include/megaapi.h`, `../sdk/src/megaclient.cpp`).
+
+Partially grounded / speculative:
+
+- `NodeManager + DB + SCSN` are important upstream persistence/coherency anchors, but they are not the whole engine boundary by themselves; `MegaClient` also owns transfer, sync, filesystem, gfx, file-service, and FUSE concerns.
+- The proposed Rust module homes in this story (`src/session/runtime/*`, `src/fs/runtime/*`, `src/platform/`, `src/services/`, and similar) are `megalib` design choices informed by upstream structure, not one-to-one upstream module names.
+- The story's "public adapter", "secondary state", and "side-service pipeline" terminology is best understood as Rust-facing design vocabulary derived from upstream listener/gfx/service patterns rather than as exact named C++ subsystems.
+
+Unsupported after the corrections below:
+
+- no fully unsupported material claim remains; remaining forward-looking structure is now presented as design guidance rather than as direct upstream fact
 
 ---
 
@@ -65,6 +90,10 @@ But the crate does not yet have named internal subsystems equivalent to the upst
 - transfer scheduling and persistence
 - filesystem/watch integration
 - public event delivery
+- public adapter/callback staging
+- platform/runtime layering
+- secondary durable state domains
+- side-service pipeline homes
 
 Without a stable target boundary, later stories will make local decisions that are hard to compose.
 
@@ -110,8 +139,8 @@ The following principles are binding for the foundation phase unless a later app
 5. Use upstream architecture as reference, not template code.
    The target is parity of runtime responsibilities, not a line-by-line clone of `MegaApiImpl` or `MegaClient`.
 
-6. Center the upstream comparison on `MegaClient` and `NodeManager + DB + SCSN`.
-   This is the real architectural target, not just the API adapter layer.
+6. Center the upstream comparison on `MegaClient` plus its `NodeManager`/DB/`SCSN` state path.
+   Those are the primary upstream engine-state anchors, not just the API adapter layer.
 
 ---
 
@@ -159,7 +188,11 @@ The target internal architecture should converge on the following subsystem spli
 | Filesystem runtime | local path handling, metadata, scanning, watch abstraction, local I/O policy | direct file I/O in `src/fs/operations/*` | `src/fs/runtime/filesystem.rs` |
 | Query/index runtime | search, filter, pagination, version-aware query substrate over cached and later persistent nodes | `src/fs/operations/browse.rs` | `src/fs/runtime/query.rs` |
 | Public event runtime | internal event model plus public stream/callback surface for request, transfer, node, and alert events | progress callback state plus internal SC handling | `src/session/runtime/events.rs` |
+| Public adapter runtime | outward listener/callback/adaptation staging, event-family separation, bindings-facing adapter depth | `src/lib.rs`, `src/session/actor.rs`, `src/progress.rs`, future public event runtime | `src/session/runtime/adapter.rs` |
 | Public-link runtime | unauthenticated public file/folder flows | `src/public.rs` | keep in `src/public.rs`, with selective reuse of shared lower layers later |
+| Platform runtime layer | OS-aware module homes and capability boundaries for filesystem, watch, mount, and later desktop work | mostly missing; currently implicit in generic modules | future `src/platform/` |
+| Secondary state runtime | explicit ownership for non-node durable/runtime state families that should not remain incidental `Session` fields forever | `src/session/core.rs` plus ad hoc persistence state | future `src/session/runtime/state/` |
+| Side-service pipeline runtime | background worker/service homes for preview, thumbnail, metadata, and similar non-core pipelines | missing | future `src/services/` |
 | Sync runtime | reconcile, watch/scan loop, persisted sync state | missing | future `src/sync/` |
 | Backup runtime | scheduled backup/copy policy over sync-grade primitives | missing | future `src/backup/` |
 | Mount runtime | mount/FUSE state, inode/path layer, service lifecycle | missing | future `src/mount/` |
@@ -175,18 +208,23 @@ The target architecture should obey these dependency directions.
 - `src/session/runtime/request.rs` may depend on `src/api/`, `src/crypto/`, `src/error.rs`, and authenticated session state.
 - `src/session/runtime/persistence.rs` may depend on session-owned data models and storage helpers, but must not depend on upload/download operation modules.
 - `src/session/runtime/events.rs` may depend on session state, action-packet handling, request runtime, and transfer-facing event inputs, but must not become a home for business logic currently owned by operations.
+- `src/session/runtime/adapter.rs` may depend on public event/runtime types, progress-facing transport, and session-facing outward delivery hooks, but must not become a second owner of engine state or request policy.
+- `src/session/runtime/state/` may depend on session-owned models and persistence/runtime seams, but secondary state domains must not be scattered back into unrelated operation files once they have a named home.
 
 ### FS runtime rules
 
 - `src/fs/runtime/transfer.rs` may depend on `src/session/runtime/persistence.rs`, `src/fs/node.rs`, transport-neutral helpers, and transfer-local I/O abstractions.
 - `src/fs/runtime/filesystem.rs` must not depend on upload/download operation modules; operations should depend on it.
 - `src/fs/runtime/query.rs` may depend on node models, persisted node state, and tree coherency inputs, but must not depend on upload/download runtime details.
+- `src/platform/` may be depended on by filesystem, mount, and service runtimes, but platform modules must not depend outward on operation modules or the public facade.
+- `src/services/` may depend on lower runtimes such as filesystem, query, or adapter layers as needed, but side-service pipelines must not become hidden extensions of `src/session/core.rs`.
 
 ### Cross-layer rules
 
 - `src/api/client.rs` stays transport-first and must not absorb request policy, queue ownership, or engine-level retry semantics.
 - `src/fs/operations/` stays orchestration-first and must not remain the long-term home for transfer scheduling, filesystem policy, or query/index policy.
 - `src/public.rs` may selectively reuse lower layers later, but it does not route through the authenticated actor and does not become a hidden second owner of authenticated engine state.
+- outward callback/listener staging belongs above engine events, not inside business-logic modules that merely produce those events.
 - New runtime modules should depend inward toward shared lower layers; lower layers should not depend outward on end-user operation modules.
 
 ---
@@ -221,7 +259,7 @@ Consequence:
 
 Why:
 
-- upstream parity target is `NodeManager + DB + SCSN`, not just resumable uploads
+- upstream parity target includes the `NodeManager`/DB/`SCSN` persistence path, not just resumable uploads
 - persistence must cover nodes, SCSN/current-state, alerts, transfer metadata, and later query support
 
 Consequence:
@@ -246,7 +284,7 @@ Consequence:
 Why:
 
 - current direct local I/O is insufficient for sync, backup, and mount-grade behavior
-- the upstream architecture treats filesystem access and notifications as foundational
+- the upstream SDK uses filesystem access and notifications as foundational support for sync- and mount-adjacent behavior
 
 Consequence:
 
@@ -263,11 +301,56 @@ Consequence:
 
 - future lower layers may be shared, but the runtime entrypoint remains distinct
 
+### Decision 7. Public adapter staging is distinct from the event model
+
+Why:
+
+- the SDK’s outward architecture is not just “events exist”; it also has listener families, request/transfer queues, and outward dispatch layers
+- later feature families need a stable outward integration surface rather than direct ad hoc callbacks from engine code
+
+Consequence:
+
+- Story 6 may establish the event substrate at `src/session/runtime/events.rs`
+- Story 6B should establish outward adapter/callback staging at `src/session/runtime/adapter.rs`
+
+### Decision 8. Platform-sensitive runtime behavior needs explicit homes
+
+Why:
+
+- the SDK’s platform layering is structurally important even when feature parity is incomplete
+- later filesystem, watch, mount, and desktop work should not accumulate in generic modules with no OS-aware owner
+
+Consequence:
+
+- Story 7B should introduce explicit module homes under `src/platform/`
+
+### Decision 9. Secondary durable state domains need first-class ownership
+
+Why:
+
+- full engine-structure parity is not only nodes and transfers
+- some `MegaClient`-style durable/runtime state families should not remain incidental `Session` fields forever
+
+Consequence:
+
+- Story 8B should give those domains explicit homes under `src/session/runtime/state/`
+
+### Decision 10. Side-service pipelines need reserved subsystem homes
+
+Why:
+
+- later SDK-adjacent side pipelines such as gfx/file-service style helpers should land into prepared architectural homes rather than distorting the core engine
+- even when feature delivery is deferred, the runtime layout should anticipate that breadth
+
+Consequence:
+
+- Story 9B should establish service/pipeline homes under `src/services/`
+
 ---
 
 ## Invariants To Preserve
 
-These invariants must be maintained through Stories 2 through 8 unless a later approved story explicitly revises them.
+These invariants must be maintained through Stories 2 through 9B unless a later approved story explicitly revises them.
 
 ### Control-plane invariants
 
@@ -297,13 +380,13 @@ These invariants must be maintained through Stories 2 through 8 unless a later a
 
 ## Non-Goals For The Foundation Phase
 
-The following are explicitly not goals of Stories 1 through 8:
+The following are explicitly not goals of Stories 1 through 9B:
 
 - full sync parity
 - scheduled backup parity
 - mount/FUSE parity
 - chat or meetings parity
-- full platform-layer parity with upstream `src/{posix,osx,win32,android}`
+- full cross-platform feature parity with every upstream OS-specific subsystem
 - broad module reorganization for cosmetic reasons
 - replacing the actor with a waiter-thread model
 
@@ -315,9 +398,13 @@ These remain downstream consumers of the foundation layers.
 
 Story dependency graph:
 
-- Story 1 enables Stories 2, 3, and 7 directly
+- Story 1 enables Stories 2, 3, 6B, 7, 7B, 8B, and 9B as the ownership baseline
 - Story 3 is required before durable node coherency in Story 4
 - Story 4 is required before real query/index runtime in Story 8
+- Story 6 is required before outward adapter/callback staging in Story 6B
+- Story 7 is required before platform/runtime layering alignment in Story 7B
+- Stories 3, 4B, and 4C are required before secondary durable state ownership in Story 8B
+- Stories 6B and 7B are required before side-service pipeline homes in Story 9B
 - Stories 3, 4, 5, 7, and 8 are all required before sync MVP in Story 9
 - Story 9 is required before scheduled backup in Story 10
 - Stories 4, 7, and 8 are required before mount/FUSE in Story 11
@@ -329,7 +416,9 @@ Critical architectural sequence:
 3. make node/cache/SCSN state durable and coherent
 4. extract transfer and filesystem runtimes
 5. build query/event surfaces on top
-6. then start sync, backup, and mount
+6. align outward adapter staging, platform layering, and secondary state homes
+7. reserve side-service pipeline homes before broad non-core feature porting
+8. then start sync, backup, mount, and later feature families
 
 ---
 
@@ -373,8 +462,12 @@ For implementation stories:
 - Story 3 must use `src/session/runtime/persistence.rs`
 - Story 5 must use `src/fs/runtime/transfer.rs`
 - Story 6 must use `src/session/runtime/events.rs`
+- Story 6B must use `src/session/runtime/adapter.rs`
 - Story 7 must use `src/fs/runtime/filesystem.rs`
+- Story 7B must use `src/platform/`
 - Story 8 must use `src/fs/runtime/query.rs`
+- Story 8B must use `src/session/runtime/state/`
+- Story 9B must use `src/services/`
 
 If a later story needs to violate this document, that should be treated as a design change and the Story 1 spec should be revised first rather than ignored locally.
 
@@ -451,6 +544,7 @@ Story 1 is complete when:
 - foundation-phase invariants are explicit
 - foundation-phase non-goals are explicit
 - downstream story dependencies are explicit
+- the ownership map covers both the original foundation slices and the later structural-alignment slices added by the expanded epic
 - the epic links to the detailed Story 1 spec
 - no Rust source files changed
 - no public API changed
@@ -476,6 +570,8 @@ These do not block Story 1 completion, but Story 2 and Story 3 should answer the
 1. what is the minimal event model needed before any public event API is exposed
 2. what durable state must be in the first persistence backend versus deferred to later stories
 3. whether query/index abstractions should be introduced before or alongside the first durable node-cache backend
+4. how much platform/module scaffolding should land before platform-sensitive features start using it
+5. which secondary durable state families should be first-class in Story 8B versus deferred explicitly
 
 ---
 

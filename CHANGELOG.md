@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed the redundant node-taking `children` helpers from the cached browse layer and `SessionHandle`; callers should use `children_by_handle` instead.
 
+### Internal
+- Tightened the architectural parity planning docs so the gap ledger uses SDK-shaped architecture rows, treats public-folder runtime separation as a first-class runtime boundary, and keeps Story 12 validation plus Story 12B audit discipline as explicit gating tracks rather than architecture rows.
+- Tightened Story 7B's C++ ground-truth references so the platform-runtime layering spec points at the actual upstream device-identity and DB-root anchors used for implementation parity.
+- Added grouped C++ ground-truth references to the Story 10B scheduled-copy spec so implementation work can navigate controller, scheduling, generation-state, and retention behavior directly from the upstream SDK.
+- Regrounded Story 6’s public-event planning docs against the SDK’s concrete `MegaApp`, request/transfer listener, and committed node-observer seams, and moved Rust-specific receiver-shape choices out of the parity claim.
+
 ## [0.11.0]
 
 ### Fixed

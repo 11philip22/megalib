@@ -43,6 +43,31 @@ Current implementation status on 2026-03-25:
 
 ---
 
+## Validation Findings
+
+Overall verdict:
+
+- partially grounded: the story's core persistence-boundary direction matches the upstream SDK, but a few parity rationales needed narrowing
+
+Grounded against the upstream SDK:
+
+- `NodeManager`, the account `statecache`/`nodes` DB, and `scsn` are one coherency domain; the SDK opens them together and commits them against `scsn` updates (`../sdk/include/mega/nodemanager.h`, `../sdk/include/mega/megaclient.h`, `../sdk/src/megaclient.cpp`)
+- cached restore runs before the client resumes live SC catch-up; `fetchsc()` restores cached state, and only then does startup re-arm `scsn`/continue toward current state (`../sdk/src/megaclient.cpp`, `../sdk/src/commands.cpp`)
+- transfer resume state is DB-backed and record-oriented, not operation-local-file-based; the SDK uses `tctable`, `TransferDbCommitter`, cached transfer/file records, and `MegaApiImpl::file_resume()` (`../sdk/include/mega/db.h`, `../sdk/include/mega/megaclient.h`, `../sdk/include/mega/transfer.h`, `../sdk/src/megaclient.cpp`, `../sdk/src/megaapi_impl.cpp`)
+- user alerts are restored from cache on session resumption, and the SDK marks alert catch-up complete after that restore (`../sdk/src/megaclient.cpp`, `../sdk/src/useralerts.cpp`)
+
+Partially grounded / speculative:
+
+- the original alert-parity wording was too strong: the inspected SDK persists serialized alert records (`CACHEDALERT`), but it does not show persistence of every alert catch-up marker; separate Rust fields such as `alerts_catchup_pending` / `user_alert_lsn` are design choices, not direct upstream cache fields
+- the original schema-compatibility wording was also too strong: the SDK handles DB compatibility explicitly, but typically by recycling/removing incompatible databases or invalidating cached state rather than by exposing a structured schema-version restore contract
+- upstream cache scoping is tied to authenticated session or folder-link identity derived from the DB name; "after account handle is known" was narrower than what the inspected SDK proves
+
+Unsupported as originally written:
+
+- a direct parity claim that the SDK persists the full alert catch-up state, rather than persisted alert records plus restore-time catch-up completion, is not supported by the inspected sources
+
+---
+
 ## Story Goal
 
 Introduce a first-class persistence boundary at `src/session/runtime/persistence.rs` so durable engine state stops being scattered across ad hoc file helpers, actor-local coalescing, and future story-specific storage code.
@@ -255,16 +280,17 @@ Consequence:
 - Story 3 should introduce an internal `TransferPersistenceKey`
 - the first key type only needs upload support, but it should leave room for downloads later
 
-### Decision 9. Persist full alert cache state in Story 3
+### Decision 9. Persist alert cache payloads in Story 3
 
 Why:
 
 - upstream restores alerts from cache rather than relying only on catch-up markers
+- the SDK persists serialized alert records in `CACHEDALERT` and marks `catchupdone = true` after cache restore, but the inspected code does not show persistence of every alert catch-up marker
 - `megalib` already keeps alerts in memory as `Vec<Value>`
 
 Consequence:
 
-- Story 3 should persist `alerts_catchup_pending`, `user_alert_lsn`, and `user_alerts`
+- Story 3 should persist alert entries and any Rust-local alert markers it needs; `user_alerts` is parity-grounded, while `alerts_catchup_pending` and `user_alert_lsn` are megalib design choices rather than direct SDK cache fields
 - alert catch-up booleans remain markers, while runtime delivery state is still derived
 
 ### Decision 10. Use strict schema-version rejection in the first slice
@@ -272,6 +298,7 @@ Consequence:
 Why:
 
 - upstream handles DB compatibility explicitly rather than attempting partial best-effort restores
+- the inspected SDK usually does that by recycling/removing incompatible DB state or invalidating cached continuity, not by surfacing a structured schema-version restore error
 - partial restore on incompatible state would create difficult-to-debug contradictions
 
 Consequence:
@@ -279,6 +306,7 @@ Consequence:
 - Story 3 should start with `schema_version = 1`
 - unknown schema versions should fail cleanly
 - version mismatch should prevent partial engine-state apply
+- this is a conservative Rust-side policy choice, not an exact copy of the SDK's current DB compatibility flow
 
 ### Decision 11. Restore should run only after authenticated identity is known and before SC runtime coordination starts
 
@@ -291,7 +319,7 @@ Why:
 Consequence:
 
 - Story 3 restore should run only for authenticated session flows
-- restore should happen after the account handle is known and `Session` exists
+- restore should happen after the authenticated persistence scope is known and `Session` exists
 - restore should happen before SC poller state is spawned or synchronized from the restored session state
 - public-link runtime remains out of scope for Story 3 persistence
 
@@ -484,7 +512,7 @@ impl Session {
 
 Restore/apply rules for the first slice:
 
-- restore only after authenticated identity and account handle are known
+- restore only after authenticated identity and persistence scope are known
 - restore before SC poller state is spawned or synchronized from the `Session`
 - restore `scsn`
 - restore alert metadata
@@ -500,6 +528,8 @@ Restore/apply rules for the first slice:
 ## Proposed Persistence Domains
 
 ### Engine metadata domain
+
+Direct upstream parity here is limited to `scsn` plus cached alert entries. Separate Rust markers such as `alerts_catchup_pending` and `user_alert_lsn` are acceptable Story 3 choices, but they are not confirmed upstream cache fields from the inspected SDK sources.
 
 First durable fields:
 

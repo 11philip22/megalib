@@ -80,6 +80,30 @@ Story 4 is the story that closes that architecture gap for the Rust tree/cache r
 
 ---
 
+## Validation Findings
+
+Verdict:
+
+- partially grounded / speculative
+
+Grounded against the upstream SDK:
+
+- `NodeManager` explicitly documents that the same DB file backs `statecache` and `nodes`, and that both tables share one transaction domain committed on action-packet sequence numbers (`../sdk/include/mega/nodemanager.h:272`).
+- cached startup really does restore local state before live SC catch-up resumes: `MegaClient` opens the cache, skips loading when `cachedscsn` is undefined, calls `fetchsc()` when it is present, and then sets live `scsn` from `cachedscsn` once the cached load succeeds (`../sdk/src/megaclient.cpp:15871`, `../sdk/src/megaclient.cpp:15883`, `../sdk/src/megaclient.cpp:15918`).
+- commit boundaries are tied to coherent fetch/AP progress rather than per-node mutation: `initsc()` writes the initial coherent cache and commits it, `sc_storeSn()` commits on the received `scsn`, and `updatesc()` refreshes the cached `scsn` plus other state before the next DB commit (`../sdk/src/megaclient.cpp:5861`, `../sdk/src/megaclient.cpp:5948`, `../sdk/src/megaclient.cpp:5354`, `../sdk/src/megaclient.cpp:5363`, `../sdk/src/megaclient.cpp:5966`).
+- durable node cache entries do include share-related state and decrypt-later material: `Node::serialize()` writes outshares/pending shares into the node blob and also preserves node-key/attribute data needed to thaw undecryptable nodes later (`../sdk/src/node.cpp:546`, `../sdk/src/node.cpp:660`, `../sdk/src/node.cpp:706`).
+
+Partially grounded / Rust-specific design choices:
+
+- the story's Rust `pending_nodes`, `outshares`, and `pending_outshares` snapshot shape is a reasonable way to reach upstream-equivalent restart behavior, but upstream does not expose those as separate top-level persisted structures. In C++, outshares and pending shares are serialized inside node blobs, while deferred apply-key retry tracking lives in `NodeManager::mNodePendingApplyKeys` (`../sdk/src/node.cpp:660`, `../sdk/src/node.cpp:696`, `../sdk/src/nodemanager.cpp:1510`).
+- the statement that startup should trust a locally restored snapshot with valid persisted `scsn` "as an SDK rule" is slightly stronger than the evidence. The observed upstream behavior is that successful cache restore resumes from cached `scsn` without first comparing to a fresh server `sn`, but that is an implementation observation here, not a separately documented invariant (`../sdk/src/megaclient.cpp:15883`, `../sdk/src/megaclient.cpp:15918`).
+
+Unsupported after the corrections below:
+
+- none
+
+---
+
 ## Scope
 
 In scope:
@@ -131,7 +155,7 @@ If implementation pressure suggests changing the persistence contract itself, St
 These invariants are binding for Story 4:
 
 1. Tree coherency is one subsystem.
-   `nodes`, `pending_nodes`, outshare state, `scsn`, and current-state-adjacent markers must not be persisted or restored as unrelated mini-features.
+   `nodes`, Rust decrypt-later state (`pending_nodes`), outshare state, `scsn`, and current-state-adjacent markers must not be persisted or restored as unrelated mini-features.
 
 2. Derived booleans stay derived.
    Story 4 may restore the markers that drive `nodes_state_ready`, `sc_batch_catchup_done`, `state_current`, and `action_packets_current`, but it must not persist those booleans directly as authoritative state.
@@ -175,7 +199,7 @@ Consequence:
 
 - Story 4 restore should happen in authenticated startup paths before actor poller state is derived from the session
 - restored `scsn` becomes the authoritative starting point for catch-up decisions unless the server bootstrap proves the cache unusable
-- Story 4 should follow the SDK rule here: if a durable tree/cache snapshot has a valid persisted `scsn` and local restore succeeds, startup should trust that snapshot and resume catch-up from it rather than trying to pre-compare it against a fresh server `sn`
+- observed SDK behavior is that if a durable tree/cache snapshot has a valid persisted `scsn` and local restore succeeds, startup resumes from that cache and catch-up proceeds from the cached `scsn` without first pre-comparing to a fresh server `sn`
 - if persisted `scsn` is absent or the local restore fails, Story 4 should invalidate the restored tree/cache snapshot and fall back to the live fetch path
 
 ### Decision 3. Use refresh and AP success as the first commit boundaries
@@ -192,18 +216,18 @@ Consequence:
 - Story 4 should follow the SDK batch-level rule: commit once per successful AP batch / `scsn` advance, not once per individual node mutation
 - failure halfway through refresh/AP handling must not leave partially-applied durable state presented as current
 
-### Decision 4. Persist `pending_nodes` and outshare maps exactly because they are part of coherency
+### Decision 4. Persist Rust `pending_nodes` and outshare maps because they are part of coherency
 
 Why:
 
-- `pending_nodes` is not incidental scratch state; it affects whether later share keys can recover nodes
+- Rust `pending_nodes` is not incidental scratch state; it affects whether later share keys can recover nodes
 - `outshares` and `pending_outshares` affect node flags and later key/work reconciliation
 
 Consequence:
 
 - Story 4 must persist and restore `pending_nodes`, `outshares`, and `pending_outshares`
 - those are not optional “nice to have” fields in this story
-- Story 4 should follow the SDK direction here too: the first live `PersistedTreeState` should be treated as the real durable tree snapshot rather than a minimal partial field subset
+- this is an architectural parity choice rather than a 1:1 upstream data-model match: in the SDK, share state is serialized inside cached node blobs and decrypt-later retry tracking is rebuilt around loaded nodes
 
 ### Decision 5. Paths remain rebuilt derived state
 

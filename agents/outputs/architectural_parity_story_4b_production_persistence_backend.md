@@ -43,6 +43,31 @@ Current task status:
 - Task 4B.3 is complete in code
 - Task 4B.4 is complete in code
 
+## Validation Findings
+
+Overall verdict: Partially grounded / speculative.
+
+Grounded against the upstream SDK:
+
+- constructor-time DB ownership is real upstream: `MegaApiImpl::init()` creates `MegaDbAccess` from the configured base path and passes it into `MegaClient` construction (`../sdk/src/megaapi_impl.cpp:6964`, `../sdk/src/megaapi_impl.cpp:7015`, `../sdk/src/megaapi_impl.cpp:7029`)
+- `MegaClient` really owns `dbaccess`, `sctable`, `tctable`, `statusTable`, and `cachedscsn` (`../sdk/include/mega/megaclient.h:2014`, `../sdk/include/mega/megaclient.h:2017`, `../sdk/include/mega/megaclient.h:2025`, `../sdk/include/mega/megaclient.h:2031`, `../sdk/include/mega/megaclient.h:2034`)
+- the upstream persistence layer is SQLite-backed and versioned through `DbAccess` / `SqliteDbAccess`, with explicit legacy-version recycle handling (`../sdk/include/mega/db.h:320`, `../sdk/include/mega/db/sqlite.h:217`, `../sdk/src/db/sqlite.cpp:31`, `../sdk/src/db/sqlite.cpp:42`, `../sdk/src/db/sqlite.cpp:56`)
+- `opensctable()` opens the account DB early, installs the node table, and starts a long-lived transaction shared by `"statecache"` and `"nodes"` (`../sdk/src/megaclient.cpp:12233`)
+- `fetchnodes()` only restores from cache when `sctable` exists and `cachedscsn` is defined; otherwise it truncates stale cache and continues from the server path (`../sdk/src/megaclient.cpp:11762`, `../sdk/src/megaclient.cpp:15869`, `../sdk/src/megaclient.cpp:15883`)
+
+Partially grounded or deliberate Rust-side divergence:
+
+- the SDK does not use one consolidated DB per authenticated scope; it keeps separate state, status, and transfer DBs derived from session/folder identity (`../sdk/src/megaclient.cpp:12233`, `../sdk/src/megaclient.cpp:12304`, `../sdk/src/megaclient.cpp:15369`)
+- the proposed Rust `meta` / `engine_state` / `upload_state` JSON-row schema is a migration convenience, not an upstream table layout; upstream stores normalized `statecache` / `nodes` records and separate transfer/status DBs (`../sdk/src/db/sqlite.cpp:376`, `../sdk/src/db/sqlite.cpp:801`, `../sdk/src/megaclient.cpp:15391`)
+- the SDK keeps long-lived `DbTable` objects and transactions rather than opening SQLite per operation, so on-demand connection opening is a Rust simplification, not parity (`../sdk/src/megaclient.cpp:12279`, `../sdk/src/megaclient.cpp:12291`)
+- the SDK accepts a caller-provided base path and otherwise falls back to the current working directory; an OS-native default state root is an intentional Rust divergence (`../sdk/src/megaapi_impl.cpp:7003`, `../sdk/src/megaapi_impl.cpp:7007`)
+- upstream also caches folder-link state, so limiting this story to authenticated-session production persistence is a narrower Rust rollout, not a mirror of upstream cache coverage (`../sdk/src/megaclient.cpp:11762`, `../sdk/src/megaclient.cpp:12304`, `../sdk/src/megaclient.cpp:15502`)
+
+Overstated in the previous draft and corrected below:
+
+- "same architectural property" was too strong for the proposed single-file JSON-row backend; the truthful claim is a comparable constructor-time persistence property
+- malformed-cache fallback is upstream at whole-cache-load granularity when decode fails; the SDK evidence does not support claiming per-row recoverable miss behavior as parity (`../sdk/src/megaclient.cpp:15075`)
+
 ---
 
 ## Story Goal
@@ -88,11 +113,13 @@ Relevant upstream references:
 - `../sdk/src/megaclient.cpp:12233`
 - `../sdk/src/megaclient.cpp:15869`
 
-Story 4B is the story that gives Rust the same architectural property:
+Story 4B is the story that gives Rust a comparable constructor-time persistence property:
 
 - a real backend exists at construction time
 - it has durable file/schema rules
 - later stories can rely on it without test-only injection
+
+That parity is architectural, not literal table-for-table or file-for-file duplication of the SDK.
 
 ---
 
@@ -180,13 +207,14 @@ Consequence:
 - Story 4B should avoid ORM layers and avoid adding a second async runtime abstraction
 - the backend implementation should stay internal to `src/session/runtime/persistence.rs` or a tightly scoped sibling module
 
-### Decision 2. Preserve the Story 3 model contract and store it as backend rows, not re-normalized tables yet
+### Decision 2. Preserve the Story 3 model contract and store it as backend rows in the first Rust slice
 
 Why:
 
 - Story 3 already fixed the durable model contract
 - Story 4 already relies on that model for coherency behavior
 - rewriting the model into SDK-style normalized `statecache`/`nodes` tables would mix backend rollout with a second data-model migration
+- this is a Rust continuity choice, not a direct SDK mirror: upstream persists normalized `statecache` / `nodes` records and separate transfer/status DBs
 
 Consequence:
 
@@ -197,24 +225,25 @@ Consequence:
   - upload-state table keyed by `TransferPersistenceKey`
 - Story 4C may later tighten or restructure how those rows are used, but 4B should not widen into that work
 
-### Decision 3. Use one backend DB file per authenticated persistence scope
+### Decision 3. Use one Rust backend DB file per authenticated persistence scope in the first slice
 
 Why:
 
-- upstream uses account-scoped DB names derived from authenticated session/folder identity
+- upstream uses session/folder-derived DB names, but it actually opens separate state, status, and transfer DB files rather than one consolidated file
 - Story 3 already fixed the Rust scope identity as `PersistenceScope { account_handle }`
 - account-scoped files keep isolation and cleanup simple
 
 Consequence:
 
-- Story 4B should create one DB file per authenticated account scope
+- Story 4B may create one DB file per authenticated account scope as a Rust simplification
 - the filename should be derived from `PersistenceScope.account_handle`, using a filesystem-safe encoding if needed
-- public-link and unauthenticated contexts should continue using `PersistenceRuntime::disabled()`
+- public-link and unauthenticated contexts may continue using `PersistenceRuntime::disabled()` in this story, even though upstream also caches folder-link state
 
 ### Decision 4. Open SQLite connections on demand per operation in the first slice
 
 Why:
 
+- this is a Rust simplification, not upstream behavior: `MegaClient` keeps long-lived `DbTable` objects and leaves `sctable` in a long-lived transaction
 - `PersistenceBackend` is `Send + Sync`, while a shared SQLite connection would require extra synchronization
 - current persistence call frequency is low and already aligned with startup / refresh / AP batch boundaries
 - opening on demand keeps the backend implementation small and avoids long-lived shared connection complexity in the first slice
@@ -229,6 +258,7 @@ Consequence:
 
 Why:
 
+- upstream already has a DB-layout version (`DbAccess::DB_VERSION`) that is distinct from the meaning of individual cached records
 - `ENGINE_STATE_SCHEMA_VERSION` already version-controls the serialized engine payload
 - SQLite table/layout versioning is a different concern from payload compatibility
 - conflating both would make future backend migrations harder
@@ -244,6 +274,7 @@ Consequence:
 Why:
 
 - upstream adjusts legacy DB versions and recycles incompatible DB files rather than pretending persistence never existed
+- the exact rename-aside / recreate policy here is still Rust-specific; upstream recycles or deletes legacy DBs depending on version/flags
 - silently downgrading to disabled persistence would make durability disappear without an explicit signal
 - hard-failing every startup on stale cache state is worse than dropping incompatible cache state and recreating it
 
@@ -260,11 +291,12 @@ Why:
 - a path/permission/SQLite-open failure means the backend itself is unavailable
 - a malformed engine-state row means the backend is available but the cache contents are unusable
 - Story 4 and Story 4C already rely on safe fallback behavior for malformed cached state
+- in the SDK, bad cached records usually invalidate cache restore for that load and fall back to the server path, rather than clearly behaving as isolated per-row cache misses
 
 Consequence:
 
 - backend-open and commit I/O failures should return an internal error and stop pretending the backend is healthy
-- malformed or incompatible cached payload rows should be treated as empty/unusable persisted state, allowing Story 4 restore logic to fall back cleanly
+- malformed or incompatible cached payload rows should be treated as unusable persisted state for restore purposes, allowing Story 4 restore logic to fall back cleanly
 
 ### Decision 8. Prefer an OS-appropriate default storage root over hidden current-directory storage
 
@@ -272,6 +304,7 @@ Why:
 
 - the SDK defaults to a caller-provided base path or current working directory, but Rust SDK users generally expect application-state files to live under an OS-appropriate state/config location
 - hidden `cwd`-based state would be fragile in tests, examples, and server processes
+- this is an intentional Rust divergence, not an upstream constraint
 
 Consequence:
 
@@ -333,6 +366,7 @@ Notes:
 - one DB file per scope means the scope itself does not need to be a row key
 - JSON storage is acceptable in Story 4B because the durable model contract is already defined and tested
 - `engine_state` may be a singleton row keyed by `slot = 0`
+- this is a Rust-first schema, not a direct port of upstream `statecache` / `nodes` plus separate `status_...` / `transfers_...` DB files
 
 ---
 
@@ -349,7 +383,7 @@ Story 4B should install the backend at the same architectural points where upstr
    - so startup restore uses the real production backend
 
 3. unsupported/public/test paths
-   - remain on no-op or memory backends
+   - may remain on no-op or memory backends in Rust, even though upstream also persists folder-link caches
 
 Recommended Rust implementation direction:
 

@@ -147,11 +147,14 @@ The clean parity path is still:
 
 ## Parity Dimensions To Track Explicitly
 
-The architecture map above is the compact view. For future refreshes, these are the dimensions that should stay explicit so the report does not collapse back into a generic “features missing” narrative:
+The architecture map above is the compact view. For future refreshes, these are the dimension families that should stay explicit so the report does not collapse back into a generic “features missing” narrative.
+
+The epic and the gap ledger may split one family into multiple audit rows when the SDK has distinct runtime seams that deserve separate ownership and closure states. That is expected for cases such as persistence SPI versus production backend rollout, or public adapter depth versus public event delivery.
 
 | Dimension | Upstream reference shape | Rust reference shape today | Why this dimension matters |
 |-----------|--------------------------|----------------------------|----------------------------|
 | Core runtime ownership | `MegaClient` breadth under `MegaApiImpl` | `Session` under `SessionHandle` and the actor | This is the real engine boundary, not just the public facade. |
+| Public-folder runtime separation | folder-link login/cache/auth state via `folderaccess`, `loggedIntoFolder`, folder-session restore, and folder-auth URI shaping | `open_folder()` runtime in `src/public.rs`, separate from the authenticated actor/session runtime | SDK parity cannot assume a single authenticated runtime shape; folder-link access is a real second runtime path upstream and in Rust. |
 | Tree coherency | `NodeManager + DBTableNodes + cachedscsn + statecache` | in-memory nodes plus bootstrap/apply logic | Durable tree parity depends on treating cache, DB, and SC/AP coherency as one target. |
 | SC/AP lifecycle | fetchnodes, catch-up, current-state transitions, persisted SCSN | `ScPoller`, seqtag waiters, `state_current`, `action_packets_current` | This is one of Rust's stronger areas and should not be understated. |
 | Transfer engine depth | `TransferQueue`, `TransferSlot`, async I/O, CloudRAID, transfer cache | upload/download operation logic plus `UploadState` | Working transfers are not the same as upstream transfer-runtime parity. |
